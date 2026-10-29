@@ -1,0 +1,38 @@
+# Secrets and local settings: never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*password*.txt
+*.password
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+test.db
+*.sqlite3
+
+# Node and web builds
+node_modules/
+dist/
+.vite/
+coverage/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local scratch
+Claude outputs/
