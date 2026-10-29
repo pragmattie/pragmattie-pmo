@@ -1,0 +1,52 @@
+name: Agent task
+description: A piece of work for the implementer agent, specified well enough to build without guessing.
+labels: ["spec-draft"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The agent builds exactly what this issue says. Be specific, and put anything that is out of
+        scope under "Not in scope". The issue starts as a draft spec: when it is final, remove
+        `spec-draft` and add `agent-ready`. Add `forecast:T0`..`T3`, `points:N` and a milestone.
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What this adds or changes, in one or two sentences, and for whom.
+    validations:
+      required: true
+  - type: textarea
+    id: spec
+    attributes:
+      label: Spec
+      description: What to build. Endpoints, fields, screens, behaviour and edge cases.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checkable statements. Each becomes a test where it can.
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Not in scope
+      description: Related work the agent must leave alone.
+  - type: dropdown
+    id: part
+    attributes:
+      label: Module
+      options:
+        - Platform (repo, CI, config, database, audit)
+        - Login and roles
+        - Intake
+        - Risk register
+        - Portfolio dashboard and agent registry
+        - Status reports
+        - Proposal workflow
+    validations:
+      required: true

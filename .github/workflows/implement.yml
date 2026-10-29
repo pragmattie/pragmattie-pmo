@@ -1,0 +1,505 @@
+# The implementer agent. Part of the human-written bootstrap: the agents cannot edit this file
+# (the builder app has no Workflows permission, so GitHub refuses such a push).
+#
+# What starts it, and only from someone with write access:
+#   - the `agent-ready` label on an issue: issues whose forecast tier is in PLAN_TIERS (default
+#     T2 and T3, and issues with no forecast count as T2) get a plan first; the rest are built
+#     straight away
+#   - a `/approve-plan` comment on an issue whose plan is waiting; any text after the command goes
+#     to the agent as the approver's answers to the plan's questions
+#   - a "Request changes" review on an agent pull request: the agent revises its own branch
+#   - a `/revise <what to change>` comment on an agent pull request: the same, and it works when the
+#     PR has a merge conflict, where GitHub runs no pull request workflows
+#   - every agent pull request is set to auto-merge, so it merges itself once the main ruleset's
+#     requirements are met (CI, and the owner's approval while the ruleset asks for one)
+#   - merging an agent pull request: the next open item in the same milestone starts by itself
+#     ("1.2" after "1.1"), as if it had been labelled `agent-ready`, provided its spec is approved
+#     (no `spec-draft` label). It never crosses into the next milestone: that gate is a person's.
+#
+# Settings are repository variables, so they change without editing this file (defaults in
+# brackets): DAILY_CAP_USD [10], IMPLEMENT_MODEL [claude-opus-5-5], SONNET_MODEL [claude-sonnet-5],
+# PLAN_TIERS ["T2 T3"], TURNS_T0..TURNS_T3 [20 40 60 80], TURNS_PER_POINT [15], TURNS_MAX [150],
+# PLAN_TURNS [25]. Opus is the default; a `model:sonnet` label chooses Sonnet for one issue.
+# A run that stops early keeps its commits on a draft PR. The agent only commits; this workflow
+# pushes and opens the PR as the app. Every run posts a record (model, turns, tokens, cost) on its
+# issue, which a governance layer can read into its audit trail, and runs stop for the day once the
+# day's recorded cost reaches DAILY_CAP_USD.
+
+name: Implementer agent
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write  # only to say on a pull request that its revision has finished
+
+env:
+  DAILY_CAP_USD: ${{ vars.DAILY_CAP_USD || '10' }}
+  IMPLEMENT_MODEL: ${{ vars.IMPLEMENT_MODEL || 'claude-opus-5-5' }}
+  SONNET_MODEL: ${{ vars.SONNET_MODEL || 'claude-sonnet-5' }}
+  PLAN_TIERS: ${{ vars.PLAN_TIERS || 'T2 T3' }}
+  TURNS_T0: ${{ vars.TURNS_T0 || '20' }}
+  TURNS_T1: ${{ vars.TURNS_T1 || '40' }}
+  TURNS_T2: ${{ vars.TURNS_T2 || '60' }}
+  TURNS_T3: ${{ vars.TURNS_T3 || '80' }}
+  TURNS_PER_POINT: ${{ vars.TURNS_PER_POINT || '15' }}
+  TURNS_MAX: ${{ vars.TURNS_MAX || '150' }}
+  PLAN_TURNS: ${{ vars.PLAN_TURNS || '25' }}
+  RUN_MARKER: pragmattie-run
+  REVIEW_MARKER: pragmattie-review  # the reviewer agent's records (review.yml) count toward the cap
+
+jobs:
+  implement:
+    if: >-
+      (github.event_name == 'issues' && github.event.label.name == 'agent-ready') ||
+      (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/approve-plan')) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/revise')) ||
+      (github.event_name == 'pull_request_review' &&
+       github.event.review.state == 'changes_requested' &&
+       startsWith(github.event.pull_request.head.ref, 'agent/')) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged &&
+       startsWith(github.event.pull_request.head.ref, 'agent/'))
+    # On the job, not the workflow: every issue comment and label starts this workflow, and in a
+    # workflow-level group those (skipped) runs could cancel a real run waiting its turn.
+    concurrency:
+      group: implement-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - name: Decide what to do
+        id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.event.sender.login }}
+        run: |
+          set -euo pipefail
+          # A merge needs no permission check: it already passed every requirement on main, and
+          # auto-merge merges as the builder app.
+          if [ "$EVENT" != "pull_request" ]; then
+            perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission 2>/dev/null || echo none)
+            case "$perm" in
+              admin|maintain|write) ;;
+              *) echo "action=none" >> "$GITHUB_OUTPUT"; echo "$ACTOR has $perm access: ignored."; exit 0 ;;
+            esac
+          fi
+
+          pr=""; issue=""
+          if [ "$EVENT" = "pull_request" ]; then
+            # A merged agent PR starts the next item in its milestone, if that item's spec is approved.
+            merged_pr=$(jq -r .pull_request.number "$GITHUB_EVENT_PATH")
+            done_issue=$(jq -r .pull_request.head.ref "$GITHUB_EVENT_PATH" | sed -E 's#^agent/([0-9]+)-.*#\1#')
+            item=$(gh api "repos/$REPO/issues/$done_issue" --jq .title | sed -nE 's/^([0-9]+\.[0-9]+) .*/\1/p')
+            if [ -z "$item" ]; then
+              echo "action=none" >> "$GITHUB_OUTPUT"; echo "#$done_issue has no plan item number: nothing to chain."; exit 0
+            fi
+            next=$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" \
+                --jq '.[] | select(.pull_request == null) | "\(.number)\t\(.title)\t\([.labels[].name] | join(","))"' \
+              | awk -F'\t' -v m="${item%%.*}" -v n="${item##*.}" \
+                  '{ split($2, word, " "); split(word[1], part, ".");
+                     if (part[1] == m && part[2] ~ /^[0-9]+$/ && part[2] + 0 > n + 0) print part[2] + 0 "\t" $1 "\t" $3 }' \
+              | sort -n | head -1)
+            if [ -z "$next" ]; then
+              echo "action=none" >> "$GITHUB_OUTPUT"
+              echo "Item $item was the last open item in milestone ${item%%.*}: the next milestone's gate is a person's."; exit 0
+            fi
+            issue=$(echo "$next" | cut -f2)
+            case ",$(echo "$next" | cut -f3)," in
+              *,spec-draft,*) echo "action=none" >> "$GITHUB_OUTPUT"; echo "#$issue is next, but its spec is not approved (spec-draft)."; exit 0 ;;
+              *,agent-ready,*) echo "action=none" >> "$GITHUB_OUTPUT"; echo "#$issue is next, and was already started."; exit 0 ;;
+            esac
+            # Labelled with the workflow's own token, which starts no second run: this run does the work.
+            gh issue edit "$issue" -R "$REPO" --add-label agent-ready
+            gh issue comment "$issue" -R "$REPO" --body "Started automatically: #$merged_pr (item $item) was merged, and this is the next item in the milestone with an approved spec."
+            EVENT=issues  # from here on, exactly as if a person had added the label
+          elif [ "$EVENT" = "pull_request_review" ]; then
+            branch=$(jq -r .pull_request.head.ref "$GITHUB_EVENT_PATH")
+            pr=$(jq -r .pull_request.number "$GITHUB_EVENT_PATH")
+          elif [ "$(jq -r '.issue.pull_request != null' "$GITHUB_EVENT_PATH")" = "true" ]; then
+            pr=$(jq -r .issue.number "$GITHUB_EVENT_PATH")  # a /revise comment on a PR
+            branch=$(gh api "repos/$REPO/pulls/$pr" --jq .head.ref)
+            case "$branch" in
+              agent/*) ;;
+              *) echo "action=none" >> "$GITHUB_OUTPUT"; echo "#$pr is not an agent pull request."; exit 0 ;;
+            esac
+          fi
+          if [ -n "$pr" ]; then
+            issue=$(echo "$branch" | sed -E 's#^agent/([0-9]+)-.*#\1#')
+            action=revise
+          elif [ -z "$issue" ]; then
+            issue=$(jq -r .issue.number "$GITHUB_EVENT_PATH")
+          fi
+          labels=",$(gh api "repos/$REPO/issues/$issue/labels" --jq '[.[].name] | join(",")'),"
+
+          tier=$(echo "$labels" | tr ',' '\n' | sed -n 's/^forecast://p' | head -1)
+          tier=${tier:-T2}
+          if [ "$EVENT" = "issues" ]; then
+            case " $PLAN_TIERS " in *" $tier "*) action=plan ;; *) action=build ;; esac
+          elif [ "$EVENT" = "issue_comment" ] && [ -z "$pr" ]; then
+            if ! echo "$labels" | grep -q ',plan-proposed,'; then
+              echo "action=none" >> "$GITHUB_OUTPUT"; echo "No plan is waiting on #$issue."; exit 0
+            fi
+            action=build
+          fi
+          if [ -n "$pr" ]; then  # a revision follows the PR's actual tier, if a governance layer set one
+            prtier=$(gh api "repos/$REPO/issues/$pr/labels" --jq '.[].name' | sed -n 's/^tier://p' | head -1)
+            tier=${prtier:-$tier}
+          fi
+
+          model=$IMPLEMENT_MODEL
+          echo "$labels" | grep -q ',model:sonnet,' && model=$SONNET_MODEL
+          case "$tier" in T0) turns=$TURNS_T0 ;; T1) turns=$TURNS_T1 ;; T2) turns=$TURNS_T2 ;; *) turns=$TURNS_T3 ;; esac
+          # Tiers measure risk, not size: a big low-risk issue gets TURNS_PER_POINT turns a story
+          # point. The limit is a ceiling: a run stops when it is done, and the daily cap bounds the spend.
+          points=$(echo "$labels" | tr ',' '\n' | sed -n 's/^points:\([0-9][0-9]*\)$/\1/p' | head -1)
+          if [ -n "$points" ] && [ $((points * TURNS_PER_POINT)) -gt "$turns" ]; then turns=$((points * TURNS_PER_POINT)); fi
+          # A `turns:N` label on the issue overrides the rule for that issue (1 to TURNS_MAX).
+          override=$(echo "$labels" | tr ',' '\n' | sed -n 's/^turns:\([0-9][0-9]*\)$/\1/p' | head -1)
+          if [ -n "$override" ] && [ "$override" -ge 1 ]; then turns=$override; fi
+          [ "$turns" -gt "$TURNS_MAX" ] && turns=$TURNS_MAX
+          [ "$action" = "plan" ] && turns=$PLAN_TURNS
+
+          if [ "$action" != "revise" ]; then
+            title=$(gh api "repos/$REPO/issues/$issue" --jq .title)
+            slug=$(echo "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-40)
+            branch="agent/$issue-$slug"
+          fi
+          {
+            echo "action=$action"; echo "issue=$issue"; echo "pr=$pr"; echo "tier=$tier"
+            echo "model=$model"; echo "turns=$turns"; echo "branch=$branch"
+          } >> "$GITHUB_OUTPUT"
+          echo "$action #$issue at $tier with $model ($turns turns) on $branch"
+
+      - name: Check today's spend
+        id: cap
+        if: steps.route.outputs.action != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ steps.route.outputs.issue }}
+        run: |
+          set -euo pipefail
+          since=$(date -u +%Y-%m-%dT00:00:00Z)
+          spent=$(gh api --paginate "repos/$REPO/issues/comments?since=$since&per_page=100" \
+              --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
+            | { grep -oE "<!-- ($RUN_MARKER|$REVIEW_MARKER) \{[^}]*\} -->" || true; } \
+            | sed -E 's/.*"cost_usd":([0-9.]+).*/\1/' \
+            | awk '{s += $1} END {printf "%.2f", s + 0}')
+          echo "Spent today: \$$spent of \$$DAILY_CAP_USD"
+          if awk "BEGIN {exit !($spent >= $DAILY_CAP_USD)}"; then
+            gh issue comment "$ISSUE" -R "$REPO" --body "The agents' daily budget is used up (\$$spent of \$$DAILY_CAP_USD today), so this run did not start. Remove and re-add \`agent-ready\` tomorrow to retry."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: App token
+        id: app
+        if: steps.cap.outputs.go == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Check out
+        if: steps.cap.outputs.go == 'true'
+        uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app.outputs.token }}
+          ref: ${{ steps.route.outputs.action == 'revise' && steps.route.outputs.branch || github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false  # the agent can commit but not push; this workflow pushes
+
+      - name: Prepare the branch and the prompt
+        id: prompt
+        if: steps.cap.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ACTION: ${{ steps.route.outputs.action }}
+          ISSUE: ${{ steps.route.outputs.issue }}
+          PR: ${{ steps.route.outputs.pr }}
+          BRANCH: ${{ steps.route.outputs.branch }}
+          SLUG: ${{ steps.app.outputs.app-slug }}
+          EVENT: ${{ github.event_name }}
+          NOTE: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          bot="${SLUG}[bot]"
+          bot_id=$(gh api "users/$bot" --jq .id)
+          git config user.name "$bot"
+          git config user.email "${bot_id}+${bot}@users.noreply.github.com"
+          { echo "bot_name=$bot"; echo "bot_id=$bot_id"; } >> "$GITHUB_OUTPUT"
+          [ "$ACTION" = "build" ] && git checkout -b "$BRANCH"
+
+          issue_text=$(gh issue view "$ISSUE" -R "$REPO" --json title,body --jq '"# \(.title)\n\n\(.body)"')
+          {
+            echo "text<<PROMPT_END"
+            case "$ACTION" in
+              plan)
+                echo "You are planning GitHub issue #$ISSUE. Do not change any files."
+                echo "Read CLAUDE.md and the code you need, then return a short implementation plan:"
+                echo "the files you will create or change, the tests you will add, and any risk or"
+                echo "question for the reviewer. Keep it under 300 words."
+                ;;
+              build)
+                echo "Implement GitHub issue #$ISSUE on the current branch ($BRANCH), following CLAUDE.md."
+                echo "Commit your work with Conventional Commits messages. Do not push."
+                echo "Commit after each step that works (at least every 10 turns or so): you have a turn"
+                echo "limit, and a run that stops keeps only what it has committed."
+                echo "Run the relevant tests before you finish and report honestly whether they pass."
+                plan=$(gh api "repos/$REPO/issues/$ISSUE/comments" \
+                  --jq '[.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("## Plan"))] | last | .body // ""')
+                if [ -n "$plan" ]; then echo; echo "The approved plan:"; echo "$plan"; fi
+                # Anything the approver wrote after /approve-plan answers the plan's questions.
+                answers=""
+                [ "$EVENT" = "issue_comment" ] && answers=$(printf '%s' "${NOTE#/approve-plan}" | sed -e 's/^[[:space:]]*//')
+                if [ -n "$answers" ]; then
+                  echo; echo "The approver's answers to the plan's questions (they override the plan where they differ):"
+                  printf '%s\n' "$answers"
+                fi
+                ;;
+              revise)
+                echo "Revise pull request #$PR (issue #$ISSUE) on the current branch ($BRANCH),"
+                echo "following CLAUDE.md. Address the review below, commit, and do not push."
+                echo "Run the relevant tests before you finish and report honestly whether they pass."
+                echo "If the branch conflicts with main, run git merge origin/main, resolve every conflict"
+                echo "so that both sides' changes are kept, and commit the merge. If the pull request is an"
+                echo "unfinished draft (an earlier run stopped early), carry on until the issue is done."
+                if [ "$EVENT" = "issue_comment" ]; then
+                  echo; echo "The request:"; printf '%s\n' "${NOTE#/revise}"
+                else
+                  echo; echo "The review:"
+                  gh api "repos/$REPO/pulls/$PR/reviews" --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | last | .body // ""'
+                  gh api "repos/$REPO/pulls/$PR/comments" --jq '.[] | "- \(.path):\(.line // .original_line) \(.body)"'
+                fi
+                ;;
+            esac
+            echo; echo "The issue:"; echo "$issue_text"
+            echo "PROMPT_END"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$ACTION" = "plan" ]; then
+            echo 'schema={"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"]}' >> "$GITHUB_OUTPUT"
+            echo 'tools=Read,Glob,Grep' >> "$GITHUB_OUTPUT"
+          else
+            echo 'schema={"type":"object","properties":{"summary":{"type":"string"},"tests_passed":{"type":"boolean"},"follow_ups":{"type":"array","items":{"type":"string"}}},"required":["summary","tests_passed","follow_ups"]}' >> "$GITHUB_OUTPUT"
+            echo 'tools=Bash,Read,Edit,Write,Glob,Grep' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Agent
+        id: agent
+        if: steps.cap.outputs.go == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ steps.app.outputs.token }}
+          # Commits are the builder app's, not the action's default claude[bot].
+          bot_name: ${{ steps.prompt.outputs.bot_name }}
+          bot_id: ${{ steps.prompt.outputs.bot_id }}
+          # An auto-merge (by the builder app, a bot) starts the next item. Who may start a run is
+          # already decided above: write access, or a merge that passed main's requirements.
+          allowed_bots: "*"
+          # No attribution lines in commits or PR text (CLAUDE.md). `attribution` is the current
+          # setting; `includeCoAuthoredBy` is its older name, kept for older Claude Code versions.
+          settings: '{"attribution": {"commit": "", "pr": ""}, "includeCoAuthoredBy": false}'
+          prompt: ${{ steps.prompt.outputs.text }}
+          claude_args: >-
+            --model ${{ steps.route.outputs.model }}
+            --max-turns ${{ steps.route.outputs.turns }}
+            --allowedTools "${{ steps.prompt.outputs.tools }}"
+            --json-schema '${{ steps.prompt.outputs.schema }}'
+
+      - name: Post the plan
+        if: steps.route.outputs.action == 'plan' && steps.agent.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ steps.route.outputs.issue }}
+          RESULT: ${{ steps.agent.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          plan=$(echo "$RESULT" | jq -r '.plan')
+          # shellcheck disable=SC2016  # literal $ and backticks in Markdown
+          printf '## Plan\n\n%s\n\nReply `/approve-plan` to build it (add your answers to any questions after the command, in the same comment), or comment with changes and re-add `agent-ready`.\n' "$plan" \
+            | gh issue comment "$ISSUE" -R "$REPO" --body-file -
+          gh issue edit "$ISSUE" -R "$REPO" --add-label plan-proposed
+
+      - name: Push and open the pull request
+        id: push
+        # Also after a failed run (a turn limit, say): its commits are kept on a draft PR, and
+        # `/revise continue` carries on from there instead of starting over.
+        # (!cancelled() is needed: without a status function, GitHub skips a step after a failure.)
+        if: >-
+          !cancelled() && steps.route.outputs.action != 'plan' &&
+          (steps.agent.outcome == 'success' || steps.agent.outcome == 'failure')
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          ACTION: ${{ steps.route.outputs.action }}
+          ISSUE: ${{ steps.route.outputs.issue }}
+          PR: ${{ steps.route.outputs.pr }}
+          BRANCH: ${{ steps.route.outputs.branch }}
+          TIER: ${{ steps.route.outputs.tier }}
+          OUTCOME: ${{ steps.agent.outcome }}
+          RESULT: ${{ steps.agent.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          # A run that stopped early (a turn limit, say) keeps its uncommitted edits too, as one
+          # work-in-progress commit on the draft PR. .gitignore keeps secrets and build output out.
+          if [ "$OUTCOME" != "success" ] && [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -q -m "wip: unfinished work when the run stopped (#$ISSUE)"
+            echo "Saved the agent's uncommitted edits as a work-in-progress commit."
+          fi
+          if [ -z "$(git log "origin/${{ github.event.repository.default_branch }}..HEAD" --oneline)" ] && [ "$ACTION" = "build" ]; then
+            echo "pushed=false" >> "$GITHUB_OUTPUT"; echo "The agent made no commits."; exit 0
+          fi
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/$BRANCH"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          if [ "$ACTION" = "revise" ] && [ "$OUTCOME" = "success" ] \
+            && [ "$(gh pr view "$PR" -R "$REPO" --json isDraft --jq .isDraft)" = "true" ]; then
+            gh pr ready "$PR" -R "$REPO"  # an unfinished draft is now finished
+            gh pr merge "$PR" -R "$REPO" --auto --merge \
+              || echo "Auto-merge not enabled (is 'Allow auto-merge' on in the repository?)"
+          fi
+          if [ "$ACTION" = "revise" ] && [ "$OUTCOME" = "success" ]; then
+            # Keep the description true after a revision: a note at the top says it was revised,
+            # and "Revisions" at the end lists each one (date, commit, the agent's summary), so a
+            # reviewer never takes the original description for the current state.
+            note='> **Revised after this description was written.** Each revision is listed under "Revisions" at the end; where they differ from the text above, the revisions and the commits are current.'
+            body=$(gh pr view "$PR" -R "$REPO" --json body --jq .body) || body=""
+            summary=$(echo "$RESULT" | jq -r '.summary // "(no summary)"' 2>/dev/null | sed '2,$s/^/  /') || summary="(no summary)"
+            case "$body" in *"$note"*) ;; *) body=$(printf '%s\n\n%s' "$note" "$body") ;; esac
+            case "$body" in *"## Revisions"*) ;; *) body=$(printf '%s\n\n## Revisions' "$body") ;; esac
+            body=$(printf '%s\n\n- **%s (commit %s):** %s' "$body" "$(date -u +%Y-%m-%d)" "$(git rev-parse --short HEAD)" "$summary")
+            printf '%s\n' "$body" > pr-body.md
+            gh pr edit "$PR" -R "$REPO" --body-file pr-body.md || echo "Couldn't update the PR description."
+          fi
+          if [ "$ACTION" = "build" ] && [ "$OUTCOME" != "success" ]; then
+            title=$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)
+            # shellcheck disable=SC2016  # literal backticks in Markdown
+            printf 'Closes #%s\n\n**Unfinished.** The agent stopped before it was done (the reason is in the run record on the issue). Its commits so far are here. Comment `/revise continue` to let it carry on; it marks this ready for review when it finishes.\n' "$ISSUE" > pr-body.md
+            url=$(gh pr create -R "$REPO" --draft --base "${{ github.event.repository.default_branch }}" --head "$BRANCH" \
+              --title "$title" --body-file pr-body.md --label "forecast:$TIER")
+            echo "pr=${url##*/}" >> "$GITHUB_OUTPUT"
+          elif [ "$ACTION" = "build" ]; then
+            title=$(gh issue view "$ISSUE" -R "$REPO" --json title --jq .title)
+            {
+              echo "Closes #$ISSUE"; echo
+              echo "$RESULT" | jq -r '.summary'; echo
+              echo "**Tests passing (agent's report):** $(echo "$RESULT" | jq -r '.tests_passed')"
+              follow=$(echo "$RESULT" | jq -r '.follow_ups[]? | "- \(.)"')
+              if [ -n "$follow" ]; then echo; echo "**Follow-ups suggested:**"; echo "$follow"; fi
+            } > pr-body.md
+            url=$(gh pr create -R "$REPO" --base "${{ github.event.repository.default_branch }}" --head "$BRANCH" \
+              --title "$title" --body-file pr-body.md --label "forecast:$TIER")
+            echo "pr=${url##*/}" >> "$GITHUB_OUTPUT"
+            # Auto-merge: GitHub merges this once every requirement on main is met (CI and, while
+            # the ruleset asks for it, the owner's approval).
+            gh pr merge "$url" -R "$REPO" --auto --merge \
+              || echo "Auto-merge not enabled (is 'Allow auto-merge' on in the repository?)"
+            gh issue edit "$ISSUE" -R "$REPO" --remove-label plan-proposed --add-label plan-approved || true
+          fi
+
+      - name: Record the run
+        if: always() && steps.cap.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ACTION: ${{ steps.route.outputs.action }}
+          ISSUE: ${{ steps.route.outputs.issue }}
+          PR: ${{ steps.push.outputs.pr || steps.route.outputs.pr }}
+          TIER: ${{ steps.route.outputs.tier }}
+          MODEL: ${{ steps.route.outputs.model }}
+          OUTCOME: ${{ steps.agent.outcome }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+          FILE: ${{ steps.agent.outputs.execution_file }}
+          RESULT: ${{ steps.agent.outputs.structured_output }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          # The agent may finish while its push fails: most often someone pushed to the same
+          # branch during the run (a /revise posted just before a push). Nothing was saved then,
+          # so the run counts as a failure and says so, never "pushed".
+          pushfail=""
+          if [ "${PUSH_OUTCOME:-}" = "failure" ]; then
+            OUTCOME=failure
+            pushfail="its changes could not be pushed (the branch changed during the run, or the push was refused), so nothing from this run was saved"
+          fi
+          r='{}'
+          if [ -n "${FILE:-}" ] && [ -f "$FILE" ]; then
+            r=$(jq -c 'if type == "array" then ([.[] | select(.type == "result")] | last // {}) else {} end' "$FILE" 2>/dev/null || echo '{}')
+          fi
+          res="${RESULT:-}"; [ -z "$res" ] && res='{}'
+          tests=$(echo "$res" | jq -r '.tests_passed // "n/a"' 2>/dev/null || echo "n/a")
+          # On a failure, the reason Claude Code gave (an API error, a turn limit...). Only this
+          # line is published, never the full output. Braces, quotes and "--" are replaced so the
+          # machine-readable record below stays parseable.
+          why=""
+          if [ "$OUTCOME" != "success" ]; then
+            why=$(echo "$r" | jq -r 'if .is_error then ((.result // .subtype // "") | tostring) else "" end' 2>/dev/null || true)
+            [ -z "$why" ] && [ "$r" = "{}" ] && why="the agent did not start: no result was recorded"
+            [ -n "$pushfail" ] && why="$pushfail"
+            why=$(printf '%s' "$why" | tr '\n\r{}"' '  ()'"'" | sed 's/--/-/g' | cut -c1-240)
+          fi
+          record=$(jq -nc --argjson r "$r" \
+            --arg run "$RUN_ID" --arg action "$ACTION" --arg issue "$ISSUE" --arg pr "$PR" \
+            --arg tier "$TIER" --arg model "$MODEL" --arg outcome "$OUTCOME" --arg tests "$tests" \
+            --arg why "$why" '{
+              run: $run, action: $action, issue: ($issue | tonumber), pr: $pr, tier: $tier,
+              model: $model, outcome: $outcome, tests_passed: $tests, error: $why,
+              turns: ($r.num_turns // 0),
+              input_tokens: ($r.usage.input_tokens // 0),
+              output_tokens: ($r.usage.output_tokens // 0),
+              cache_read_tokens: ($r.usage.cache_read_input_tokens // 0),
+              cache_write_tokens: ($r.usage.cache_creation_input_tokens // 0),
+              cost_usd: (($r.total_cost_usd // 0) * 10000 | round / 10000)}')
+          cost=$(printf '%.2f' "$(echo "$record" | jq -r '.cost_usd')"); turns=$(echo "$record" | jq -r '.turns')
+          reason=""
+          [ -n "$why" ] && reason=$(printf '\n\n**Why it stopped:** %s' "$why")
+          # A build that "succeeds" without a pull request chose not to change anything (a
+          # dependency not merged yet, say): say so, with the agent's own reason.
+          if [ "$ACTION" = "build" ] && [ "$OUTCOME" = "success" ] && [ -z "$PR" ]; then
+            said=$(echo "$res" | jq -r '.summary // ""' 2>/dev/null | tr '\n\r' '  ' | sed 's/<!--//g' | cut -c1-600)
+            reason=$(printf '\n\n**No pull request: the agent made no changes.** It said: %s' "${said:-nothing}")
+          fi
+          # shellcheck disable=SC2016  # literal $ and backticks in Markdown
+          printf 'Agent run (%s, `%s`, %s): %s turns, $%s. [Run log](%s/%s/actions/runs/%s)%s\n\n<!-- %s %s -->\n' \
+            "$ACTION" "$MODEL" "$OUTCOME" "$turns" "$cost" "$GITHUB_SERVER_URL" "$REPO" "$RUN_ID" "$reason" "$RUN_MARKER" "$record" \
+            | gh issue comment "$ISSUE" -R "$REPO" --body-file -
+
+          # A revision also says on its pull request when it is finished, so the person deciding
+          # whether to merge doesn't have to look for the record on the issue.
+          if [ "$ACTION" = "revise" ] && [ -n "$PR" ]; then
+            if [ -n "$pushfail" ]; then
+              note="**Revision not saved.** The branch changed while the agent was working (or the push was refused), so none of this run's changes are on the pull request ($turns turns, \$$cost). Comment \`/revise\` again with the same request to redo it, and avoid pushing to the branch while it runs."
+            elif [ "$OUTCOME" = "success" ] && [ "$tests" != "false" ]; then
+              note="**Revision finished.** The agent's changes are pushed to this pull request ($turns turns, \$$cost). Merge once CI is green and you're happy with them."
+            elif [ "$OUTCOME" = "success" ]; then
+              note="**Revision finished, but the agent reports failing tests** ($turns turns, \$$cost). Check CI before merging, or comment \`/revise\` with what to fix."
+            else
+              note="**Revision stopped before it finished** ($OUTCOME${why:+: $why}). Anything it committed is on this branch. Comment \`/revise continue\` to carry on."
+            fi
+            gh pr comment "$PR" -R "$REPO" --body "$note [Run log]($GITHUB_SERVER_URL/$REPO/actions/runs/$RUN_ID)" || true
+          fi
+
+          if [ "$OUTCOME" = "success" ] && [ "$tests" != "false" ]; then
+            # A later run that works clears an earlier failure's flag.
+            gh issue edit "$ISSUE" -R "$REPO" --remove-label needs-human 2>/dev/null || true
+          fi
+          if [ "$OUTCOME" != "success" ] || [ "$tests" = "false" ]; then
+            gh issue edit "$ISSUE" -R "$REPO" --add-label needs-human || true
+          fi
