@@ -18,10 +18,19 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`ci.yml`** (arrives with item 1.1): the CI workflow. Its jobs must be named exactly
-  `API (lint + tests)`, `API (migrations on MySQL)` and `Web (tests + build)`.
+- **`ci.yml`** (item 1.1, ready to apply): the CI workflow, run on every pull request and on
+  pushes to `main`. Its three jobs are named exactly `API (lint + tests)`,
+  `API (migrations on MySQL)` and `Web (tests + build)`. To apply it:
+  1. Copy `ci/proposed/ci.yml` to `.github/workflows/ci.yml` on a `non-phase-work-ci` branch and
+     delete the copy here in the same change.
+  2. In the `main` ruleset, add those three job names as required status checks.
+  3. Open the pull request, confirm all three checks report green, and merge it.
+
+  The MySQL job uses a throwaway `mysql:8.4` service container with an empty root password, so
+  the workflow needs no secrets.
 - **`policies/`** (arrives with item 1.4): the first real `tiers.yaml`, `risk.yaml`,
-  `gates.yaml` and `approvers.yaml`.
+  `gates.yaml` and `approvers.yaml`. `ci/proposed/policies/` holds them until a person moves them
+  to `policies/` at the repository root.
 
 ## Applied
 
