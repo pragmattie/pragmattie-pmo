@@ -18,11 +18,6 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`ci.yml`** (item 1.2): copy over `.github/workflows/ci.yml` in the same sitting as merging
-  item 1.2. Settings lost their `PMO_` prefix, so the current workflow's `PMO_DATABASE_URL` is
-  no longer read and the `API (migrations on MySQL)` job fails until this is applied. The MySQL
-  job now sets `APP_ENV=test` (no JWT secret needed) and adds `python -m app.dbcheck` and
-  `alembic check`. Job names are unchanged, so the required checks need no update.
 - **`policies/`** (arrives with item 1.4): the first real `tiers.yaml`, `risk.yaml`,
   `gates.yaml` and `approvers.yaml`. `ci/proposed/policies/` holds them until a person moves them
   to `policies/` at the repository root (the folder exists, with a `.gitkeep`).
@@ -34,6 +29,11 @@ Nothing in this folder runs automatically.
   are required checks in the `main` ruleset. The MySQL job uses a throwaway `mysql:8.4` service
   container with an empty root password, so the workflow needs no secrets. To change CI, an agent
   writes the new version here and a person applies it over the existing file.
+- **`ci.yml`** (item 1.2): applied over `.github/workflows/ci.yml` as a commit on the item's own
+  branch, so its pull request was tested against the CI it was built for (a separate pull request
+  would have failed: `main` had no `app.dbcheck` yet). Settings lost their `PMO_` prefix; the
+  MySQL job sets `APP_ENV=test` (no JWT secret needed) and adds `python -m app.dbcheck` and
+  `alembic check`. Job names are unchanged, so the required checks needed no update.
 - Bootstrap (by hand, with Claude): `implement.yml`, `review.yml`, the issue template and
   `CLAUDE.md`, ported from the earlier agentic rebuild with its hardcoded values turned into
   repository variables. They replace the workflow part of item 1.7.
