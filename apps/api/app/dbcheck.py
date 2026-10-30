@@ -4,6 +4,7 @@ Prints the server version and whether the connection uses TLS. It never prints t
 credential, and an unreachable server gives a short message and exit code 1, not a traceback.
 """
 
+import ssl
 import sys
 
 from pydantic import ValidationError
@@ -32,6 +33,14 @@ def run(settings: Settings) -> int:
         with engine.connect() as conn:
             version, tls = _version_and_tls(conn)
     except DBAPIError as exc:
+        # PyMySQL keeps the socket-level cause on the error it raises.
+        if isinstance(getattr(exc.orig, "original_exception", None), ssl.SSLError):
+            print(
+                "TLS failed: the server certificate could not be verified against "
+                "DATABASE_CA_CERT. Check the certificate and the host name.",
+                file=sys.stderr,
+            )
+            return 1
         code = exc.orig.args[0] if exc.orig is not None and exc.orig.args else None
         detail = f" (driver error {code})" if isinstance(code, int) else ""
         print(

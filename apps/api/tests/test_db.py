@@ -95,3 +95,26 @@ def test_dbcheck_reports_incomplete_settings_without_traceback(tmp_path):
     assert "JWT_SECRET" in output
     assert "Traceback" not in output
     assert "s3cret-pw" not in output
+
+
+def test_dbcheck_reports_a_tls_verification_failure(monkeypatch, capsys):
+    import ssl
+
+    import pymysql
+    from sqlalchemy.exc import OperationalError
+
+    driver_error = pymysql.err.OperationalError(2003, "Can't connect to MySQL server")
+    driver_error.original_exception = ssl.SSLCertVerificationError("certificate verify failed")
+
+    class _Engine:
+        def connect(self):
+            raise OperationalError("connect", {}, driver_error)
+
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr("app.db.make_engine", lambda settings: _Engine())
+    assert dbcheck.run(_settings(database_url=MYSQL_URL, database_ca_cert=PEM)) == 1
+    err = capsys.readouterr().err
+    assert "TLS failed" in err
+    assert "mysql+pymysql" not in err
