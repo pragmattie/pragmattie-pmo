@@ -18,6 +18,11 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
+- **`ci.yml`** (item 1.2): copy over `.github/workflows/ci.yml` in the same sitting as merging
+  item 1.2. Settings lost their `PMO_` prefix, so the current workflow's `PMO_DATABASE_URL` is
+  no longer read and the `API (migrations on MySQL)` job fails until this is applied. The MySQL
+  job now sets `APP_ENV=test` (no JWT secret needed) and adds `python -m app.dbcheck` and
+  `alembic check`. Job names are unchanged, so the required checks need no update.
 - **`policies/`** (arrives with item 1.4): the first real `tiers.yaml`, `risk.yaml`,
   `gates.yaml` and `approvers.yaml`. `ci/proposed/policies/` holds them until a person moves them
   to `policies/` at the repository root (the folder exists, with a `.gitkeep`).
