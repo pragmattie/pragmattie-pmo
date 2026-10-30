@@ -1,0 +1,21 @@
+[project]
+name = "pragmattie-pmo-api"
+version = "0.1.0"
+description = "PragMattie PMO API"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.ruff.lint.isort]
+# The local alembic/ folder holds migrations; the package of that name is third-party.
+known-third-party = ["alembic"]
