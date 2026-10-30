@@ -20,8 +20,18 @@ services:
 
   api:
     build: ./apps/api
+    # The API builds the database URL from these parts and URL-encodes the password.
     environment:
-      PMO_DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE:-pragmattie_pmo}
+      APP_ENV: dev
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      DB_NAME: ${MYSQL_DATABASE:-pragmattie_pmo}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_MODE: ${AGENT_MODE:-off}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"

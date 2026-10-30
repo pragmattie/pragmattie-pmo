@@ -1,4 +1,6 @@
-# Proposed CI workflow for item 1.1. A person copies it to .github/workflows/ci.yml.
+# Proposed CI workflow for item 1.2. A person copies it over .github/workflows/ci.yml.
+# Changes from 1.1: settings drop the PMO_ prefix (DATABASE_URL), the MySQL job sets
+# APP_ENV=test so it needs no JWT secret, and it runs `alembic check` and `python -m app.dbcheck`.
 # The job names are the main ruleset's required checks: do not rename them.
 name: CI
 
@@ -51,7 +53,9 @@ jobs:
           --health-timeout=5s
           --health-retries=30
     env:
-      PMO_DATABASE_URL: mysql+pymysql://root@127.0.0.1:3306/pragmattie_pmo
+      # APP_ENV=test: migrations need no JWT secret, and the workflow stays secret-free.
+      APP_ENV: test
+      DATABASE_URL: mysql+pymysql://root@127.0.0.1:3306/pragmattie_pmo
     defaults:
       run:
         working-directory: apps/api
@@ -63,7 +67,9 @@ jobs:
           cache: pip
           cache-dependency-path: apps/api/requirements.txt
       - run: pip install -r requirements.txt
+      - run: python -m app.dbcheck
       - run: alembic upgrade head
+      - run: alembic check
       - run: alembic downgrade base
       - run: alembic upgrade head
 
