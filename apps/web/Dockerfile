@@ -2,11 +2,12 @@
 FROM node:24-slim
 
 WORKDIR /app
-COPY package.json package-lock.json ./
+RUN chown node:node /app
+USER node
+COPY --chown=node:node package.json package-lock.json ./
 RUN npm ci
 
-COPY . .
+COPY --chown=node:node . .
 
-USER node
 EXPOSE 5173
 CMD ["npm", "run", "dev"]
