@@ -18,22 +18,17 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`ci.yml`** (item 1.1, ready to apply): the CI workflow, run on every pull request and on
-  pushes to `main`. Its three jobs are named exactly `API (lint + tests)`,
-  `API (migrations on MySQL)` and `Web (tests + build)`. To apply it:
-  1. Copy `ci/proposed/ci.yml` to `.github/workflows/ci.yml` on a `non-phase-work-ci` branch and
-     delete the copy here in the same change.
-  2. In the `main` ruleset, add those three job names as required status checks.
-  3. Open the pull request, confirm all three checks report green, and merge it.
-
-  The MySQL job uses a throwaway `mysql:8.4` service container with an empty root password, so
-  the workflow needs no secrets.
 - **`policies/`** (arrives with item 1.4): the first real `tiers.yaml`, `risk.yaml`,
   `gates.yaml` and `approvers.yaml`. `ci/proposed/policies/` holds them until a person moves them
-  to `policies/` at the repository root.
+  to `policies/` at the repository root (the folder exists, with a `.gitkeep`).
 
 ## Applied
 
+- **`ci.yml`** (item 1.1): applied as `.github/workflows/ci.yml` and the copy here deleted. Its
+  three jobs are `API (lint + tests)`, `API (migrations on MySQL)` and `Web (tests + build)`, and
+  are required checks in the `main` ruleset. The MySQL job uses a throwaway `mysql:8.4` service
+  container with an empty root password, so the workflow needs no secrets. To change CI, an agent
+  writes the new version here and a person applies it over the existing file.
 - Bootstrap (by hand, with Claude): `implement.yml`, `review.yml`, the issue template and
   `CLAUDE.md`, ported from the earlier agentic rebuild with its hardcoded values turned into
   repository variables. They replace the workflow part of item 1.7.
