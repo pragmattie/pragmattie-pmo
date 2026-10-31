@@ -1,11 +1,22 @@
 """API shape of an audit row."""
 
 from datetime import datetime
-from typing import Any
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 
 from app.schemas.common import MoneyStr
+
+
+def _to_cents(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return value
+
+
+# Costs are stored to 6 places; the API shows them as money (a 2-decimal string).
+CostStr = Annotated[MoneyStr, BeforeValidator(_to_cents)]
 
 
 class AuditDecisionOut(BaseModel):
@@ -28,7 +39,7 @@ class AuditDecisionOut(BaseModel):
     prompt_version: str | None
     input_tokens: int | None
     output_tokens: int | None
-    cost_usd: MoneyStr | None
+    cost_usd: CostStr | None
     error: str | None
     supersedes_id: int | None
     actor_user_id: int | None

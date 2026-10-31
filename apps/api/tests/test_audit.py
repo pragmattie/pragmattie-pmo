@@ -106,15 +106,16 @@ def test_no_update_or_delete_is_exposed():
         assert call not in source
 
 
-def test_money_and_tokens_round_trip(db):
+def test_cost_is_stored_to_six_places_and_tokens_round_trip(db):
     row = record_decision(
         db,
-        **_fields(model="claude-opus-5-5", input_tokens=10, output_tokens=20, cost_usd="0.5"),
+        **_fields(model="claude-opus-5-5", input_tokens=10, output_tokens=20, cost_usd="0.012345"),
     )
     db.commit()
     db.expire_all()
     stored = db.get(AuditDecision, row.id)
-    assert stored.cost_usd == Decimal("0.50")
+    assert stored.cost_usd == Decimal("0.012345")
+    assert AuditDecision.__table__.c.cost_usd.type.scale == 6
     assert (stored.input_tokens, stored.output_tokens) == (10, 20)
 
 
@@ -181,6 +182,17 @@ def test_api_returns_a_page_with_money_as_a_string(db, client):
     page = client.get("/api/v1/audit", params={"limit": 2, "offset": 1, "tier": "T2"}).json()
     assert page["total"] == 4 and len(page["items"]) == 2
     assert page["items"][0]["cost_usd"] is None
+
+
+@pytest.mark.parametrize(
+    ("stored", "shown"),
+    [("0.004999", "0.00"), ("0.005000", "0.01"), ("1.234999", "1.23"), ("12.345678", "12.35")],
+)
+def test_api_shows_a_six_place_cost_as_two_decimals(db, client, stored, shown):
+    record_decision(db, **_fields(cost_usd=Decimal(stored)))
+    db.commit()
+    item = client.get("/api/v1/audit").json()["items"][0]
+    assert item["cost_usd"] == shown
 
 
 def test_api_validates_paging(db, client):
