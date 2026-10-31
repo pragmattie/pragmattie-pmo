@@ -40,7 +40,7 @@ def upgrade() -> None:
         sa.Column("prompt_version", sa.String(length=64), nullable=True),
         sa.Column("input_tokens", sa.Integer(), nullable=True),
         sa.Column("output_tokens", sa.Integer(), nullable=True),
-        sa.Column("cost_usd", sa.Numeric(precision=12, scale=2), nullable=True),
+        sa.Column("cost_usd", sa.Numeric(precision=12, scale=6), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
         sa.Column("supersedes_id", sa.Integer(), nullable=True),
         sa.Column("actor_user_id", sa.Integer(), nullable=True),

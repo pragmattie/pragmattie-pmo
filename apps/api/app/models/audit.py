@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -23,7 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.migrations_filter import table_name
-from app.models.base import Base, Money, utcnow
+from app.models.base import Base, utcnow
 
 AUDIT_TABLE = table_name("pmo_audit")
 
@@ -67,7 +68,8 @@ class AuditDecision(Base):
     prompt_version: Mapped[str | None] = mapped_column(String(64))
     input_tokens: Mapped[int | None]
     output_tokens: Mapped[int | None]
-    cost_usd: Mapped[Decimal | None] = mapped_column(Money)
+    # Per-call API costs are fractions of a cent, so they are stored to 6 places (not `Money`).
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6, asdecimal=True))
     error: Mapped[str | None] = mapped_column(Text)
     supersedes_id: Mapped[int | None] = mapped_column(
         ForeignKey(f"{AUDIT_TABLE}.id", name="fk_pmo_audit_supersedes"), index=True

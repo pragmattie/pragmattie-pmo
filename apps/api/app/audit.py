@@ -10,6 +10,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditDecision
+from app.schemas.common import paginate
 
 _FIELDS = frozenset(AuditDecision.__table__.columns.keys()) - {"id", "created_at"}
 
@@ -29,8 +30,7 @@ def record_decision(db: Session, **fields: Any) -> AuditDecision:
     return row
 
 
-def _filtered(
-    stmt: Select,
+def decisions_query(
     *,
     agent: str | None = None,
     subject_type: str | None = None,
@@ -38,6 +38,7 @@ def _filtered(
     status: str | None = None,
     tier: str | None = None,
 ) -> Select:
+    """Audit rows matching the given filters (unordered; page it with `ORDER_BY`)."""
     filters = {
         AuditDecision.agent: agent,
         AuditDecision.subject_type: subject_type,
@@ -45,6 +46,7 @@ def _filtered(
         AuditDecision.status: status,
         AuditDecision.tier: tier,
     }
+    stmt = select(AuditDecision)
     for column, value in filters.items():
         if value is not None:
             stmt = stmt.where(column == value)
@@ -54,9 +56,12 @@ def _filtered(
 def list_decisions(
     db: Session, *, limit: int, offset: int = 0, **filters: str | None
 ) -> list[AuditDecision]:
-    stmt = _filtered(select(AuditDecision), **filters)
-    return list(db.scalars(stmt.order_by(*ORDER_BY).limit(limit).offset(offset)))
+    rows, _ = paginate(
+        db, decisions_query(**filters), order_by=ORDER_BY, limit=limit, offset=offset
+    )
+    return rows
 
 
 def count_decisions(db: Session, **filters: str | None) -> int:
-    return db.scalar(_filtered(select(func.count(AuditDecision.id)), **filters)) or 0
+    stmt = decisions_query(**filters).subquery()
+    return db.scalar(select(func.count()).select_from(stmt)) or 0

@@ -5,10 +5,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.audit import count_decisions, list_decisions
+from app.audit import ORDER_BY, decisions_query
 from app.db import get_db
 from app.schemas.audit import AuditDecisionOut
-from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page
+from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
 
 router = APIRouter(tags=["audit"])
 
@@ -24,17 +24,13 @@ def get_audit(
     status: str | None = None,
     tier: str | None = None,
 ) -> Page[AuditDecisionOut]:
-    filters = {
-        "agent": agent,
-        "subject_type": subject_type,
-        "subject_id": subject_id,
-        "status": status,
-        "tier": tier,
-    }
-    rows = list_decisions(db, limit=limit, offset=offset, **filters)
+    stmt = decisions_query(
+        agent=agent, subject_type=subject_type, subject_id=subject_id, status=status, tier=tier
+    )
+    rows, total = paginate(db, stmt, order_by=ORDER_BY, limit=limit, offset=offset)
     return Page[AuditDecisionOut](
         items=[AuditDecisionOut.model_validate(row) for row in rows],
-        total=count_decisions(db, **filters),
+        total=total,
         limit=limit,
         offset=offset,
     )
