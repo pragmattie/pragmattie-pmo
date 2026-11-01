@@ -22,11 +22,19 @@ AGENT_MODES: tuple[AgentMode, ...] = get_args(AgentMode)
 TEST_DATABASE_URL = "sqlite:///./test.db"
 
 
-def _default_policies_dir() -> Path:
-    """`policies/` at the repository root (this file is `apps/api/app/config.py`). In a shallower
-    tree, such as the API image's `/app/app/config.py`, this resolves to `/policies`."""
+def _repo_root() -> Path:
+    """The repository root (this file is `apps/api/app/config.py`). In a shallower tree, such as
+    the API image's `/app/app/config.py`, this resolves to `/`."""
     parents = Path(__file__).resolve().parents
-    return parents[min(3, len(parents) - 1)] / "policies"
+    return parents[min(3, len(parents) - 1)]
+
+
+def _default_policies_dir() -> Path:
+    return _repo_root() / "policies"
+
+
+def _default_standards_map_path() -> Path:
+    return _repo_root() / "docs" / "standards-map.yaml"
 
 
 class Settings(BaseSettings):
@@ -54,6 +62,8 @@ class Settings(BaseSettings):
 
     # Governance policy files; read only by app/policy.py, on first use.
     policies_dir: Path = Field(default_factory=_default_policies_dir)
+    # Standards traceability map; read only by app/standards.py, on first use.
+    standards_map_path: Path = Field(default_factory=_default_standards_map_path)
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -18,7 +18,8 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-Nothing is waiting.
+- **`CLAUDE.md.standards-note.md`** (item 1.6): one bullet for `CLAUDE.md` restating the
+  no-quoting rule for `docs/standards-map.yaml`. Add it where the file says, then delete the file.
 
 ## Applied
 

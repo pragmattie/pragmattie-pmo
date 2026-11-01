@@ -378,7 +378,11 @@ def test_only_the_loader_reads_policy_files():
     for path in sorted((API_DIR / "app").rglob("*.py")):
         name = path.relative_to(API_DIR).as_posix()
         text = path.read_text()
-        if name != "app/policy.py" and re.search(r"yaml", text, re.IGNORECASE):
+        # app/standards.py reads the one other YAML file, the standards map (item 1.6); config.py
+        # names that file's default path.
+        yaml_text = text.replace("standards-map.yaml", "") if name == "app/config.py" else text
+        readers = ("app/policy.py", "app/standards.py")
+        if name not in readers and re.search(r"yaml", yaml_text, re.IGNORECASE):
             offenders.append(f"{name} mentions yaml")
         if name not in ("app/policy.py", "app/config.py") and "policies_dir" in text:
             offenders.append(f"{name} uses policies_dir")
