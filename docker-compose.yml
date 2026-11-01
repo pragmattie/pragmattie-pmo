@@ -32,6 +32,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AGENT_MODE: ${AGENT_MODE:-off}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      # Governance policies, mounted read-only from the repository root.
+      POLICIES_DIR: /policies
+    volumes:
+      - ./policies:/policies:ro
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"

@@ -18,9 +18,10 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`policies/`** (arrives with item 1.4): the first real `tiers.yaml`, `risk.yaml`,
-  `gates.yaml` and `approvers.yaml`. `ci/proposed/policies/` holds them until a person moves them
-  to `policies/` at the repository root (the folder exists, with a `.gitkeep`).
+- **`policies/`** (item 1.4): the first real `tiers.yaml`, `risk.yaml`, `gates.yaml` and
+  `approvers.yaml` are drafted in `ci/proposed/policies/`, with a README listing the decisions to
+  review and the apply steps. Until a person moves them to `policies/` at the repository root,
+  anything that asks for policies gets a `PolicyError` (the API still starts).
 
 ## Applied
 

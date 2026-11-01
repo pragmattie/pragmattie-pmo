@@ -1,0 +1,28 @@
+# Forecast tiers for agent work (the `forecast:Tn` issue label), and how many people must
+# approve the result. Drafted by an agent for item 1.4; a person applies it to policies/.
+version: 1
+
+# The tier a piece of work is treated as when its risk assessment fails or cannot be made.
+fallback_tier: T2
+
+# Tiers whose result may merge without a person. Empty while the repository owner approves
+# every pull request. T2 and T3 can never be listed here; the loader rejects them.
+auto_approved: []
+
+tiers:
+  T0:
+    description: Trivial and easily reversed, such as wording or a comment.
+    approvals_required: 1
+  T1:
+    description: Small, contained change with tests and no effect on data or security.
+    approvals_required: 1
+  T2:
+    description: >-
+      Change to data or shared behaviour. A person approves a plan before the build starts.
+    approvals_required: 1
+  T3:
+    description: >-
+      Wide, sensitive or hard-to-reverse change: authentication, roles, billing, schema
+      migrations on live data, or a governance rule. A plan is approved first, and two people
+      approve the result.
+    approvals_required: 2

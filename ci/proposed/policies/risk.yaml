@@ -1,0 +1,83 @@
+# Risk scales, objective thresholds and priority bands for the risk register.
+# Drafted by an agent for item 1.4 in its own words; a person reviews and applies it.
+#
+# A risk's score is probability x impact (1 to 25). Impact definitions describe the size of the
+# effect, so they fit threats (a loss) and opportunities (a gain) alike.
+version: 1
+
+probability:
+  1:
+    label: Very low
+    definition: Not expected to happen; roughly a 1 in 10 chance or less over the project.
+  2:
+    label: Low
+    definition: Could happen but is unlikely; roughly 10 to 30 percent.
+  3:
+    label: Medium
+    definition: About as likely to happen as not; roughly 30 to 50 percent.
+  4:
+    label: High
+    definition: More likely to happen than not; roughly 50 to 70 percent.
+  5:
+    label: Very high
+    definition: Expected to happen unless something changes; above 70 percent.
+
+impact:
+  1:
+    label: Very low
+    schedule: Dates move by under 2 percent; no milestone changes.
+    cost: Budget moves by under 2 percent.
+    quality: Barely noticeable change in a minor feature.
+  2:
+    label: Low
+    schedule: Dates move by 2 to 5 percent; milestones hold.
+    cost: Budget moves by 2 to 5 percent.
+    quality: A minor feature works better or worse; key functions are unaffected.
+  3:
+    label: Medium
+    schedule: Dates move by 5 to 10 percent; a milestone may move.
+    cost: Budget moves by 5 to 10 percent.
+    quality: A visible change in a key function that the sponsor needs to agree.
+  4:
+    label: High
+    schedule: Dates move by 10 to 20 percent, beyond the allowed variation.
+    cost: Budget moves by 10 to 20 percent, beyond the allowed variation.
+    quality: A key function is lost or gained; the sponsor must decide.
+  5:
+    label: Very high
+    schedule: Dates move by more than 20 percent; the plan needs rework.
+    cost: Budget moves by more than 20 percent; the business case needs review.
+    quality: The result no longer meets, or goes well past, what the client needs.
+
+# How far each objective may vary from plan before the variation itself must be escalated.
+# Risk appetite is expressed through these per-objective thresholds, in line with general project practice
+#, so there is no
+# separate appetite key.
+thresholds:
+  schedule:
+    allowed_variation_pct: 10
+    definition: The finish date may move up to 10 percent of planned duration either way.
+  cost:
+    allowed_variation_pct: 10
+    definition: Total cost may move up to 10 percent of the approved budget either way.
+  quality:
+    definition: No loss of key functions; any loss of a key function is outside threshold.
+
+# Priority bands by score, lowest first. Each band names the role a risk escalates to.
+priority_bands:
+  - name: Low
+    min_score: 1
+    max_score: 6
+    escalation_owner: project_manager
+  - name: Medium
+    min_score: 7
+    max_score: 12
+    escalation_owner: sponsor
+  - name: High
+    min_score: 13
+    max_score: 25
+    escalation_owner: sponsor
+
+# A floor on the band, whatever the score: any risk with impact 5 is at least Medium.
+minimum_band_by_impact:
+  5: Medium
