@@ -41,14 +41,11 @@ def _next_attempt(db: Session, subject_id: str) -> int:
     return (latest or 0) + 1
 
 
-def _other_active_admins(db: Session, user_id: int) -> int:
-    # Lock the admin rows (on MySQL) so two demotions at once can't both pass this check.
-    ids = db.scalars(
-        select(User.id)
-        .where(User.role == Role.ADMIN, User.is_active.is_(True), User.id != user_id)
-        .with_for_update()
-    ).all()
-    return len(ids)
+def _active_admin_ids(db: Session) -> set[int]:
+    """Every active admin. On MySQL the rows stay locked until commit, so when two admins demote
+    each other at once, the second waits, sees the first change and is refused."""
+    stmt = select(User.id).where(User.role == Role.ADMIN, User.is_active.is_(True))
+    return set(db.scalars(stmt.with_for_update()).all())
 
 
 @router.patch("/{user_id}/role", response_model=UserOut)
@@ -66,7 +63,7 @@ def change_role(
     old, new = target.role, body.role.value
     if old == new:
         return user_out(target)
-    if old == Role.ADMIN and target.is_active and _other_active_admins(db, target.id) == 0:
+    if old == Role.ADMIN and not _active_admin_ids(db) - {target.id}:
         raise HTTPException(status.HTTP_409_CONFLICT, LAST_ADMIN)
 
     target.role = new
