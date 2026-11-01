@@ -2,6 +2,15 @@
 
 Rows are never updated or deleted. A correction is a new row whose `supersedes_id` points at the
 row it corrects. `trigger` is a MySQL reserved word: SQLAlchemy quotes it, hand-written SQL must.
+
+Append-only is enforced in the ORM, below the application code: changing or deleting a loaded
+row, and a bulk `update()` or `delete()` on this table through any `Session`, raise
+`AppendOnlyError`. Raw SQL on a plain connection (and dropping the table, as tests do) can still
+bypass these guards; database triggers would close that gap but need privileges the hosted
+database does not grant, so they are left out for now.
+
+`actor_user_id` is the person who caused the row, set only when they have proved who they are
+(a signed-in action, a successful login or a logout).
 """
 
 from datetime import datetime
@@ -12,21 +21,25 @@ from sqlalchemy import (
     JSON,
     CheckConstraint,
     DateTime,
+    Delete,
     ForeignKey,
     Index,
     Numeric,
     String,
     Text,
     UniqueConstraint,
+    Update,
     column,
+    event,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, ORMExecuteState, Session, mapped_column
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.migrations_filter import table_name
 from app.models.base import Base, utcnow
 
 AUDIT_TABLE = table_name("pmo_audit")
+USERS_TABLE = table_name("users")
 
 TRIGGERS = ("agent", "human", "schedule", "trial")
 STATUSES = ("ok", "error", "rejected", "skipped")
@@ -74,6 +87,29 @@ class AuditDecision(Base):
     supersedes_id: Mapped[int | None] = mapped_column(
         ForeignKey(f"{AUDIT_TABLE}.id", name="fk_pmo_audit_supersedes"), index=True
     )
-    # The users table arrives in milestone P2; the foreign key is added then.
-    actor_user_id: Mapped[int | None]
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey(f"{USERS_TABLE}.id", name="fk_pmo_audit_actor_user"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AppendOnlyError(RuntimeError):
+    """An attempt to change or delete an audit row. Record a superseding row instead."""
+
+
+def _refuse(*_args: Any) -> None:
+    raise AppendOnlyError(f"{AUDIT_TABLE} is append-only: record a superseding row instead")
+
+
+event.listen(AuditDecision, "before_update", _refuse)
+event.listen(AuditDecision, "before_delete", _refuse)
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _refuse_bulk_changes(state: ORMExecuteState) -> None:
+    """Bulk `update()` and `delete()` skip the mapper hooks above, so refuse them here. Attached
+    to the `Session` class, so every session is covered, not just one sessionmaker's."""
+    statement = state.statement
+    # A mapped statement holds an annotated copy of the table, so match on the name.
+    if isinstance(statement, Update | Delete) and statement.table.name == AUDIT_TABLE:
+        _refuse()
