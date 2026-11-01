@@ -50,8 +50,9 @@ impact:
     quality: The result no longer meets, or goes well past, what the client needs.
 
 # How far each objective may vary from plan before the variation itself must be escalated.
-# Risk appetite is expressed through these per-objective thresholds, in line with general project practice, so
-# there is no separate appetite key.
+# Risk appetite is expressed through these per-objective thresholds, in line with general project practice
+#, so there is no
+# separate appetite key.
 thresholds:
   schedule:
     allowed_variation_pct: 10
