@@ -81,8 +81,10 @@ If this file and an issue disagree, stop and say so in your summary rather than 
 
 ## Security rules (login and roles arrive in milestone P2)
 
-- Every API route is guarded by an explicit permission, except `health` and `auth/login`. A test
-  fails the build for an unguarded route.
+- Every API route is guarded by an explicit permission, except `health`, `auth/login` and
+  `auth/logout`, which stays open so signing out is safe to repeat. FastAPI's docs routes are also
+  open, and are served only when `APP_ENV` is dev or test. A test fails the build for an unguarded
+  route.
 - Passwords are hashed with argon2id; plaintext never appears in logs, responses or audit rows.
 - Sessions are an httpOnly cookie plus a CSRF header on unsafe methods. Error messages for login are
   generic.
