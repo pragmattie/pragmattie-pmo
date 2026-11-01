@@ -11,13 +11,18 @@ anyway; expired rows are deleted on logout so the table stays small.
 from datetime import datetime
 
 from sqlalchemy import DateTime, Index, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.migrations_filter import table_name
 from app.models.base import Base, utcnow
 
 USERS_TABLE = table_name("users")
 REVOKED_TOKENS_TABLE = table_name("revoked_tokens")
+
+
+def normalize_email(value: str) -> str:
+    """Emails are stored and compared in lower case, without surrounding spaces."""
+    return value.strip().lower()
 
 
 class User(Base):
@@ -34,6 +39,10 @@ class User(Base):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    @validates("email")
+    def _lower_email(self, _key: str, value: str) -> str:
+        return normalize_email(value)
 
     def __repr__(self) -> str:
         # Never include the password hash.
