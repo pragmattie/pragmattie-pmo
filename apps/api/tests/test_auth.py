@@ -608,6 +608,31 @@ def test_a_new_login_revokes_the_session_it_replaces(web, user, db):
     assert web.get(ME).status_code == 200
 
 
+def test_a_login_survives_a_parallel_revocation_of_the_old_session(web, user, db, monkeypatch):
+    _login(web)
+    old = jwt.decode(web.cookies[SESSION_COOKIE], options={"verify_signature": False})
+    _fail_times(web, 2)
+    # Another request revokes the same session first, but this login still sees it as live (as
+    # two MySQL transactions can), so its own revocation hits the primary key.
+    db.add(RevokedToken(jti=old["jti"], expires_at=datetime.fromtimestamp(old["exp"], UTC)))
+    db.commit()
+    real_get = Session.get
+
+    def stale_get(self, entity, ident, *args, **kwargs):
+        if entity is RevokedToken:
+            return None
+        return real_get(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "get", stale_get)
+    response = _login(web)
+    assert response.status_code == 200
+    assert response.json()["email"] == EMAIL
+    with Session(engine) as fresh:
+        assert fresh.scalar(select(User.failed_logins).where(User.id == user.id)) == 0
+        events = [r.signals["event"] for r in fresh.scalars(select(AuditDecision))]
+    assert events.count("login_success") == 2
+
+
 def test_the_counter_is_updated_from_a_locked_row(web, user, monkeypatch):
     statements = []
     real = Session.scalar

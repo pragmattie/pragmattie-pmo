@@ -26,7 +26,11 @@ proved who they are: on success and logout. A refused request (429) writes no ro
 can't fill the table.
 
 Lockout (our own numbers, in `app/config.py`): `lockout_threshold` failures within
-`lockout_minutes` lock the account for `lockout_minutes` from the last of them. Attempts on a
+`lockout_minutes` lock the account for `lockout_minutes` from the last of them. The counting
+window is fixed, not rolling: it starts at the first failure and a new one starts with the next
+failure after it ends. That is the approved design; it means up to 8 failures (with the defaults
+of 5 and 15 minutes) can fall inside any 15 minutes without a lock: 4 that straddle the end of
+one window and 4 at the start of the next. Attempts on a
 locked account are refused and audited (reason `locked`) but neither count nor extend the lock,
 so nobody can keep another person locked out by continuing to try. An admin can unlock early
 (`app/api/users.py`). The counter is updated from a row reloaded with `SELECT ... FOR UPDATE`
@@ -254,12 +258,18 @@ def _authenticate(
     user.failed_window_started_at = None
     user.locked_until = None
     user.last_login_at = now
-    # Signing in replaces a session the browser still holds.
-    if old_jti is not None and old_exp is not None and db.get(RevokedToken, old_jti) is None:
-        db.add(RevokedToken(jti=old_jti, expires_at=_naive_utc(old_exp)))
     session = issue_token(user.id, user.role)
     record_auth_event(db, "login_success", ip=ip, user_id=user.id, actor_user_id=user.id)
     db.commit()
+    # Signing in replaces a session the browser still holds. It is revoked in its own commit, so
+    # the sign-in above is kept even if a parallel request revokes the same session first.
+    if old_jti is not None and old_exp is not None and db.get(RevokedToken, old_jti) is None:
+        db.add(RevokedToken(jti=old_jti, expires_at=_naive_utc(old_exp)))
+        try:
+            db.commit()
+        except IntegrityError:
+            # A concurrent login or logout already revoked it.
+            db.rollback()
     return user, session
 
 
