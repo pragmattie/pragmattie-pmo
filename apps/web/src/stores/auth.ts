@@ -7,6 +7,9 @@ export interface User {
   email: string
   display_name: string
   role: string
+  // What this role may do, from the API's permissions table (app/authz.py). The web only uses it
+  // to hide things; the API checks every request.
+  actions: string[]
 }
 
 export const LOGIN_FAILED = 'Invalid email or password.'
@@ -20,6 +23,7 @@ export const useAuthStore = defineStore('auth', {
   }),
   getters: {
     isAuthenticated: (state) => state.user !== null,
+    can: (state) => (action: string) => state.user?.actions?.includes(action) ?? false,
   },
   actions: {
     async fetchMe() {

@@ -1,10 +1,12 @@
 import { createMemoryHistory, createRouter, createWebHistory } from 'vue-router'
 
 import { setUnauthorizedHandler } from '../lib/api'
+import { NAV_ITEMS } from '../lib/nav'
 import { safeRedirect } from '../lib/redirect'
 import { useAuthStore } from '../stores/auth'
 import HomeView from '../views/HomeView.vue'
 import LoginView from '../views/LoginView.vue'
+import PlaceholderView from '../views/PlaceholderView.vue'
 
 export function makeRouter(memory = false) {
   const router = createRouter({
@@ -12,6 +14,13 @@ export function makeRouter(memory = false) {
     routes: [
       { path: '/', name: 'home', component: HomeView },
       { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
+      ...NAV_ITEMS.map((item) => ({
+        path: item.path,
+        name: item.name,
+        component: PlaceholderView,
+        props: { title: item.title },
+        meta: { action: item.action },
+      })),
     ],
   })
 
@@ -23,6 +32,8 @@ export function makeRouter(memory = false) {
       return to.name === 'login' && auth.isAuthenticated ? safeRedirect(to.query.redirect) : true
     }
     if (!auth.isAuthenticated) return { name: 'login', query: { redirect: to.fullPath } }
+    // A page the role cannot use is hidden from the menu; typing its address leads home.
+    if (typeof to.meta.action === 'string' && !auth.can(to.meta.action)) return { name: 'home' }
     return true
   })
 

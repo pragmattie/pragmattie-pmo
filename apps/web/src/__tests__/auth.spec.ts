@@ -15,7 +15,13 @@ global.ResizeObserver = class {
   disconnect() {}
 }
 
-const USER = { id: 1, email: 'ada.reviewer@pmo.example', display_name: 'Ada Reviewer', role: 'pm' }
+const USER = {
+  id: 1,
+  email: 'ada.reviewer@pmo.example',
+  display_name: 'Ada Reviewer',
+  role: 'project_manager',
+  actions: ['project:read', 'project:write', 'report:publish', 'risk:accept', 'standards:read'],
+}
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
