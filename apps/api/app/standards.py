@@ -1,7 +1,8 @@
 """Standards traceability map: read `docs/standards-map.yaml`, validate it, return a frozen model.
 
 The map tags every feature to general project practice, AI governance practice, and AI project practice. It holds
-paraphrase and section numbers only, so prose is capped per entry. A missing or invalid file
+paraphrase and section numbers only, so prose is capped per entry, and AI-standard references
+must be one of the checked combinations in `AI_STANDARD_REFS`. A missing or invalid file
 raises `StandardsError`. The map loads on first use and is cached for the life of the process.
 """
 
@@ -33,6 +34,23 @@ AI_PHASES: tuple[AiPhase, ...] = get_args(AiPhase)
 ID_PATTERN = re.compile(r"^(P[1-7])-[a-z0-9]+(?:-[a-z0-9]+)*$")
 SECTION_PATTERN = re.compile(r"^\d+(?:\.\d+)*$")
 
+# The only AI-standard references allowed: (kind, name) -> section, as AI governance practice lists them in its contents (checked by a person).
+AI_STANDARD_REFS: dict[tuple[AiKind, str], str] = {
+    ("principle", "Value"): "0",
+    ("principle", "Risk"): "0",
+    ("principle", "Governance"): "0",
+    ("principle", "People"): "0",
+    ("principle", "Ethics"): "0",
+    ("principle", "Stakeholders"): "0",
+    ("principle", "Improvement"): "0",
+    ("principle", "Data"): "0",
+    ("practice_area", "AI stakeholders"): "0",
+    ("practice_area", "AI scope"): "0",
+    ("practice_area", "AI quality"): "0",
+    ("practice_area", "AI delivery"): "0",
+    ("practice_area", "AI risk"): "0",
+}
+
 
 class StandardsError(ValueError):
     """The standards map is missing, unreadable or breaks a validation rule."""
@@ -53,6 +71,17 @@ class AiStandardRef(_Strict):
         if not SECTION_PATTERN.match(value):
             raise ValueError("must be a section number such as 3.2")
         return value
+
+    @model_validator(mode="after")
+    def _known_reference(self) -> "AiStandardRef":
+        expected = AI_STANDARD_REFS.get((self.kind, self.name))
+        if expected is None:
+            raise ValueError(f"{self.name!r} is not a known {self.kind} of the AI standard")
+        if expected != self.section:
+            raise ValueError(
+                f"{self.kind} {self.name!r} is section {expected}, not section {self.section}"
+            )
+        return self
 
 
 class Feature(_Strict):
