@@ -13,7 +13,8 @@ from app.api.auth import LOGIN_FAILED
 from app.config import get_settings
 from app.db import engine
 from app.main import app
-from app.models import Base, RevokedToken, User
+from app.models import AuditDecision, Base, RevokedToken, User
+from app.ratelimit import SlidingWindowLimiter
 from app.schemas.auth import PASSWORD_MAX_LENGTH
 from app.security import CSRF_COOKIE, SESSION_COOKIE, hash_password, issue_token
 
@@ -356,3 +357,265 @@ def test_no_password_or_token_in_logs_or_responses(web, user, caplog):
     assert "password" not in ok.json() and "password_hash" not in ok.text
     assert PASSWORD not in repr(user)
     assert user.password_hash not in repr(user)
+
+
+# --- Audit, lockout and rate limiting (item 2.3)
+
+START = datetime(2026, 11, 1, 9, 0, 0)
+
+
+class Clock:
+    """A frozen `utcnow` for the auth module; advance it by hand."""
+
+    def __init__(self, monkeypatch):
+        self.now = START
+        monkeypatch.setattr(auth_api, "utcnow", lambda: self.now)
+
+    def advance(self, **delta):
+        self.now += timedelta(**delta)
+
+
+@pytest.fixture
+def clock(monkeypatch) -> Clock:
+    return Clock(monkeypatch)
+
+
+def _rows(db) -> list[AuditDecision]:
+    db.expire_all()
+    return list(db.scalars(select(AuditDecision).order_by(AuditDecision.id)))
+
+
+def _events(db) -> list[tuple[str, str | None]]:
+    return [(r.signals["event"], r.signals.get("reason")) for r in _rows(db)]
+
+
+def _fail_times(web, n: int, password: str = "wrong-password-value"):
+    return [_login(web, password=password).status_code for _ in range(n)]
+
+
+def test_lockout_engages_on_the_fifth_failure(web, user, db, clock):
+    assert _fail_times(web, 4) == [401] * 4
+    db.refresh(user)
+    assert user.failed_logins == 4 and user.locked_until is None
+    assert _fail_times(web, 1) == [401]
+    db.refresh(user)
+    assert user.locked_until == START + timedelta(minutes=15)
+    # Locked: even the correct password is refused, with the generic message.
+    response = _login(web)
+    assert response.status_code == 401
+    assert response.json() == {"detail": LOGIN_FAILED}
+    assert SESSION_COOKIE not in web.cookies
+    assert _events(db)[-3:] == [
+        ("login_failure", "bad_password"),
+        ("lockout", "too_many_failures"),
+        ("login_failure", "locked"),
+    ]
+
+
+def test_the_lock_expires_after_fifteen_minutes(web, user, db, clock):
+    _fail_times(web, 5)
+    clock.advance(minutes=14, seconds=59)
+    assert _login(web).status_code == 401
+    clock.advance(seconds=1)
+    assert _login(web).status_code == 200
+    db.refresh(user)
+    assert user.locked_until is None and user.failed_logins == 0
+    assert user.failed_window_started_at is None
+
+
+def test_attempts_while_locked_neither_count_nor_extend_the_lock(web, user, db, clock):
+    _fail_times(web, 5)
+    for _ in range(4):
+        clock.advance(minutes=3)
+        assert _login(web, password="still-wrong").status_code == 401
+    db.refresh(user)
+    assert user.locked_until == START + timedelta(minutes=15)
+    assert user.failed_logins == 0
+    assert [e for e in _events(db) if e[0] == "lockout"] == [("lockout", "too_many_failures")]
+    clock.advance(minutes=3)  # 15 minutes after the fifth failure
+    assert _login(web).status_code == 200
+
+
+def test_failures_outside_the_window_start_a_new_count(web, user, db, clock):
+    _fail_times(web, 4)
+    clock.advance(minutes=15)
+    _fail_times(web, 1)
+    db.refresh(user)
+    assert user.failed_logins == 1 and user.locked_until is None
+    assert user.failed_window_started_at == clock.now
+
+
+def test_a_success_resets_the_count(web, user, db, clock):
+    _fail_times(web, 4)
+    assert _login(web).status_code == 200
+    _fail_times(web, 4)
+    db.refresh(user)
+    assert user.failed_logins == 4 and user.locked_until is None
+
+
+def test_a_locked_account_and_an_unknown_email_get_identical_responses(web, user, db, clock):
+    _fail_times(web, 5)
+    locked = _login(web)
+    unknown = _login(web, email="nobody@pmo.example")
+    assert locked.status_code == unknown.status_code == 401
+    assert locked.content == unknown.content
+    assert locked.headers.items() == unknown.headers.items()
+
+
+def test_the_password_is_checked_before_the_lock(web, user, db, clock, monkeypatch):
+    _fail_times(web, 5)
+    calls = []
+    real = auth_api.verify_password
+    monkeypatch.setattr(auth_api, "verify_password", lambda h, p: calls.append(h) or real(h, p))
+    _login(web)
+    assert calls == [user.password_hash]
+
+
+def test_rate_limit_returns_429_per_ip_and_writes_no_row(web, user, db, monkeypatch):
+    monkeypatch.setattr(get_settings(), "login_rate_per_minute", 3)
+    assert [_login(web).status_code for _ in range(3)] == [200, 200, 200]
+    before = len(_rows(db))
+    blocked = _login(web)
+    assert blocked.status_code == 429
+    assert blocked.json() == {"detail": auth_api.TOO_MANY}
+    assert blocked.headers["retry-after"] == "60"
+    assert len(_rows(db)) == before
+    # A forwarded-for header can't buy a fresh allowance.
+    spoofed = web.post(
+        LOGIN, json={"email": EMAIL, "password": PASSWORD}, headers={"X-Forwarded-For": "1.2.3.4"}
+    )
+    assert spoofed.status_code == 429
+
+
+def test_rate_limit_runs_before_the_password_check(web, user, monkeypatch):
+    monkeypatch.setattr(get_settings(), "login_rate_per_minute", 1)
+    _login(web)
+    monkeypatch.setattr(auth_api, "verify_password", lambda *_: pytest.fail("argon2 ran"))
+    assert _login(web).status_code == 429
+
+
+def test_limiter_slides_and_drops_expired_keys():
+    now = [0.0]
+    limiter = SlidingWindowLimiter(window_seconds=60, clock=lambda: now[0])
+    assert [limiter.allow("a", 2) for _ in range(3)] == [True, True, False]
+    now[0] = 30
+    assert limiter.allow("b", 2)
+    now[0] = 60.5  # a's hits have left the window; b's has not
+    assert limiter.allow("a", 2)
+    for i in range(100):
+        limiter.allow(f"ip-{i}", 2)
+    now[0] = 200
+    limiter.allow("c", 2)
+    assert len(limiter) == 1  # everything older than a window was swept
+
+
+def _all_audit_text(db) -> str:
+    return " ".join(
+        repr((r.signals, r.output, r.action_taken, r.human_override, r.error)) for r in _rows(db)
+    )
+
+
+def test_each_event_type_writes_one_audit_row_without_secrets(web, user, db, clock):
+    typed_email = "Someone.Else@pmo.example"
+    assert _login(web, email=typed_email, password="typo-password-1").status_code == 401
+    _fail_times(web, 5, password="typo-password-2")
+    clock.advance(minutes=15)
+    assert _login(web).status_code == 200
+    token, csrf = web.cookies[SESSION_COOKIE], web.cookies[CSRF_COOKIE]
+    assert web.post(LOGOUT, headers=_csrf(web)).status_code == 204
+
+    rows = _rows(db)
+    assert [(r.signals["event"], r.signals.get("reason")) for r in rows] == [
+        ("login_failure", "unknown_user"),
+        *[("login_failure", "bad_password")] * 5,
+        ("lockout", "too_many_failures"),
+        ("login_success", None),
+        ("logout", None),
+    ]
+    for row in rows:
+        assert (row.agent, row.trigger, row.subject_type) == ("auth", "human", "login")
+        assert set(row.signals) <= {"event", "reason", "ip", "user_id"}
+        assert row.signals["ip"] == "testclient"
+    assert len({r.subject_id for r in rows}) == len(rows)
+    assert rows[0].signals["user_id"] is None
+    assert all(r.signals["user_id"] == user.id for r in rows[1:])
+    # Only a person who proved who they are is the actor.
+    assert [r.actor_user_id for r in rows] == [None] * 7 + [user.id, user.id]
+    assert [r.status for r in rows][:2] == ["rejected", "rejected"]
+
+    text = _all_audit_text(db)
+    for secret in (
+        PASSWORD,
+        "typo-password-1",
+        "typo-password-2",
+        typed_email,
+        typed_email.lower(),
+        EMAIL,
+        token,
+        csrf,
+        user.password_hash,
+    ):
+        assert secret not in text
+
+
+def test_inactive_user_failure_is_audited(web, user, db):
+    user.is_active = False
+    db.commit()
+    _login(web)
+    assert _events(db) == [("login_failure", "inactive")]
+
+
+@pytest.mark.parametrize("body", [b"not json", b'{"email": "ada.reviewer@pmo.example"}'])
+def test_a_malformed_body_is_audited_without_its_content(web, user, db, body):
+    web.post(LOGIN, content=body, headers={"content-type": "application/json"})
+    (row,) = _rows(db)
+    assert row.signals == {
+        "event": "login_failure",
+        "reason": "invalid_request",
+        "ip": "testclient",
+        "user_id": None,
+    }
+
+
+def test_a_failed_login_keeps_its_row_and_count(web, user):
+    # Read through a fresh session: the request's own commit must have stored them.
+    _login(web, password="wrong-password-value")
+    with Session(engine) as fresh:
+        assert fresh.scalar(select(User.failed_logins).where(User.id == user.id)) == 1
+        assert len(fresh.scalars(select(AuditDecision)).all()) == 1
+
+
+def test_a_repeat_logout_writes_no_row(web, user, db):
+    _login(web)
+    headers = _csrf(web)
+    token = web.cookies[SESSION_COOKIE]
+    web.post(LOGOUT, headers=headers)
+    web.cookies.set(SESSION_COOKIE, token)
+    web.cookies.set(CSRF_COOKIE, headers["X-CSRF-Token"])
+    web.post(LOGOUT, headers=headers)
+    web.post(LOGOUT)
+    assert _events(db) == [("login_success", None), ("logout", None)]
+
+
+def test_a_new_login_revokes_the_session_it_replaces(web, user, db):
+    _login(web)
+    old = web.cookies[SESSION_COOKIE]
+    assert _login(web).status_code == 200
+    assert web.cookies[SESSION_COOKIE] != old
+    other = TestClient(app, base_url="http://localhost")
+    other.cookies.set(SESSION_COOKIE, old)
+    assert other.get(ME).status_code == 401
+    assert web.get(ME).status_code == 200
+
+
+def test_the_counter_is_updated_from_a_locked_row(web, user, monkeypatch):
+    statements = []
+    real = Session.scalar
+
+    def spy(self, statement, *args, **kwargs):
+        statements.append(statement)
+        return real(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "scalar", spy)
+    _login(web, password="wrong-password-value")
+    assert any(getattr(s, "_for_update_arg", None) is not None for s in statements)

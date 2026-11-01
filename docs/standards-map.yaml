@@ -105,7 +105,7 @@ features:
       name: AI quality
       section: "0"
     ai_phase: none
-    notes: Sign-in attempts are recorded and throttled; messages stay generic.
+    notes: Sign-in events are audited without secrets; repeated failures lock an account; per-IP throttling.
   # --- P3 Intake, planning baseline, proposals, status reports and closing
   - id: P3-project-intake
     title: Project and work-item intake
