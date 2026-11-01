@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     agent_mode: AgentMode = "off"
 
-    # Governance YAML files; read only by app/policy.py, on first use.
+    # Governance policy files; read only by app/policy.py, on first use.
     policies_dir: Path = Field(default_factory=_default_policies_dir)
 
     @property

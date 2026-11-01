@@ -219,14 +219,11 @@ def parse_tiers(data: dict, where: str = "tiers.yaml") -> TierPolicy:
     auto = [_tier_name(name, f"{where} auto_approved") for name in data["auto_approved"]]
     high = sorted(HIGH_TIERS & set(auto))
     if high:
-        raise PolicyError(
-            f"{where} auto_approved: {', '.join(high)} can never be auto-approved"
-        )
+        raise PolicyError(f"{where} auto_approved: {', '.join(high)} can never be auto-approved")
     for name, tier in tiers.items():
         if (name in auto) != (tier.approvals_required == 0):
             raise PolicyError(
-                f"{where} tiers.{name}: a tier is auto-approved exactly when it needs "
-                "0 approvals"
+                f"{where} tiers.{name}: a tier is auto-approved exactly when it needs 0 approvals"
             )
 
     fallback = _tier_name(data["fallback_tier"], f"{where} fallback_tier")
@@ -250,8 +247,9 @@ def parse_approvers(data: dict, where: str = "approvers.yaml") -> ApproversPolic
         # Demonstration data only: contacts use the reserved .example domain.
         if "@" not in contact or not contact.lower().endswith(".example"):
             raise PolicyError(f"{at}.contact: must be an address in the .example domain")
-        roles[role] = Approver(role=role, title=_text(entry["title"], f"{at}.title"),
-                               contact=contact)
+        roles[role] = Approver(
+            role=role, title=_text(entry["title"], f"{at}.title"), contact=contact
+        )
     return ApproversPolicy(roles=MappingProxyType(roles))
 
 
@@ -282,8 +280,10 @@ def _parse_bands(raw: Any, where: str, roles: Mapping[str, Approver]) -> tuple[P
         raise PolicyError(f"{where}: band names must be unique")
     for previous, band in zip(bands, bands[1:], strict=False):
         if band.min_score < previous.min_score:
-            raise PolicyError(f"{where}: bands are out of order ({band.name} before "
-                              f"{previous.name}); list them from lowest score to highest")
+            raise PolicyError(
+                f"{where}: bands are out of order ({band.name} before "
+                f"{previous.name}); list them from lowest score to highest"
+            )
         if band.min_score <= previous.max_score:
             raise PolicyError(f"{where}: bands {previous.name} and {band.name} overlap")
         if band.min_score > previous.max_score + 1:
@@ -294,8 +294,18 @@ def _parse_bands(raw: Any, where: str, roles: Mapping[str, Approver]) -> tuple[P
 
 
 def parse_risk(data: dict, roles: Mapping[str, Approver], where: str = "risk.yaml") -> RiskPolicy:
-    _keys(data, where, ("version", "probability", "impact", "thresholds", "priority_bands",
-                        "minimum_band_by_impact"))
+    _keys(
+        data,
+        where,
+        (
+            "version",
+            "probability",
+            "impact",
+            "thresholds",
+            "priority_bands",
+            "minimum_band_by_impact",
+        ),
+    )
 
     probability = {}
     raw = _levels(data["probability"], f"{where} probability")
@@ -356,9 +366,7 @@ def parse_risk(data: dict, roles: Mapping[str, Approver], where: str = "risk.yam
     ordered = sorted(minimums.items())
     for (lower, lower_band), (higher, higher_band) in zip(ordered, ordered[1:], strict=False):
         if rank[higher_band] < rank[lower_band]:
-            raise PolicyError(
-                f"{at}: impact {higher} has a lower minimum band than impact {lower}"
-            )
+            raise PolicyError(f"{at}: impact {higher} has a lower minimum band than impact {lower}")
 
     return RiskPolicy(
         probability=MappingProxyType(probability),
