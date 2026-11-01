@@ -23,6 +23,13 @@ docker compose up --build
 The web app is at http://localhost:5173, the API health check at
 http://localhost:8000/api/v1/health and MySQL on host port 3307.
 
+Load the invented demo portfolio (every name and address is fictional, on `.example`):
+
+```sh
+docker compose exec api python -m app.seed           # idempotent
+docker compose exec api python -m app.seed --reset   # clear seeded rows only, then seed again
+```
+
 ## Checks
 
 ```sh
