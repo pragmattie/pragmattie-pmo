@@ -73,7 +73,10 @@ class Settings(BaseSettings):
 
     # Lockout and rate limiting (app/api/auth.py). Our own numbers: this many failed
     # logins within `lockout_minutes` locks the account for `lockout_minutes` from the last one,
-    # and each client IP may try to sign in this many times per minute.
+    # and each client IP may try to sign in this many times per minute. The counting window is
+    # fixed (the approved design): it starts at the first failure and does not roll, so up to 8
+    # failures can fall inside any 15 minutes without a lock (4 that straddle the end of one
+    # window and 4 at the start of the next).
     lockout_threshold: int = Field(default=5, ge=1)
     lockout_minutes: int = Field(default=15, ge=1)
     login_rate_per_minute: int = Field(default=10, ge=1)

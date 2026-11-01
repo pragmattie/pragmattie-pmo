@@ -6,8 +6,8 @@ row it corrects. `trigger` is a MySQL reserved word: SQLAlchemy quotes it, hand-
 Append-only is enforced in the ORM, below the application code: changing or deleting a loaded
 row, and a bulk `update()` or `delete()` on this table through any `Session`, raise
 `AppendOnlyError`. Raw SQL on a plain connection (and dropping the table, as tests do) can still
-bypass these guards; database triggers would close that gap but need privileges the hosted
-database does not grant, so they are left out for now.
+bypass these guards. Database triggers would close that gap, but they may need privileges on the
+hosted database; that has not been checked, so they are left out for now.
 
 `actor_user_id` is the person who caused the row, set only when they have proved who they are
 (a signed-in action, a successful login or a logout).
