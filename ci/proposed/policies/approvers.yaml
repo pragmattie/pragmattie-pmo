@@ -1,0 +1,13 @@
+# Roles that approve, own or receive escalations. Role names only, never named people; contacts
+# are role mailboxes in the reserved .example domain. Drafted by an agent for item 1.4.
+version: 1
+roles:
+  project_manager:
+    title: Project manager
+    contact: project-manager@pragmattie.example
+  sponsor:
+    title: Project sponsor
+    contact: sponsor@pragmattie.example
+  repository_owner:
+    title: Repository owner
+    contact: repository-owner@pragmattie.example
