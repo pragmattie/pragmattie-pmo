@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { createPinia } from 'pinia'
+import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
@@ -13,12 +13,15 @@ global.ResizeObserver = class {
 }
 
 async function mountApp() {
+  // The router guard uses the auth store, so Pinia must be active before the first navigation.
+  const pinia = createPinia()
+  setActivePinia(pinia)
   const router = makeRouter(true)
   router.push('/')
   await router.isReady()
   const vuetify = makeVuetify()
   const wrapper = mount({ template: '<v-layout><App /></v-layout>', components: { App } }, {
-    global: { plugins: [createPinia(), router, vuetify] },
+    global: { plugins: [pinia, router, vuetify] },
   })
   return { wrapper, vuetify }
 }
@@ -27,7 +30,11 @@ describe('App', () => {
   beforeEach(() => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => ({ json: async () => ({ status: 'ok', version: '0.1.0' }) })),
+      vi.fn(async (path: string) =>
+        path === '/api/v1/auth/me'
+          ? new Response(JSON.stringify({ detail: 'not signed in' }), { status: 401 })
+          : new Response(JSON.stringify({ status: 'ok', version: '0.1.0' })),
+      ),
     )
   })
   afterEach(() => vi.unstubAllGlobals())
