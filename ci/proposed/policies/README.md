@@ -6,8 +6,8 @@ drafted in our own words; nothing is copied from general practice.
 
 | File | Holds |
 | --- | --- |
-| `tiers.yaml` | Tiers T0 to T3 with approvals per tier, the tiers that may be auto-approved (none yet; T2 and T3 never), and `fallback_tier: T2`, used when a risk assessment fails |
-| `risk.yaml` | Probability and impact scales 1 to 5 with a definition per level (impact against schedule, cost and quality, for threats and opportunities); allowed variation per objective (schedule and cost +/-10%, quality no loss of key functions); priority bands Low 1-6 (project manager), Medium 7-12 (sponsor), High 13-25 (sponsor); and the rule that impact 5 is at least Medium |
+| `tiers.yaml` | Tiers T0 to T3 with approvals per tier (T2 for changes to data or shared behaviour; T3 for authentication, roles, billing, schema migrations on live data and governance rules), the tiers that may be auto-approved (none yet; T2 and T3 never), and `fallback_tier: T2`, used when a risk assessment fails |
+| `risk.yaml` | Probability and impact scales 1 to 5 with a definition per level (impact against schedule, cost and quality, for threats and opportunities); allowed variation per objective (schedule and cost +/-10%, quality no loss of key functions), which is how risk appetite is expressed, in line with general project practice, so there is no separate appetite key; priority bands Low 1-6 (project manager), Medium 7-12 (sponsor), High 13-25 (sponsor); and the rule that impact 5 is at least Medium |
 | `gates.yaml` | Placeholder (an empty `gates` list) until stage gates arrive in P5 |
 | `approvers.yaml` | Roles that approve and receive escalations: role names and `.example` mailboxes, no people |
 

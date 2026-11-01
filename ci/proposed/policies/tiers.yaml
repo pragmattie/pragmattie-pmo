@@ -18,11 +18,11 @@ tiers:
     approvals_required: 1
   T2:
     description: >-
-      Change to data, security, money or shared behaviour. A person approves a plan before
-      the build starts.
+      Change to data or shared behaviour. A person approves a plan before the build starts.
     approvals_required: 1
   T3:
     description: >-
-      Wide or hard-to-reverse change, such as a migration on live data or a governance rule.
-      A plan is approved first, and two people approve the result.
+      Wide, sensitive or hard-to-reverse change: authentication, roles, billing, schema
+      migrations on live data, or a governance rule. A plan is approved first, and two people
+      approve the result.
     approvals_required: 2
