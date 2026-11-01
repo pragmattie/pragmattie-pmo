@@ -7,8 +7,12 @@ Secure unless the `cookie_secure` setting is off (local development over plain h
 Login accepts only an `application/json` body. A browser can't send that type cross-site without
 a CORS preflight, so another site can't sign a visitor in with a plain form post.
 
-`current_user` loads the user from the database on every request. Code that needs the role reads
-it from that row, never from the token, so a role change or deactivation applies at once.
+`current_user` (in `app/authz.py`) loads the user from the database on every request. Code that
+needs the role reads it from that row, never from the token, so a role change or deactivation
+applies at once. Every response that describes the user also lists the actions their role allows,
+so the web can hide what the role cannot do; the API still checks each request.
+
+Login and logout need no guard (see `OPEN_PATHS` in `app/authz.py`); `me` needs only a session.
 
 Login failures all get one generic message. Login and logout are not yet audited (item 2.3).
 """
@@ -23,6 +27,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.authz import allowed_actions, signed_in
 from app.config import get_settings
 from app.db import get_db
 from app.models import RevokedToken, User, utcnow
@@ -46,8 +51,17 @@ LOGIN_PATH = "/api/v1/auth/login"
 LOGOUT_PATH = "/api/v1/auth/logout"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 LOGIN_FAILED = "invalid email or password"
-NOT_SIGNED_IN = "not signed in or session expired"
 JSON_MEDIA_TYPE = "application/json"
+
+
+def user_out(user: User) -> UserOut:
+    return UserOut(
+        id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        role=user.role,
+        actions=allowed_actions(user.role),
+    )
 
 
 def _login_failed() -> HTTPException:
@@ -75,25 +89,6 @@ def require_csrf(request: Request) -> None:
         return
     if not csrf_matches(request.cookies.get(CSRF_COOKIE), request.headers.get(CSRF_HEADER)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "CSRF token missing or invalid")
-
-
-def current_user(request: Request, db: Annotated[Session, Depends(get_db)]) -> User:
-    """The signed-in, active user, or 401. Rejects expired, revoked and malformed tokens."""
-    not_signed_in = HTTPException(status.HTTP_401_UNAUTHORIZED, NOT_SIGNED_IN)
-    token = request.cookies.get(SESSION_COOKIE)
-    claims = decode_token(token) if token else None
-    if claims is None:
-        raise not_signed_in
-    if db.get(RevokedToken, str(claims["jti"])) is not None:
-        raise not_signed_in
-    try:
-        user_id = int(claims["sub"])
-    except (TypeError, ValueError):
-        raise not_signed_in from None
-    user = db.get(User, user_id)
-    if user is None or not user.is_active:
-        raise not_signed_in
-    return user
 
 
 def _set_cookie(response: Response, name: str, value: str, max_age: int) -> None:
@@ -161,7 +156,7 @@ async def login(
     max_age = get_settings().jwt_ttl_minutes * 60
     _set_cookie(response, SESSION_COOKIE, session.token, max_age)
     _set_cookie(response, CSRF_COOKIE, new_csrf_token(), max_age)
-    return UserOut.model_validate(user)
+    return user_out(user)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -188,5 +183,5 @@ def logout(request: Request, response: Response, db: Annotated[Session, Depends(
 
 
 @router.get("/me", response_model=UserOut)
-def me(user: Annotated[User, Depends(current_user)]) -> UserOut:
-    return UserOut.model_validate(user)
+def me(user: Annotated[User, Depends(signed_in)]) -> UserOut:
+    return user_out(user)

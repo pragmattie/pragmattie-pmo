@@ -3,9 +3,13 @@ from pathlib import Path
 
 import pytest
 import yaml
+from sqlalchemy.orm import Session
 
 import app.standards as standards_module
+from app.authz import Role
 from app.config import Settings
+from app.db import engine
+from app.models import Base
 from app.standards import (
     AI_STANDARD_REFS,
     MAX_PROSE_CHARS,
@@ -189,6 +193,7 @@ def test_repository_map_uses_the_checked_assignments():
         "P1-agent-build-workflow": "2.7",
         "P3-closure": "2.7",
         "P2-login-and-roles": "3.3",
+        "P2-roles": "3.3",
         "P2-login-audit": "3.3",
         "P3-project-intake": "2.1",
         "P3-status-reports": "3.1",
@@ -270,15 +275,33 @@ def test_load_reports_missing_and_malformed_files(tmp_path):
 # --- Endpoint
 
 
-def test_endpoint_serves_the_file(client):
+@pytest.fixture
+def db():
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as session:
+            yield session
+    finally:
+        Base.metadata.drop_all(engine)
+
+
+def test_endpoint_needs_a_login(db, client):
+    assert client.get("/api/v1/standards").status_code == 401
+
+
+@pytest.mark.parametrize("role", list(Role))
+def test_endpoint_serves_the_file_privately_to_every_role(db, client, sign_in, role):
+    sign_in(client, db, role)
     response = client.get("/api/v1/standards")
     assert response.status_code == 200
     expected = yaml.safe_load(MAP_PATH.read_text(encoding="utf-8"))
     assert response.json() == expected
-    assert "max-age" in response.headers["cache-control"]
+    # Behind a login, so only the browser may keep it; never a shared cache.
+    assert response.headers["cache-control"] == "private, max-age=3600"
 
 
-def test_endpoint_is_cached_and_read_only(client, monkeypatch):
+def test_endpoint_is_cached_and_read_only(db, client, sign_in, monkeypatch):
+    sign_in(client, db, "auditor")
     get_standards.cache_clear()
     calls = []
     real = standards_module.load_standards

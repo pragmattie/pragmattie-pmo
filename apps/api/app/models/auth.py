@@ -1,8 +1,8 @@
 """People who sign in, and the session tokens they have signed out of.
 
-`email` is stored in lower case and compared in lower case. `role` is only stored here; what each
-role may do arrives with permissions (item 2.2). `failed_logins` and `locked_until` are kept for
-lockout (item 2.3) and not yet used.
+`email` is stored in lower case and compared in lower case. `role` is one of the roles in
+`app/authz.py`, which also says what each role may do. `failed_logins` and `locked_until` are kept
+for lockout (item 2.3) and not yet used.
 
 A row in `revoked_tokens` holds a signed-out token's `jti` until the token would have expired
 anyway; expired rows are deleted on logout so the table stays small.

@@ -168,7 +168,8 @@ def test_list_is_newest_first_and_stable_when_timestamps_tie(db):
     assert seen == [later.id] + sorted((row.id for row in rows), reverse=True)
 
 
-def test_api_returns_a_page_with_money_as_a_string(db, client):
+def test_api_returns_a_page_with_money_as_a_string(db, client, sign_in):
+    sign_in(client, db, "auditor")
     _seed(db)
     record_decision(db, **_fields(agent="costed", cost_usd=Decimal("1.5"), output={"ok": True}))
     db.commit()
@@ -188,13 +189,15 @@ def test_api_returns_a_page_with_money_as_a_string(db, client):
     ("stored", "shown"),
     [("0.004999", "0.00"), ("0.005000", "0.01"), ("1.234999", "1.23"), ("12.345678", "12.35")],
 )
-def test_api_shows_a_six_place_cost_as_two_decimals(db, client, stored, shown):
+def test_api_shows_a_six_place_cost_as_two_decimals(db, client, sign_in, stored, shown):
+    sign_in(client, db, "auditor")
     record_decision(db, **_fields(cost_usd=Decimal(stored)))
     db.commit()
     item = client.get("/api/v1/audit").json()["items"][0]
     assert item["cost_usd"] == shown
 
 
-def test_api_validates_paging(db, client):
+def test_api_validates_paging(db, client, sign_in):
+    sign_in(client, db, "auditor")
     assert client.get("/api/v1/audit", params={"limit": 101}).status_code == 422
     assert client.get("/api/v1/audit", params={"offset": -1}).status_code == 422

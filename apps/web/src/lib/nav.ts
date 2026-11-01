@@ -1,0 +1,16 @@
+// Menu pages and the action each one needs. Which actions a user has comes from the API
+// (`actions` on /auth/me), which holds the only permissions table; this list only says what each
+// page is for. The pages are placeholders until their milestones arrive.
+
+export interface NavItem {
+  name: string
+  path: string
+  title: string
+  action: string
+}
+
+export const NAV_ITEMS: NavItem[] = [
+  { name: 'projects', path: '/projects', title: 'Projects', action: 'project:read' },
+  { name: 'audit', path: '/audit', title: 'Audit', action: 'audit:read' },
+  { name: 'standards', path: '/standards', title: 'Standards', action: 'standards:read' },
+]

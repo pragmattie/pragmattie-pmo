@@ -1,4 +1,4 @@
-"""Read the audit trail. Role restriction arrives with permissions in item 2.2."""
+"""Read the audit trail. Needs `audit:read`."""
 
 from typing import Annotated
 
@@ -6,11 +6,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.audit import ORDER_BY, decisions_query
+from app.authz import Action, require
 from app.db import get_db
 from app.schemas.audit import AuditDecisionOut
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
 
-router = APIRouter(tags=["audit"])
+router = APIRouter(tags=["audit"], dependencies=[Depends(require(Action.AUDIT_READ))])
 
 
 @router.get("/audit", response_model=Page[AuditDecisionOut])
