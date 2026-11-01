@@ -18,13 +18,14 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`policies/`** (item 1.4): the first real `tiers.yaml`, `risk.yaml`, `gates.yaml` and
-  `approvers.yaml` are drafted in `ci/proposed/policies/`, with a README listing the decisions to
-  review and the apply steps. Until a person moves them to `policies/` at the repository root,
-  anything that asks for policies gets a `PolicyError` (the API still starts).
+Nothing is waiting.
 
 ## Applied
 
+- **`policies/`** (item 1.4): the first real `tiers.yaml`, `risk.yaml`, `gates.yaml` and
+  `approvers.yaml`, moved from `ci/proposed/policies/`. `apps/api/app/policy.py` validates them
+  strictly and has no defaults in code, so a bad or missing file raises `PolicyError`. To change a
+  policy, an agent writes the new version here and a person applies it over the existing file.
 - **`ci.yml`** (item 1.1): applied as `.github/workflows/ci.yml` and the copy here deleted. Its
   three jobs are `API (lint + tests)`, `API (migrations on MySQL)` and `Web (tests + build)`, and
   are required checks in the `main` ruleset. The MySQL job uses a throwaway `mysql:8.4` service
