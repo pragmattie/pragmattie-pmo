@@ -2,15 +2,23 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import make_url
 
-from app.config import AGENT_MODES, Settings
+from app.config import AGENT_MODES, JWT_SECRET_MIN_BYTES, Settings
 
-SECRET = "jwt-not-a-real-secret"
+SECRET = "jwt-not-a-real-secret-only-for-tests"
 
 
 @pytest.fixture
 def clean_env(monkeypatch):
     """No app settings in the environment; each test sets what it needs."""
-    for name in ("APP_ENV", "DATABASE_URL", "JWT_SECRET", "DB_HOST", "DB_USER", "DB_PASSWORD"):
+    for name in (
+        "APP_ENV",
+        "DATABASE_URL",
+        "JWT_SECRET",
+        "DB_HOST",
+        "DB_USER",
+        "DB_PASSWORD",
+        "COOKIE_SECURE",
+    ):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
@@ -64,14 +72,41 @@ def test_validation_error_does_not_echo_secrets(clean_env):
 def test_test_env_needs_neither_and_defaults_to_sqlite(clean_env):
     settings = Settings(_env_file=None, app_env="test")
     assert settings.database_url == "sqlite:///./test.db"
-    assert settings.jwt_secret is None
+    # A random secret made at runtime, never a fixed one.
+    assert len(settings.jwt_secret.encode()) >= JWT_SECRET_MIN_BYTES
+    assert settings.jwt_secret != Settings(_env_file=None, app_env="test").jwt_secret
+
+
+@pytest.mark.parametrize("app_env", ["dev", "test", "prod"])
+def test_short_jwt_secret_fails_startup_in_every_environment(clean_env, app_env):
+    short = "s" * (JWT_SECRET_MIN_BYTES - 1)
+    with pytest.raises(ValidationError, match="at least 32 bytes") as excinfo:
+        Settings(_env_file=None, app_env=app_env, database_url="sqlite:///./x.db", jwt_secret=short)
+    assert short not in str(excinfo.value)
+
+
+def test_jwt_secret_length_is_counted_in_bytes(clean_env):
+    # 16 two-byte characters are 32 bytes: long enough.
+    Settings(_env_file=None, database_url="sqlite:///./x.db", jwt_secret="é" * 16)
+
+
+def test_auth_defaults(clean_env):
+    settings = Settings(_env_file=None, app_env="test")
+    assert settings.jwt_ttl_minutes == 30
+    assert settings.argon2_time_cost >= 1 and settings.argon2_parallelism >= 1
+    assert settings.cookie_secure is True
+
+
+def test_cookie_secure_can_be_turned_off_from_the_environment(clean_env):
+    clean_env.setenv("COOKIE_SECURE", "false")
+    assert Settings(_env_file=None, app_env="test").cookie_secure is False
 
 
 def test_repr_hides_secrets(clean_env):
     settings = Settings(
         _env_file=None,
         database_url="mysql+pymysql://user:hidden-pw@db/pragmattie_pmo",
-        jwt_secret="hidden-jwt",
+        jwt_secret="hidden-jwt-padded-to-thirty-two-bytes",
         anthropic_api_key="hidden-key",
         database_ca_cert="-----BEGIN CERTIFICATE-----hidden-ca",
         db_password="hidden-db-pw",

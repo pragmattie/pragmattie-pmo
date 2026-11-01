@@ -29,6 +29,8 @@ services:
       DB_PASSWORD: ${MYSQL_PASSWORD}
       DB_NAME: ${MYSQL_DATABASE:-pragmattie_pmo}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      # Local only: the stack runs over plain http, so cookies can't be Secure here.
+      COOKIE_SECURE: "false"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AGENT_MODE: ${AGENT_MODE:-off}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
