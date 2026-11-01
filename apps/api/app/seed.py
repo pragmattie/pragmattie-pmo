@@ -78,7 +78,7 @@ PROJECTS: tuple[dict[str, Any], ...] = (
         "seed_key": "project-larchwick-onboarding",
         "client": "client-larchwick",
         "name": "Member Onboarding Portal",
-        "stage": "intake",
+        "stage": "initiating",
         "sponsor": "Perpetua Hollingmoor",
         "sponsor_email": "perpetua.hollingmoor@larchwick-mutual.example",
         "pm": "Casimir Duncombe",

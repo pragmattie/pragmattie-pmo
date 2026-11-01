@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db import engine
 from app.models import Base, Client, Project
+from app.models.portfolio import STAGES, STATUSES
 from app.seed import CLIENTS, PROJECTS, clear_seeded, main, seed
 
 API_DIR = Path(__file__).resolve().parents[1]
@@ -41,7 +42,7 @@ def _count(db: Session, model) -> int:
 def _own_project(client_id: int) -> Project:
     """A project a person created: no seed_key."""
     return Project(
-        client_id=client_id, name="Own", stage="intake", sponsor="S", pm="P", status="on_track"
+        client_id=client_id, name="Own", stage="initiating", sponsor="S", pm="P", status="on_track"
     )
 
 
@@ -54,6 +55,14 @@ def test_seed_creates_three_clients_and_an_internal_project(db):
     assert sync is not None and sync.client_id is None
     client_projects = db.scalars(select(Project).where(Project.client_id.is_not(None))).all()
     assert len({p.client_id for p in client_projects}) == 3
+
+
+def test_seeded_projects_use_known_stages_and_statuses():
+    # Stage names follow general project practice stages, e.g. "initiating", not "intake".
+    assert "initiating" in STAGES and "intake" not in STAGES
+    for project in PROJECTS:
+        assert project["stage"] in STAGES, project["seed_key"]
+        assert project["status"] in STATUSES, project["seed_key"]
 
 
 def test_every_email_and_website_is_on_example(db):

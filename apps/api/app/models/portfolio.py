@@ -16,7 +16,8 @@ CLIENTS_TABLE = table_name("clients")
 PROJECTS_TABLE = table_name("projects")
 
 # Working value sets until the stage gates (milestone P5) and status reports define them.
-STAGES = ("intake", "planning", "executing", "closing", "closed")
+# "initiating" follows general project practice Initiating stage.
+STAGES = ("initiating", "planning", "executing", "closing", "closed")
 STATUSES = ("on_track", "at_risk", "off_track", "on_hold", "complete")
 
 
