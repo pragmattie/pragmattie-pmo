@@ -2,5 +2,6 @@
 
 from app.models.audit import AuditDecision
 from app.models.base import Base, Money, utcnow
+from app.models.portfolio import Client, Project
 
-__all__ = ["AuditDecision", "Base", "Money", "utcnow"]
+__all__ = ["AuditDecision", "Base", "Client", "Money", "Project", "utcnow"]
