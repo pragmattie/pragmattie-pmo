@@ -164,7 +164,8 @@ def test_runs_as_a_module(tmp_path):
     assert result.returncode == 0 and "--reset" in result.stdout
 
 
-def test_api_lists_are_paged_and_stable(db, client):
+def test_api_lists_are_paged_and_stable(db, client, sign_in):
+    sign_in(client, db, "auditor")
     seed(db)
     db.commit()
     body = client.get("/api/v1/clients").json()
@@ -184,7 +185,8 @@ def test_api_lists_are_paged_and_stable(db, client):
 
 
 @pytest.mark.parametrize("path", ["/api/v1/clients", "/api/v1/projects"])
-def test_api_lists_are_read_only_and_validate_paging(db, client, path):
+def test_api_lists_are_read_only_and_validate_paging(db, client, sign_in, path):
+    sign_in(client, db, "auditor")
     assert client.get(path, params={"limit": 101}).status_code == 422
     assert client.get(path, params={"offset": -1}).status_code == 422
     for method in ("post", "put", "patch", "delete"):

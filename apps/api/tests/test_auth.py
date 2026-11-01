@@ -41,7 +41,7 @@ def user(db) -> User:
         email="Ada.Reviewer@PMO.example",
         display_name="Ada Reviewer",
         password_hash=hash_password(PASSWORD),
-        role="pm",
+        role="project_manager",
     )
     db.add(row)
     db.commit()
@@ -78,7 +78,14 @@ def test_correct_login_sets_cookies_and_returns_the_user(web, user):
         "id": user.id,
         "email": EMAIL,
         "display_name": "Ada Reviewer",
-        "role": "pm",
+        "role": "project_manager",
+        "actions": [
+            "project:read",
+            "project:write",
+            "report:publish",
+            "risk:accept",
+            "standards:read",
+        ],
     }
     cookies = _set_cookies(response)
     session = cookies[SESSION_COOKIE].lower()
@@ -98,7 +105,7 @@ def test_token_claims(web, user):
         web.cookies[SESSION_COOKIE], get_settings().jwt_secret, algorithms=["HS256"]
     )
     assert set(claims) == {"sub", "role", "iat", "exp", "jti"}
-    assert claims["sub"] == str(user.id) and claims["role"] == "pm"
+    assert claims["sub"] == str(user.id) and claims["role"] == "project_manager"
     assert claims["exp"] - claims["iat"] == 30 * 60
 
 
@@ -192,7 +199,10 @@ def test_too_long_password_is_refused_with_the_generic_message(web, user, monkey
 
 def test_password_at_the_cap_is_checked_normally(web, db):
     password = "p" * PASSWORD_MAX_LENGTH
-    db.add(User(email=EMAIL, display_name="Ada", password_hash=hash_password(password), role="pm"))
+    password_hash = hash_password(password)
+    db.add(
+        User(email=EMAIL, display_name="Ada", password_hash=password_hash, role="project_manager")
+    )
     db.commit()
     assert _login(web, password=password).status_code == 200
 

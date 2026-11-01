@@ -86,6 +86,16 @@ features:
       section: "0"
     ai_phase: none
     notes: Argon2id passwords, short signed sessions with CSRF checks; every route needs a permission; no self-approval.
+  - id: P2-roles
+    title: Roles and route guards
+    focus_area: executing
+    domain: governance
+    ai_standard:
+      kind: practice_area
+      name: AI quality
+      section: "0"
+    ai_phase: none
+    notes: One permissions table; every route needs a guard; only admins change roles, never their own, and each change is audited.
   - id: P2-login-audit
     title: Login audit, lockout and rate limits
     focus_area: monitoring_controlling

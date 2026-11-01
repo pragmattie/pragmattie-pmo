@@ -1,4 +1,4 @@
-"""Read-only lists of clients and projects. Permissions arrive with roles in milestone P2."""
+"""Read-only lists of clients and projects. Both need `project:read`."""
 
 from typing import Annotated
 
@@ -6,12 +6,13 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.authz import Action, require
 from app.db import get_db
 from app.models import Client, Project
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
 from app.schemas.portfolio import ClientOut, ProjectOut
 
-router = APIRouter(tags=["portfolio"])
+router = APIRouter(tags=["portfolio"], dependencies=[Depends(require(Action.PROJECT_READ))])
 
 
 @router.get("/clients", response_model=Page[ClientOut])

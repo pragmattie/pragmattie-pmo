@@ -18,3 +18,5 @@ class UserOut(BaseModel):
     email: str
     display_name: str
     role: str
+    # What the role may do (app/authz.py), so the web can hide the rest. The API still checks.
+    actions: list[str] = []
