@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     argon2_time_cost: int = Field(default=3, ge=1)
     argon2_memory_cost: int = Field(default=65536, ge=8)
     argon2_parallelism: int = Field(default=4, ge=1)
+
+    # Lockout and rate limiting (app/api/auth.py). Our own numbers: this many failed
+    # logins within `lockout_minutes` locks the account for `lockout_minutes` from the last one,
+    # and each client IP may try to sign in this many times per minute.
+    lockout_threshold: int = Field(default=5, ge=1)
+    lockout_minutes: int = Field(default=15, ge=1)
+    login_rate_per_minute: int = Field(default=10, ge=1)
+
     anthropic_api_key: str | None = Field(default=None, repr=False)
 
     cors_origins: str = "http://localhost:5173"

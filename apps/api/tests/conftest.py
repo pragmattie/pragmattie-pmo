@@ -52,3 +52,13 @@ def _sign_in(web: TestClient, db, role: str, email: str | None = None):
 def sign_in():
     """`sign_in(client, db, role)` signs `client` in as a new user with that role."""
     return _sign_in
+
+
+@pytest.fixture(autouse=True)
+def _reset_login_limiter():
+    """The login rate limiter is per process, so every test starts with a clean count."""
+    from app.api.auth import login_limiter
+
+    login_limiter.reset()
+    yield
+    login_limiter.reset()
