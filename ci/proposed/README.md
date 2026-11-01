@@ -18,11 +18,12 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`CLAUDE.md.standards-note.md`** (item 1.6): one bullet for `CLAUDE.md` restating the
-  no-quoting rule for `docs/standards-map.yaml`. Add it where the file says, then delete the file.
+Nothing is waiting.
 
 ## Applied
 
+- **`CLAUDE.md` standards note** (item 1.6): the standards map bullet was added to `CLAUDE.md`,
+  with a rule that agents cite published names and sections only from an issue or this repository.
 - **`policies/`** (item 1.4): the first real `tiers.yaml`, `risk.yaml`, `gates.yaml` and
   `approvers.yaml`, moved from `ci/proposed/policies/`. `apps/api/app/policy.py` validates them
   strictly and has no defaults in code, so a bad or missing file raises `PolicyError`. To change a
