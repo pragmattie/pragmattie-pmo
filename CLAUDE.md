@@ -23,6 +23,10 @@ If this file and an issue disagree, stop and say so in your summary rather than 
 - **You cannot read general practice.** Use only the names and section numbers that an issue gives you
   or that are already in this repository. Never cite one from memory; if you need one you don't
   have, say so in your summary.
+- **Follow `policies/project-rules.md`.** It holds our own rules, informed by those sources. Follow
+  every rule that applies to your change. If you depart from one, say which and why in your
+  summary; the reviewer checks changes against it. the published names may appear only to identify its
+  publications and concepts: never suggest that published endorses this product.
 - **Standards map.** `docs/standards-map.yaml` tags every feature to general practice and is
   served at `GET /api/v1/standards`. The no-quoting rule applies there in full: paraphrase, cite a
   section number, and never paste wording, tables or figures. Each entry's prose (title, notes and
