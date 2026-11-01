@@ -5,6 +5,7 @@ tests (`APP_ENV=test`), a missing database URL or JWT secret stops startup with 
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal, get_args
 
 from pydantic import Field, model_validator
@@ -19,6 +20,13 @@ APP_ENVS: tuple[AppEnv, ...] = get_args(AppEnv)
 AGENT_MODES: tuple[AgentMode, ...] = get_args(AgentMode)
 
 TEST_DATABASE_URL = "sqlite:///./test.db"
+
+
+def _default_policies_dir() -> Path:
+    """`policies/` at the repository root (this file is `apps/api/app/config.py`). In a shallower
+    tree, such as the API image's `/app/app/config.py`, this resolves to `/policies`."""
+    parents = Path(__file__).resolve().parents
+    return parents[min(3, len(parents) - 1)] / "policies"
 
 
 class Settings(BaseSettings):
@@ -43,6 +51,9 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173"
     agent_mode: AgentMode = "off"
+
+    # Governance YAML files; read only by app/policy.py, on first use.
+    policies_dir: Path = Field(default_factory=_default_policies_dir)
 
     @property
     def cors_origin_list(self) -> list[str]:
