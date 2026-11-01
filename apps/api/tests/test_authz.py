@@ -477,6 +477,24 @@ def test_admin_unlocks_an_account_and_the_unlock_is_one_audit_row(web, db, sign_
     assert row.action_taken == {"action": "unlock", "was_locked": True}
 
 
+def test_unlocking_an_expired_lock_records_was_locked_false(web, db, sign_in):
+    sign_in(web, db, "admin")
+    target = _target(db)
+    target.locked_until = datetime(2000, 1, 1)
+    db.commit()
+    assert web.post(f"/api/v1/users/{target.id}/unlock").status_code == 200
+    (row,) = _audit_rows(db)
+    assert row.action_taken == {"action": "unlock", "was_locked": False}
+
+
+def test_unlocking_an_account_that_was_never_locked_records_was_locked_false(web, db, sign_in):
+    sign_in(web, db, "admin")
+    target = _target(db)
+    assert web.post(f"/api/v1/users/{target.id}/unlock").status_code == 200
+    (row,) = _audit_rows(db)
+    assert row.action_taken == {"action": "unlock", "was_locked": False}
+
+
 def test_unlock_and_role_change_share_the_attempt_sequence(web, db, sign_in):
     sign_in(web, db, "admin")
     target = _locked_target(db)

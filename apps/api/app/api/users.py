@@ -20,7 +20,7 @@ from app.api.auth import user_out
 from app.audit import record_decision
 from app.authz import Action, Role, require
 from app.db import get_db
-from app.models import AuditDecision, User
+from app.models import AuditDecision, User, utcnow
 from app.schemas.auth import UserOut
 from app.schemas.users import RoleChangeIn
 
@@ -104,7 +104,8 @@ def unlock(
     target = db.scalar(select(User).where(User.id == user_id).with_for_update())
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
-    was_locked = target.locked_until is not None
+    # Only a lock still in force counts; an expired one no longer refuses sign-in.
+    was_locked = target.locked_until is not None and target.locked_until > utcnow()
     target.locked_until = None
     target.failed_logins = 0
     target.failed_window_started_at = None
