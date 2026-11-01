@@ -149,7 +149,7 @@ signed_in.pmo_guard = "signed_in"  # type: ignore[attr-defined]
 def not_own_submission(actor_id: int, submitter_id: int | None) -> None:
     """Separation of duties: nobody approves or decides on their own submission (403).
 
-    The hook for later items (intake, gates, risks, proposals); role changes use it too.
+    The hook for later items (intake, gates, risks, proposals); no route calls it yet.
     """
     if submitter_id is not None and actor_id == submitter_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "you cannot decide on your own submission")
