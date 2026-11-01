@@ -85,7 +85,7 @@ features:
       name: AI quality
       section: "0"
     ai_phase: none
-    notes: Every route needs an explicit permission; no role approves its own submission.
+    notes: Argon2id passwords, short signed sessions with CSRF checks; every route needs a permission; no self-approval.
   - id: P2-login-audit
     title: Login audit, lockout and rate limits
     focus_area: monitoring_controlling
