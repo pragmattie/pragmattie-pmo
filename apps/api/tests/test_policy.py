@@ -93,6 +93,13 @@ def test_bad_yaml_raises(tmp_path):
         load_policies(directory)
 
 
+def test_non_utf8_file_raises(tmp_path):
+    directory = policy_dir(tmp_path)
+    (directory / "tiers.yaml").write_bytes(b"version: 1\nfallback_tier: \xff\xfe\n")
+    with pytest.raises(PolicyError, match="tiers.yaml: not valid UTF-8"):
+        load_policies(directory)
+
+
 def test_non_mapping_file_raises(tmp_path):
     directory = policy_dir(tmp_path)
     (directory / "gates.yaml").write_text("- just\n- a list\n")
@@ -280,6 +287,16 @@ def test_impact_floor_must_name_a_band(tmp_path):
         "risk.yaml",
         lambda d: d["minimum_band_by_impact"].update({5: "Severe"}),
         "'Severe' is not a priority band",
+    )
+
+
+@pytest.mark.parametrize("value", [["Medium"], {"band": "Medium"}, 3, None])
+def test_impact_floor_must_be_text(tmp_path, value):
+    assert_rejected(
+        tmp_path,
+        "risk.yaml",
+        lambda d: d["minimum_band_by_impact"].update({5: value}),
+        r"minimum_band_by_impact\.5: expected non-empty text",
     )
 
 

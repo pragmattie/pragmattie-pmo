@@ -173,6 +173,8 @@ def _read(directory: Path, name: str) -> dict:
             f"{name}: policy file not found at {path}. The real files are applied by a person "
             "(drafts are in ci/proposed/policies/)."
         ) from None
+    except UnicodeDecodeError:
+        raise PolicyError(f"{name}: not valid UTF-8 text") from None
     except OSError as exc:
         raise PolicyError(f"{name}: cannot read {path}: {exc.strerror}") from None
     try:
@@ -360,6 +362,7 @@ def parse_risk(data: dict, roles: Mapping[str, Approver], where: str = "risk.yam
     for level, band in _mapping(data["minimum_band_by_impact"], at).items():
         if type(level) is not int or level not in SCALE_LEVELS:
             raise PolicyError(f"{at}: unknown impact level {level!r}; levels are 1 to 5")
+        band = _text(band, f"{at}.{level}")
         if band not in rank:
             raise PolicyError(f"{at}.{level}: {band!r} is not a priority band")
         minimums[level] = band
