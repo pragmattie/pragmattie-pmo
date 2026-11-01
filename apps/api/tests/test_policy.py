@@ -228,9 +228,10 @@ def test_bands_must_cover_every_score(tmp_path):
 
 def test_band_with_min_above_max_raises(tmp_path):
     def change(data):
-        data["priority_bands"][0]["max_score"] = 0
+        data["priority_bands"][0]["min_score"] = 10
+        data["priority_bands"][0]["max_score"] = 8
 
-    assert_rejected(tmp_path, "risk.yaml", change, "expected a whole number of at least 1")
+    assert_rejected(tmp_path, "risk.yaml", change, "min_score is above max_score")
 
 
 def test_escalation_owner_must_be_a_role(tmp_path):
