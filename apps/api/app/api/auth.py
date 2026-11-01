@@ -20,6 +20,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db import get_db
 from app.models import RevokedToken, User, utcnow
 from app.models.auth import normalize_email
@@ -147,7 +148,7 @@ async def login(
     # argon2 and the database block, so they run off the event loop.
     user, session = await run_in_threadpool(_authenticate, db, body)
 
-    max_age = int((session.expires_at - datetime.now(UTC)).total_seconds())
+    max_age = get_settings().jwt_ttl_minutes * 60
     _set_cookie(response, request, SESSION_COOKIE, session.token, max_age)
     _set_cookie(response, request, CSRF_COOKIE, new_csrf_token(), max_age)
     return UserOut.model_validate(user)
