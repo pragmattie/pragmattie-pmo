@@ -10,7 +10,15 @@ SECRET = "jwt-not-a-real-secret-only-for-tests"
 @pytest.fixture
 def clean_env(monkeypatch):
     """No app settings in the environment; each test sets what it needs."""
-    for name in ("APP_ENV", "DATABASE_URL", "JWT_SECRET", "DB_HOST", "DB_USER", "DB_PASSWORD"):
+    for name in (
+        "APP_ENV",
+        "DATABASE_URL",
+        "JWT_SECRET",
+        "DB_HOST",
+        "DB_USER",
+        "DB_PASSWORD",
+        "COOKIE_SECURE",
+    ):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
@@ -86,6 +94,12 @@ def test_auth_defaults(clean_env):
     settings = Settings(_env_file=None, app_env="test")
     assert settings.jwt_ttl_minutes == 30
     assert settings.argon2_time_cost >= 1 and settings.argon2_parallelism >= 1
+    assert settings.cookie_secure is True
+
+
+def test_cookie_secure_can_be_turned_off_from_the_environment(clean_env):
+    clean_env.setenv("COOKIE_SECURE", "false")
+    assert Settings(_env_file=None, app_env="test").cookie_secure is False
 
 
 def test_repr_hides_secrets(clean_env):

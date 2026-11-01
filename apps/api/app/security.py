@@ -22,7 +22,6 @@ JWT_ALGORITHM = "HS256"
 SESSION_COOKIE = "pmo_session"
 CSRF_COOKIE = "pmo_csrf"
 CSRF_HEADER = "X-CSRF-Token"
-LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def _params() -> tuple[int, int, int]:
@@ -99,8 +98,3 @@ def csrf_matches(cookie_value: str | None, header_value: str | None) -> bool:
     if not cookie_value or not header_value:
         return False
     return hmac.compare_digest(cookie_value.encode(), header_value.encode())
-
-
-def cookie_secure(host: str | None) -> bool:
-    """Cookies are Secure everywhere except when the API is reached on localhost."""
-    return (host or "").lower() not in LOCAL_HOSTS

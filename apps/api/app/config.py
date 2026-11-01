@@ -62,6 +62,9 @@ class Settings(BaseSettings):
 
     jwt_secret: str | None = Field(default=None, repr=False)
     jwt_ttl_minutes: int = Field(default=30, ge=1)
+    # Session and CSRF cookies are Secure unless this is turned off. Turn it off only for local
+    # development over plain http (docker-compose.yml does); never in a hosted environment.
+    cookie_secure: bool = True
 
     # Argon2id cost parameters (argon2-cffi's defaults). Memory is in KiB.
     argon2_time_cost: int = Field(default=3, ge=1)

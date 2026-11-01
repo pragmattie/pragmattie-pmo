@@ -2,7 +2,10 @@
 
 The session is an httpOnly, SameSite=Lax cookie holding a JWT; a second, readable cookie holds a
 CSRF token that the web echoes in the `X-CSRF-Token` header on every unsafe method. Cookies are
-Secure except when the API is reached on localhost.
+Secure unless the `cookie_secure` setting is off (local development over plain http only).
+
+Login accepts only an `application/json` body. A browser can't send that type cross-site without
+a CORS preflight, so another site can't sign a visitor in with a plain form post.
 
 `current_user` loads the user from the database on every request. Code that needs the role reads
 it from that row, never from the token, so a role change or deactivation applies at once.
@@ -30,7 +33,6 @@ from app.security import (
     CSRF_HEADER,
     SESSION_COOKIE,
     SessionToken,
-    cookie_secure,
     csrf_matches,
     decode_token,
     issue_token,
@@ -45,10 +47,16 @@ LOGOUT_PATH = "/api/v1/auth/logout"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 LOGIN_FAILED = "invalid email or password"
 NOT_SIGNED_IN = "not signed in or session expired"
+JSON_MEDIA_TYPE = "application/json"
 
 
 def _login_failed() -> HTTPException:
     return HTTPException(status.HTTP_401_UNAUTHORIZED, LOGIN_FAILED)
+
+
+def _is_json(request: Request) -> bool:
+    media_type = request.headers.get("content-type", "").split(";", 1)[0]
+    return media_type.strip().lower() == JSON_MEDIA_TYPE
 
 
 def _naive_utc(timestamp: int | float) -> datetime:
@@ -88,24 +96,24 @@ def current_user(request: Request, db: Annotated[Session, Depends(get_db)]) -> U
     return user
 
 
-def _set_cookie(response: Response, request: Request, name: str, value: str, max_age: int) -> None:
+def _set_cookie(response: Response, name: str, value: str, max_age: int) -> None:
     response.set_cookie(
         name,
         value,
         max_age=max_age,
         path="/",
-        secure=cookie_secure(request.url.hostname),
+        secure=get_settings().cookie_secure,
         httponly=name == SESSION_COOKIE,
         samesite="lax",
     )
 
 
-def _clear_cookies(response: Response, request: Request) -> None:
+def _clear_cookies(response: Response) -> None:
     for name in (SESSION_COOKIE, CSRF_COOKIE):
         response.delete_cookie(
             name,
             path="/",
-            secure=cookie_secure(request.url.hostname),
+            secure=get_settings().cookie_secure,
             httponly=name == SESSION_COOKIE,
             samesite="lax",
         )
@@ -130,7 +138,7 @@ def _authenticate(db: Session, body: LoginIn) -> tuple[User, SessionToken]:
     openapi_extra={
         "requestBody": {
             "required": True,
-            "content": {"application/json": {"schema": LoginIn.model_json_schema()}},
+            "content": {JSON_MEDIA_TYPE: {"schema": LoginIn.model_json_schema()}},
         }
     },
 )
@@ -138,7 +146,9 @@ async def login(
     request: Request, response: Response, db: Annotated[Session, Depends(get_db)]
 ) -> UserOut:
     # The body is parsed here, not by FastAPI, so a bad body gets the generic message and a
-    # validation error can never echo the password back.
+    # validation error can never echo the password back. Only JSON is accepted (see above).
+    if not _is_json(request):
+        raise _login_failed()
     try:
         body = LoginIn.model_validate(await request.json())
     except (ValueError, ValidationError):
@@ -149,8 +159,8 @@ async def login(
     user, session = await run_in_threadpool(_authenticate, db, body)
 
     max_age = get_settings().jwt_ttl_minutes * 60
-    _set_cookie(response, request, SESSION_COOKIE, session.token, max_age)
-    _set_cookie(response, request, CSRF_COOKIE, new_csrf_token(), max_age)
+    _set_cookie(response, SESSION_COOKIE, session.token, max_age)
+    _set_cookie(response, CSRF_COOKIE, new_csrf_token(), max_age)
     return UserOut.model_validate(user)
 
 
@@ -174,7 +184,7 @@ def logout(request: Request, response: Response, db: Annotated[Session, Depends(
     except IntegrityError:
         # A concurrent logout of the same session already revoked it.
         db.rollback()
-    _clear_cookies(response, request)
+    _clear_cookies(response)
 
 
 @router.get("/me", response_model=UserOut)

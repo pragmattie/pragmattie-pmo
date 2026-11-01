@@ -50,7 +50,7 @@ def user(db) -> User:
 
 @pytest.fixture
 def web(db) -> TestClient:
-    # On localhost the cookies are not Secure, so the test client sends them back over http.
+    # COOKIE_SECURE is off in tests (conftest.py), so the client sends cookies back over http.
     return TestClient(app, base_url="http://localhost")
 
 
@@ -83,7 +83,7 @@ def test_correct_login_sets_cookies_and_returns_the_user(web, user):
     cookies = _set_cookies(response)
     session = cookies[SESSION_COOKIE].lower()
     assert "httponly" in session and "samesite=lax" in session and "max-age=1800" in session
-    assert "secure" not in session  # localhost
+    assert "secure" not in session  # COOKIE_SECURE is off in tests
     csrf = cookies[CSRF_COOKIE].lower()
     assert "httponly" not in csrf and "samesite=lax" in csrf
 
@@ -102,11 +102,31 @@ def test_token_claims(web, user):
     assert claims["exp"] - claims["iat"] == 30 * 60
 
 
-def test_cookies_are_secure_off_localhost(db, user):
-    response = _login(TestClient(app, base_url="http://pmo.example"))
+@pytest.mark.parametrize("base_url", ["http://localhost", "http://api:8000", "http://pmo.example"])
+def test_cookie_secure_on_marks_cookies_secure_whatever_the_host(db, user, monkeypatch, base_url):
+    monkeypatch.setattr(get_settings(), "cookie_secure", True)
+    response = _login(TestClient(app, base_url=base_url))
     assert response.status_code == 200
     for header in _set_cookies(response).values():
         assert "secure" in header.lower()
+    # The client won't send Secure cookies over http, so send them by hand to sign out.
+    session, csrf = response.cookies[SESSION_COOKIE], response.cookies[CSRF_COOKIE]
+    cookie = f"{SESSION_COOKIE}={session}; {CSRF_COOKIE}={csrf}"
+    logout = TestClient(app, base_url=base_url).post(
+        LOGOUT, headers={"cookie": cookie, "X-CSRF-Token": csrf}
+    )
+    assert logout.status_code == 204
+    for header in _set_cookies(logout).values():
+        assert "secure" in header.lower()
+
+
+@pytest.mark.parametrize("base_url", ["http://localhost", "http://pmo.example"])
+def test_cookie_secure_off_leaves_cookies_plain_whatever_the_host(db, user, monkeypatch, base_url):
+    monkeypatch.setattr(get_settings(), "cookie_secure", False)
+    response = _login(TestClient(app, base_url=base_url))
+    assert response.status_code == 200
+    for header in _set_cookies(response).values():
+        assert "secure" not in header.lower()
 
 
 def test_last_login_is_recorded(web, user, db):
@@ -186,6 +206,28 @@ def test_malformed_login_body_gets_the_generic_message(web, user, body):
     assert response.status_code == 401
     assert response.json() == {"detail": LOGIN_FAILED}
     assert "123456" not in response.text
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [None, "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", "text/plain"],
+)
+def test_login_without_a_json_content_type_gets_the_generic_401(web, user, content_type):
+    # A form post from another site must not sign the visitor in, even with a JSON-looking body.
+    body = f'{{"email": "{EMAIL}", "password": "{PASSWORD}"}}'.encode()
+    headers = {"content-type": content_type} if content_type else {}
+    response = web.post(LOGIN, content=body, headers=headers)
+    assert response.status_code == 401
+    assert response.json() == {"detail": LOGIN_FAILED}
+    assert SESSION_COOKIE not in _set_cookies(response)
+
+
+def test_login_accepts_json_with_a_charset(web, user):
+    body = f'{{"email": "{EMAIL}", "password": "{PASSWORD}"}}'.encode()
+    response = web.post(
+        LOGIN, content=body, headers={"content-type": "Application/JSON; charset=utf-8"}
+    )
+    assert response.status_code == 200
 
 
 def test_me_without_a_session_is_401(web, user):
