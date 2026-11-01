@@ -185,16 +185,16 @@ def _clear_cookies(response: Response) -> None:
 
 
 def _fail(
-    db: Session, ip: str, user: User | None, reason: str, *, count: bool = False
+    db: Session, ip: str, user: User | None, reason: str, *, count_at: datetime | None = None
 ) -> HTTPException:
-    """Audit a failed login, count it against the user if `count`, and commit both before the
-    401 is raised, so a failure never loses its row."""
+    """Audit a failed login, count it against the user if `count_at` is given, and commit both
+    before the 401 is raised, so a failure never loses its row."""
     user_id = user.id if user else None
     record_auth_event(
         db, "login_failure", ip=ip, user_id=user_id, reason=reason, status_="rejected"
     )
-    if count and user is not None:
-        _count_failure(db, user, ip, utcnow())
+    if count_at is not None and user is not None:
+        _count_failure(db, user, ip, count_at)
     db.commit()
     return _login_failed()
 
@@ -248,7 +248,7 @@ def _authenticate(
         raise _fail(db, ip, user, "locked")
     if not password_ok or not user.is_active:
         reason = "bad_password" if not password_ok else "inactive"
-        raise _fail(db, ip, user, reason, count=True)
+        raise _fail(db, ip, user, reason, count_at=now)
 
     user.failed_logins = 0
     user.failed_window_started_at = None
