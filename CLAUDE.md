@@ -14,25 +14,19 @@ If this file and an issue disagree, stop and say so in your summary rather than 
   broader-project companion to the delivery work shown there.
 - It is a client demonstration for **PragMattie Growth Partners, LLC**. The code is public but
   **all rights reserved**: there is no licence granting reuse, and you must not add one.
-- Content follows three general practice (general project practice, AI governance practice, and AI project practice).
-  Their licences are personal-use only. **Paraphrase, and cite section numbers; never quote more
-  than a few words, and never paste passages, tables or figures from them.**
-- **Use the published terms and rules wherever possible.** Check a term against its source before using
-  it. If we depart from a source, say so and why. published sets no numeric cut-offs, so label ours as
-  our own choice.
-- **You cannot read general practice.** Use only the names and section numbers that an issue gives you
-  or that are already in this repository. Never cite one from memory; if you need one you don't
-  have, say so in your summary.
-- **Follow `policies/project-rules.md`.** It holds our own rules, informed by those sources. Follow
-  every rule that applies to your change. If you depart from one, say which and why in your
-  summary; the reviewer checks changes against it. the published names may appear only to identify its
-  publications and concepts: never suggest that published endorses this product.
-- **Standards map.** `docs/standards-map.yaml` tags every feature to general practice and is
-  served at `GET /api/v1/standards`. The no-quoting rule applies there in full: paraphrase, cite a
-  section number, and never paste wording, tables or figures. Each entry's prose (title, notes and
-  AI-standard name) is capped at 200 characters, and a test in
-  `apps/api/tests/test_standards.py` rejects longer entries and unknown values. When you build a
-  feature, add or update its entry under its milestone (`P<n>-<slug>`).
+- **Our rules and names are our own**, informed by generally accepted project management and AI
+  governance practice. **Never name, cite or quote any published standard, guide, certification
+  or professional body**, in code, docs, comments, issues or pull requests, and never give a
+  section reference. Don't take named phases, principles or other structures from a published
+  method: if a stage, gate or scoring scheme needs a name, use the one in the issue or this
+  repository, or ask. Everyday project words are fine (sponsor, risk register, threat).
+- **Follow `policies/project-rules.md`.** Follow every rule that applies to your change. If you
+  depart from one, say which and why in your summary; the reviewer checks changes against it.
+- **Standards map.** `docs/standards-map.yaml` lists the rules from `policies/project-rules.md`
+  that each feature follows and is served at `GET /api/v1/standards`. Each entry's title and notes
+  are capped at 200 characters, and a test in `apps/api/tests/test_standards.py` rejects longer
+  entries and unknown rules. When you build a feature, add or update its entry under its milestone
+  (`P<n>-<slug>`).
 
 ## How you work
 

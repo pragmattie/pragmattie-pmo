@@ -1,15 +1,14 @@
 """Standards traceability map: read `docs/standards-map.yaml`, validate it, return a frozen model.
 
-The map tags every feature to general project practice, AI governance practice, and AI project practice. It holds
-paraphrase and section numbers only, so prose is capped per entry, and AI-standard references
-must be one of the checked combinations in `AI_STANDARD_REFS`. A missing or invalid file
-raises `StandardsError`. The map loads on first use and is cached for the life of the process.
+The map says which of our own rules (`policies/project-rules.md`) each feature follows. Entries
+stay short, and a rule reference must be one of `RULE_IDS`. A missing or invalid file raises
+`StandardsError`. The map loads on first use and is cached for the life of the process.
 """
 
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -17,39 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from app.config import get_settings
 
 SCHEMA_VERSION = 1
-# Our own cut-off: a short paraphrase fits, a pasted passage does not.
 MAX_PROSE_CHARS = 200
 PLAN_MILESTONES = ("P1", "P2", "P3", "P4", "P5", "P6", "P7")
 
-FocusArea = Literal["initiating", "planning", "executing", "monitoring_controlling", "closing"]
-Domain = Literal["governance", "scope", "schedule", "finance", "stakeholders", "resources", "risk"]
-AiKind = Literal["principle", "practice_area"]
-AiPhase = Literal["I", "II", "III", "IV", "V", "VI", "none"]
-
-FOCUS_AREAS: tuple[FocusArea, ...] = get_args(FocusArea)
-DOMAINS: tuple[Domain, ...] = get_args(Domain)
-AI_KINDS: tuple[AiKind, ...] = get_args(AiKind)
-AI_PHASES: tuple[AiPhase, ...] = get_args(AiPhase)
+# The rules in `policies/project-rules.md`; a test keeps this in step with that file.
+RULE_IDS = tuple(f"R{number}" for number in range(1, 13))
 
 ID_PATTERN = re.compile(r"^(P[1-7])-[a-z0-9]+(?:-[a-z0-9]+)*$")
-SECTION_PATTERN = re.compile(r"^\d+(?:\.\d+)*$")
-
-# The only AI-standard references allowed: (kind, name) -> section, as AI governance practice lists them in its contents (checked by a person).
-AI_STANDARD_REFS: dict[tuple[AiKind, str], str] = {
-    ("principle", "Value"): "0",
-    ("principle", "Risk"): "0",
-    ("principle", "Governance"): "0",
-    ("principle", "People"): "0",
-    ("principle", "Ethics"): "0",
-    ("principle", "Stakeholders"): "0",
-    ("principle", "Improvement"): "0",
-    ("principle", "Data"): "0",
-    ("practice_area", "AI stakeholders"): "0",
-    ("practice_area", "AI scope"): "0",
-    ("practice_area", "AI quality"): "0",
-    ("practice_area", "AI delivery"): "0",
-    ("practice_area", "AI risk"): "0",
-}
 
 
 class StandardsError(ValueError):
@@ -60,37 +33,10 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
 
-class AiStandardRef(_Strict):
-    kind: AiKind
-    name: str = Field(min_length=1)
-    section: str
-
-    @field_validator("section")
-    @classmethod
-    def _section_number(cls, value: str) -> str:
-        if not SECTION_PATTERN.match(value):
-            raise ValueError("must be a section number such as 3.2")
-        return value
-
-    @model_validator(mode="after")
-    def _known_reference(self) -> "AiStandardRef":
-        expected = AI_STANDARD_REFS.get((self.kind, self.name))
-        if expected is None:
-            raise ValueError(f"{self.name!r} is not a known {self.kind} of the AI standard")
-        if expected != self.section:
-            raise ValueError(
-                f"{self.kind} {self.name!r} is section {expected}, not section {self.section}"
-            )
-        return self
-
-
 class Feature(_Strict):
     id: str
     title: str = Field(min_length=1)
-    focus_area: FocusArea
-    domain: Domain
-    ai_standard: AiStandardRef
-    ai_phase: AiPhase
+    rules: tuple[str, ...]
     notes: str = ""
 
     @field_validator("id")
@@ -100,17 +46,26 @@ class Feature(_Strict):
             raise ValueError("must be P<1-7>-<lower-case-slug>, e.g. P1-audit-trail")
         return value
 
+    @field_validator("rules")
+    @classmethod
+    def _known_rules(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        unknown = [rule for rule in value if rule not in RULE_IDS]
+        if unknown:
+            raise ValueError(f"unknown rules: {', '.join(unknown)}")
+        if len(set(value)) != len(value):
+            raise ValueError("a rule is listed twice")
+        return value
+
     @property
     def milestone(self) -> str:
         return self.id.split("-", 1)[0]
 
     @model_validator(mode="after")
     def _prose_is_short(self) -> "Feature":
-        length = len(self.title) + len(self.notes) + len(self.ai_standard.name)
+        length = len(self.title) + len(self.notes)
         if length > MAX_PROSE_CHARS:
             raise ValueError(
-                f"prose (title, notes, ai_standard.name) is {length} characters; "
-                f"the limit is {MAX_PROSE_CHARS}. Paraphrase and cite section numbers instead"
+                f"prose (title, notes) is {length} characters; the limit is {MAX_PROSE_CHARS}"
             )
         return self
 

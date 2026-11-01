@@ -24,7 +24,7 @@ AGENT_MODES: tuple[AgentMode, ...] = get_args(AgentMode)
 
 TEST_DATABASE_URL = "sqlite:///./test.db"
 
-# Our own floor (: HS256 keys shorter than this are too easy to guess.
+# HS256 keys shorter than this are too easy to guess.
 JWT_SECRET_MIN_BYTES = 32
 
 

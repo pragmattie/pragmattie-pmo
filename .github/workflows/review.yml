@@ -133,7 +133,7 @@ jobs:
             echo "4. Scope and rules: nothing outside the issue; no change to .github/workflows/,"
             echo "   policies/ or CLAUDE.md; no credentials, tokens, passwords or .pem files; seed data"
             echo "   on .example only; money as 2-decimal strings; every API route guarded once login"
-            echo "   exists; no quoted passages from general practice (paraphrase and cite sections)."
+            echo "   exists; no citation of, or text from, any published standard or guide."
             echo
             echo "The pull request's description is its author's own account: check its claims against"
             echo "the code instead of trusting them."
