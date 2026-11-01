@@ -20,6 +20,15 @@ If this file and an issue disagree, stop and say so in your summary rather than 
 - **Use the published terms and rules wherever possible.** Check a term against its source before using
   it. If we depart from a source, say so and why. published sets no numeric cut-offs, so label ours as
   our own choice.
+- **You cannot read general practice.** Use only the names and section numbers that an issue gives you
+  or that are already in this repository. Never cite one from memory; if you need one you don't
+  have, say so in your summary.
+- **Standards map.** `docs/standards-map.yaml` tags every feature to general practice and is
+  served at `GET /api/v1/standards`. The no-quoting rule applies there in full: paraphrase, cite a
+  section number, and never paste wording, tables or figures. Each entry's prose (title, notes and
+  AI-standard name) is capped at 200 characters, and a test in
+  `apps/api/tests/test_standards.py` rejects longer entries and unknown values. When you build a
+  feature, add or update its entry under its milestone (`P<n>-<slug>`).
 
 ## How you work
 
