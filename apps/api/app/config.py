@@ -2,8 +2,11 @@
 
 Settings come from the environment and from a `.env` file in the working directory. Outside
 tests (`APP_ENV=test`), a missing database URL or JWT secret stops startup with a clear message.
+A JWT secret shorter than 32 bytes stops startup in every environment; in tests a missing one is
+replaced by a random secret made at runtime, so no secret is ever committed.
 """
 
+import secrets
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
@@ -20,6 +23,9 @@ APP_ENVS: tuple[AppEnv, ...] = get_args(AppEnv)
 AGENT_MODES: tuple[AgentMode, ...] = get_args(AgentMode)
 
 TEST_DATABASE_URL = "sqlite:///./test.db"
+
+# Our own floor (: HS256 keys shorter than this are too easy to guess.
+JWT_SECRET_MIN_BYTES = 32
 
 
 def _repo_root() -> Path:
@@ -55,6 +61,12 @@ class Settings(BaseSettings):
     database_ca_cert: str | None = Field(default=None, repr=False)
 
     jwt_secret: str | None = Field(default=None, repr=False)
+    jwt_ttl_minutes: int = Field(default=30, ge=1)
+
+    # Argon2id cost parameters (argon2-cffi's defaults). Memory is in KiB.
+    argon2_time_cost: int = Field(default=3, ge=1)
+    argon2_memory_cost: int = Field(default=65536, ge=8)
+    argon2_parallelism: int = Field(default=4, ge=1)
     anthropic_api_key: str | None = Field(default=None, repr=False)
 
     cors_origins: str = "http://localhost:5173"
@@ -80,9 +92,13 @@ class Settings(BaseSettings):
                 port=self.db_port,
                 database=self.db_name,
             ).render_as_string(hide_password=False)
+        if self.jwt_secret is not None and len(self.jwt_secret.encode()) < JWT_SECRET_MIN_BYTES:
+            raise ValueError(f"JWT_SECRET must be at least {JWT_SECRET_MIN_BYTES} bytes long.")
         if self.app_env == "test":
             if not self.database_url:
                 self.database_url = TEST_DATABASE_URL
+            if not self.jwt_secret:
+                self.jwt_secret = secrets.token_urlsafe(48)
             return self
         missing = []
         if not self.database_url:
