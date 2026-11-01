@@ -4,7 +4,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.api import audit, health
+from app.api import audit, health, portfolio
 from app.config import get_settings
 
 
@@ -21,6 +21,7 @@ def create_app() -> FastAPI:
     api = APIRouter(prefix="/api/v1")
     api.include_router(health.router)
     api.include_router(audit.router)
+    api.include_router(portfolio.router)
     app.include_router(api)
     return app
 
