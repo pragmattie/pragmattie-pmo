@@ -17,6 +17,9 @@ If this file and an issue disagree, stop and say so in your summary rather than 
 - Content follows three general practice (general project practice, AI governance practice, and AI project practice).
   Their licences are personal-use only. **Paraphrase, and cite section numbers; never quote more
   than a few words, and never paste passages, tables or figures from them.**
+- **Use the published terms and rules wherever possible.** Check a term against its source before using
+  it. If we depart from a source, say so and why. published sets no numeric cut-offs, so label ours as
+  our own choice.
 
 ## How you work
 
