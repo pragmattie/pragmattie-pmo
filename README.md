@@ -71,3 +71,4 @@ printing is refused, because CI logs in this repository are public.
 cd apps/api && pip install -r requirements-dev.txt && ruff check . && ruff format --check . && pytest -q
 cd apps/web && npm ci && npm test && npm run build
 ```
+Built by agents under PragMattie governance.
