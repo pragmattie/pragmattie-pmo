@@ -325,6 +325,25 @@ describe('risks page', () => {
     expect(lastList(fetchMock)).not.toHaveProperty('probability')
   })
 
+  it('keeps the table in step with the heat map when the kind switch changes', async () => {
+    const { wrapper, fetchMock } = await mountRisks('auditor')
+    await wrapper.get('[data-test="heat-kind-threat"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="heat-cell-2-4"]').trigger('click')
+    await flushPromises()
+    expect(lastList(fetchMock)).toMatchObject({
+      probability: '2',
+      impact: '4',
+      status: 'open',
+      kind: 'threat',
+    })
+
+    await wrapper.get('[data-test="heat-kind-opportunity"]').trigger('click')
+    await flushPromises()
+    expect(lastList(fetchMock)).toEqual({ limit: '25', offset: '0' })
+    expect(wrapper.find('[data-test="cell-filter"]').exists()).toBe(false)
+  })
+
   it.each([
     ['filter-status', 'closed', { status: 'closed' }],
     ['filter-band', 'High', { band: 'High' }],
@@ -423,6 +442,30 @@ describe('version conflicts', () => {
     expect(wrapper.get('[data-test="field-Version"]').text()).toBe('5')
     const reloads = fetchMock.mock.calls.filter(
       ([input, init]) => input === '/api/v1/projects/3/risks/2' && init?.method === 'GET',
+    )
+    expect(reloads.length).toBeGreaterThan(0)
+  })
+
+  it('shows a clear message and reloads the risk on a 409 when an edit is saved', async () => {
+    const stored = risk(2, { title: 'Changed by someone else', version: 5 })
+    const { wrapper, fetchMock } = await mountRisks('project_manager', {
+      patchStatus: 409,
+      stored,
+    })
+    await wrapper.get('[data-test="risk-row-2"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="edit-risk"]').trigger('click')
+    await flushPromises()
+    ;(document.querySelector('[data-test="form-save"]') as HTMLElement).click()
+    await flushPromises()
+
+    const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')!
+    expect(JSON.parse(String(patch[1]!.body))).toMatchObject({ version: 1, title: 'Risk 2' })
+    expect(wrapper.get('[data-test="drawer-message"]').text()).toBe(CONFLICT_MESSAGE)
+    expect(wrapper.get('[data-test="drawer-title"]').text()).toBe('Changed by someone else')
+    expect(wrapper.get('[data-test="field-Version"]').text()).toBe('5')
+    const reloads = fetchMock.mock.calls.filter(
+      ([input, init]) => input === '/api/v1/projects/3/risks/2' && (init?.method ?? 'GET') === 'GET',
     )
     expect(reloads.length).toBeGreaterThan(0)
   })

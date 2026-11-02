@@ -165,16 +165,28 @@ watch(
   },
 )
 watch([page, perPage], () => loadRisks())
+// The kind and status a cell click put in the table filter, so a switch of the heat map's
+// kind can take them out again and the table stays in step with the map.
+const cellSet = ref<Pick<Filters, 'kind' | 'status'> | null>(null)
+
 watch(heatKind, () => {
-  if (cellFilter.value) Object.assign(filters, { probability: null, impact: null })
+  const set = cellSet.value
+  const cleared: Partial<Filters> = cellFilter.value ? { probability: null, impact: null } : {}
+  if (set && filters.kind === set.kind) cleared.kind = null
+  if (set && filters.status === set.status) cleared.status = null
+  cellSet.value = null
+  if (Object.keys(cleared).length) Object.assign(filters, cleared)
   loadHeatmap()
 })
 
 function selectCell(cell: HeatCell) {
-  Object.assign(filters, toggleCell(filters, cell, heatKind.value))
+  const next = toggleCell(filters, cell, heatKind.value)
+  if (next.probability !== null) cellSet.value = { kind: next.kind, status: next.status }
+  Object.assign(filters, next)
 }
 
 function clearFilters() {
+  cellSet.value = null
   Object.assign(filters, NO_FILTERS)
 }
 
