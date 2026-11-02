@@ -119,6 +119,8 @@ def list_risks(
     band: Annotated[str | None, Query(max_length=32)] = None,
     category: Category | None = None,
     kind: Kind | None = None,
+    probability: Annotated[int | None, Query(ge=1, le=5)] = None,
+    impact: Annotated[int | None, Query(ge=1, le=5)] = None,
     sort: Literal["-score", "score"] = "-score",
     limit: Limit = DEFAULT_LIMIT,
     offset: Offset = 0,
@@ -130,6 +132,11 @@ def list_risks(
             stmt = stmt.where(col == value)
     if kind is not None:
         stmt = stmt.where(Risk.kind == kind)
+    # One heat map cell; the screen sets both.
+    if probability is not None:
+        stmt = stmt.where(Risk.probability == probability)
+    if impact is not None:
+        stmt = stmt.where(Risk.impact == impact)
     # Unscored risks last either way; the primary key breaks ties so pages are stable.
     score = Risk.score.desc() if sort == "-score" else Risk.score.asc()
     rows, total = paginate(

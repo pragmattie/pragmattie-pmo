@@ -419,6 +419,9 @@ def test_the_list_filters(web, db, pm, project):
     assert listed(band="Medium", kind="threat") == {ids["medium"]}
     assert web.get(_url(project.id), params={"status": "deleted"}).status_code == 422
     assert web.get(_url(project.id), params={"kind": "issue"}).status_code == 422
+    assert listed(probability=2, impact=4) == {ids["medium"]}
+    assert listed(probability=4) == {ids["medium_too"]}
+    assert web.get(_url(project.id), params={"impact": 6}).status_code == 422
 
 
 def test_the_list_holds_only_this_projects_risks(web, db, pm, project):
