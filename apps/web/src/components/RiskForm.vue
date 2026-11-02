@@ -115,7 +115,7 @@ async function submit() {
           {{ error }}
         </v-alert>
         <v-form ref="formRef" @submit.prevent="submit">
-          <v-row dense>
+          <v-row density="compact">
             <v-col cols="12" sm="6">
               <v-select
                 v-model="form.kind"

@@ -317,7 +317,12 @@ async function addFromLibrary() {
         <v-btn color="primary" variant="flat" data-test="add-risk" @click="startAdd">
           Add a risk
         </v-btn>
-        <v-btn color="secondary" variant="outlined" data-test="add-from-library" @click="startLibrary">
+        <v-btn
+          color="secondary"
+          variant="outlined"
+          data-test="add-from-library"
+          @click="startLibrary"
+        >
           Add from the library
         </v-btn>
       </template>
@@ -395,7 +400,7 @@ async function addFromLibrary() {
       </v-col>
 
       <v-col cols="12" md="8" order-md="1">
-        <v-row dense data-test="filters">
+        <v-row density="compact" data-test="filters">
           <v-col cols="6" sm="3">
             <v-select
               v-model="filters.status"
@@ -489,7 +494,9 @@ async function addFromLibrary() {
             </v-chip>
             <span v-else>—</span>
           </template>
-          <template #[`item.owner_user_id`]="{ item }">{{ ownerName(item.owner_user_id) }}</template>
+          <template #[`item.owner_user_id`]="{ item }">
+            {{ ownerName(item.owner_user_id) }}
+          </template>
           <template #[`item.status`]="{ item }">{{ label(item.status) }}</template>
           <template #[`item.response`]="{ item }">{{ label(item.response) }}</template>
         </v-data-table-server>
@@ -538,7 +545,12 @@ async function addFromLibrary() {
           <v-card-actions>
             <v-spacer />
             <v-btn variant="text" @click="confirmClose = false">Cancel</v-btn>
-            <v-btn color="primary" variant="flat" data-test="confirm-close-yes" @click="closeSelected">
+            <v-btn
+              color="primary"
+              variant="flat"
+              data-test="confirm-close-yes"
+              @click="closeSelected"
+            >
               Close risk
             </v-btn>
           </v-card-actions>

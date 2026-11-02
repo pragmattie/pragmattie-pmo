@@ -1,0 +1,429 @@
+import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import App from '../App.vue'
+import {
+  bandColor,
+  changedFields,
+  CONFLICT_MESSAGE,
+  type HeatCell,
+  heatGrid,
+  listQuery,
+  NEEDS_JUDGEMENT,
+  NO_FILTERS,
+  type Risk,
+  scoreText,
+  toggleCell,
+} from '../lib/risks'
+import { bandColors, makeVuetify } from '../plugins/vuetify'
+import { makeRouter } from '../router'
+
+global.ResizeObserver = class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+// jsdom has no visual viewport; Vuetify's dialogs read it when they open.
+vi.stubGlobal('visualViewport', new EventTarget())
+
+// The actions /auth/me sends for each role (the API's table in app/authz.py).
+const ACTIONS: Record<string, string[]> = {
+  sponsor: ['gate:decide', 'intake:decide', 'project:read', 'proposal:approve', 'risk:accept'],
+  project_manager: ['project:read', 'project:write', 'report:publish', 'risk:accept'],
+  auditor: ['audit:read', 'project:read', 'standards:read'],
+}
+
+function risk(id: number, changes: Partial<Risk> = {}): Risk {
+  return {
+    id,
+    project_id: 3,
+    kind: 'threat',
+    title: `Risk ${id}`,
+    cause: 'A cause',
+    effect: 'An effect',
+    category: 'project',
+    objectives: ['schedule'],
+    probability: 2,
+    impact: 4,
+    score: 8,
+    band: 'Medium',
+    response: 'reduce',
+    response_plan: 'A plan',
+    owner_user_id: 11,
+    status: 'open',
+    needs_judgement: false,
+    source: 'person',
+    version: 1,
+    created_at: '2026-10-01T09:00:00',
+    updated_at: '2026-10-01T09:00:00',
+    ...changes,
+  }
+}
+
+function band(score: number, impact: number) {
+  if (score >= 13) return 'High'
+  return score >= 7 || impact === 5 ? 'Medium' : 'Low'
+}
+
+function cells(counts: Record<string, number>): HeatCell[] {
+  const out: HeatCell[] = []
+  for (let probability = 1; probability <= 5; probability++) {
+    for (let impact = 1; impact <= 5; impact++) {
+      const count = counts[`${probability}:${impact}`] ?? 0
+      out.push({ probability, impact, band: band(probability * impact, impact), count })
+    }
+  }
+  return out
+}
+
+const RISKS = [
+  risk(1, { probability: 5, impact: 4, score: 20, band: 'High', category: 'ai' }),
+  risk(2),
+  risk(3, { probability: 2, impact: 4 }),
+  risk(4, {
+    probability: null,
+    impact: null,
+    score: null,
+    band: null,
+    needs_judgement: true,
+    title: 'Reputational harm',
+  }),
+]
+
+const HEATMAP = {
+  kind: null,
+  cells: cells({ '5:4': 1, '2:4': 2 }),
+  bands: [
+    { band: 'Low', count: 0 },
+    { band: 'Medium', count: 2 },
+    { band: 'High', count: 1 },
+  ],
+  unscored: 1,
+}
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function page(items: unknown[]) {
+  return { items, total: items.length, limit: 100, offset: 0 }
+}
+
+interface FakeOptions {
+  patchStatus?: number
+  stored?: Risk
+}
+
+function fakeApi(role: string, options: FakeOptions = {}) {
+  const user = { id: 7, email: `${role}@pmo.example`, display_name: 'Test User', role }
+  return vi.fn(async (input: string, init: RequestInit = {}) => {
+    const url = new URL(input, 'http://localhost')
+    const path = url.pathname
+    const method = init.method ?? 'GET'
+    if (path === '/api/v1/auth/me') return json({ ...user, actions: ACTIONS[role] })
+    if (path === '/api/v1/projects') {
+      return json(page([{ id: 3, name: 'Harbour Analytics' }]))
+    }
+    if (path === '/api/v1/users') {
+      return json(page([{ id: 11, display_name: 'Pat Owner' }]))
+    }
+    if (path === '/api/v1/projects/3/risks/heatmap') {
+      const kind = url.searchParams.get('kind')
+      if (kind === 'opportunity') {
+        return json({ ...HEATMAP, kind, cells: cells({ '4:2': 1 }), unscored: 0 })
+      }
+      return json({ ...HEATMAP, kind })
+    }
+    if (path === '/api/v1/projects/3/risks' && method === 'GET') {
+      return json({ items: RISKS, total: RISKS.length, limit: 25, offset: 0 })
+    }
+    const history = path.match(/^\/api\/v1\/projects\/3\/risks\/(\d+)\/history$/)
+    if (history) {
+      return json({
+        items: [
+          {
+            id: 90,
+            version: 1,
+            action: 'create',
+            actor_user_id: 11,
+            actor_name: 'Pat Owner',
+            before: null,
+            after: { title: 'Risk 2' },
+            created_at: '2026-10-01T09:00:00',
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      })
+    }
+    const one = path.match(/^\/api\/v1\/projects\/3\/risks\/(\d+)$/)
+    if (one && method === 'PATCH') {
+      if (options.patchStatus === 409) {
+        return json({ detail: 'this risk has changed since you read it' }, 409)
+      }
+      return json(risk(Number(one[1]), { status: 'closed', version: 2 }))
+    }
+    if (one) return json(options.stored ?? risk(Number(one[1])))
+    return json({ detail: `unexpected ${method} ${path}` }, 404)
+  })
+}
+
+async function mountRisks(role: string, options: FakeOptions = {}) {
+  const fetchMock = fakeApi(role, options)
+  vi.stubGlobal('fetch', fetchMock)
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const router = makeRouter(true)
+  router.push('/risks')
+  await router.isReady()
+  const wrapper = mount({ template: '<v-layout><App /></v-layout>', components: { App } }, {
+    global: { plugins: [pinia, router, makeVuetify()] },
+    attachTo: document.body,
+  })
+  await flushPromises()
+  // The page puts the chosen project in the address, a navigation of its own.
+  await new Promise((resolve) => setTimeout(resolve))
+  await flushPromises()
+  return { wrapper, router, fetchMock }
+}
+
+function listCalls(fetchMock: ReturnType<typeof fakeApi>): URLSearchParams[] {
+  return fetchMock.mock.calls
+    .map(([input]) => new URL(String(input), 'http://localhost'))
+    .filter((url) => url.pathname === '/api/v1/projects/3/risks')
+    .map((url) => url.searchParams)
+}
+
+function lastList(fetchMock: ReturnType<typeof fakeApi>) {
+  return Object.fromEntries(listCalls(fetchMock).at(-1)!)
+}
+
+type Wrapper = Awaited<ReturnType<typeof mountRisks>>['wrapper']
+
+function setSelect(wrapper: Wrapper, test: string, value: unknown) {
+  const select = wrapper
+    .findAllComponents({ name: 'VSelect' })
+    .find((c) => c.attributes('data-test') === test)
+  expect(select, test).toBeTruthy()
+  select!.vm.$emit('update:modelValue', value)
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.stubGlobal('visualViewport', new EventTarget())
+  document.body.innerHTML = ''
+})
+
+describe('risk register helpers', () => {
+  it('lays the heat map out with the highest impact first and probability across', () => {
+    const grid = heatGrid(cells({ '5:4': 1, '2:4': 2 }))
+    expect(grid).toHaveLength(5)
+    expect(grid.map((row) => row[0].impact)).toEqual([5, 4, 3, 2, 1])
+    expect(grid[1].map((cell) => cell.probability)).toEqual([1, 2, 3, 4, 5])
+    expect(grid[1][1].count).toBe(2)
+    expect(grid[1][4].count).toBe(1)
+    expect(grid.flat().reduce((sum, cell) => sum + cell.count, 0)).toBe(3)
+  })
+
+  it('fills a missing heat map cell with zero', () => {
+    const grid = heatGrid([])
+    expect(grid.flat()).toHaveLength(25)
+    expect(grid.flat().every((cell) => cell.count === 0)).toBe(true)
+  })
+
+  it('builds the list query from the filters, leaving out empty ones', () => {
+    const query = listQuery({ ...NO_FILTERS, status: 'open', band: 'High' }, 3, 25)
+    expect(Object.fromEntries(new URLSearchParams(query))).toEqual({
+      status: 'open',
+      band: 'High',
+      limit: '25',
+      offset: '50',
+    })
+  })
+
+  it('filters to a clicked cell, and clears it on a second click', () => {
+    const on = toggleCell(NO_FILTERS, { probability: 2, impact: 4 }, 'threat')
+    expect(on).toMatchObject({ probability: 2, impact: 4, status: 'open', kind: 'threat' })
+    const off = toggleCell(on, { probability: 2, impact: 4 }, 'threat')
+    expect(off).toMatchObject({ probability: null, impact: null })
+  })
+
+  it("says a judgement risk needs a person's judgement instead of a score", () => {
+    expect(scoreText({ score: 12, needs_judgement: false })).toBe('12')
+    expect(scoreText({ score: null, needs_judgement: true })).toBe(NEEDS_JUDGEMENT)
+    expect(scoreText({ score: null, needs_judgement: false })).toBe('Not scored yet')
+  })
+
+  it('takes band colours from the theme', () => {
+    expect(bandColor('Medium')).toBe('band-medium')
+    expect(bandColor(null)).toBe('grey')
+    for (const name of ['Low', 'Medium', 'High']) expect(bandColors).toHaveProperty(bandColor(name))
+  })
+
+  it('lists the fields an audit row changed, without the version', () => {
+    const entry = {
+      id: 1,
+      version: 2,
+      action: 'update',
+      actor_user_id: 1,
+      actor_name: 'A',
+      before: { title: 'Old', impact: 3, version: 1 },
+      after: { title: 'New', impact: 3, version: 2 },
+      created_at: '',
+    }
+    expect(changedFields(entry)).toEqual(['title'])
+    expect(changedFields({ ...entry, before: null })).toEqual([])
+  })
+})
+
+describe('risks page', () => {
+  it('is in the menu and loads the first project', async () => {
+    const { wrapper, router, fetchMock } = await mountRisks('auditor')
+    expect(wrapper.find('[data-test="nav-risks"]').exists()).toBe(true)
+    expect(router.currentRoute.value.query.project).toBe('3')
+    expect(wrapper.get('[data-test="page-title"]').text()).toBe('Risk register')
+    expect(lastList(fetchMock)).toEqual({ limit: '25', offset: '0' })
+  })
+
+  it('shows the heat map counts and open totals per band', async () => {
+    const { wrapper } = await mountRisks('auditor')
+    expect(wrapper.get('[data-test="heat-cell-2-4"]').text()).toBe('2')
+    expect(wrapper.get('[data-test="heat-cell-5-4"]').text()).toBe('1')
+    expect(wrapper.get('[data-test="heat-cell-1-1"]').text()).toBe('')
+    expect(wrapper.get('[data-test="heat-cell-5-4"]').classes()).toContain('bg-band-high')
+    expect(wrapper.get('[data-test="heat-cell-2-4"]').classes()).toContain('bg-band-medium')
+    expect(wrapper.get('[data-test="band-total-Medium"]').text()).toBe('Medium: 2')
+    expect(wrapper.get('[data-test="band-total-High"]').text()).toBe('High: 1')
+    expect(wrapper.get('[data-test="band-total-unscored"]').text()).toContain('1')
+    expect(wrapper.get('[data-test="open-total"]').text()).toBe('4 open')
+  })
+
+  it('shows threats and opportunities separately', async () => {
+    const { wrapper, fetchMock } = await mountRisks('auditor')
+    await wrapper.get('[data-test="heat-kind-opportunity"]').trigger('click')
+    await flushPromises()
+    const last = String(fetchMock.mock.calls.at(-1)![0])
+    expect(last).toBe('/api/v1/projects/3/risks/heatmap?kind=opportunity')
+    expect(wrapper.get('[data-test="heat-cell-4-2"]').text()).toBe('1')
+    expect(wrapper.get('[data-test="heat-cell-2-4"]').text()).toBe('')
+  })
+
+  it('filters the table to a clicked cell, and clears it on a second click', async () => {
+    const { wrapper, fetchMock } = await mountRisks('auditor')
+    await wrapper.get('[data-test="heat-cell-2-4"]').trigger('click')
+    await flushPromises()
+    expect(lastList(fetchMock)).toMatchObject({ probability: '2', impact: '4', status: 'open' })
+    expect(wrapper.get('[data-test="heat-cell-2-4"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.find('[data-test="cell-filter"]').exists()).toBe(true)
+    await wrapper.get('[data-test="heat-cell-2-4"]').trigger('click')
+    await flushPromises()
+    expect(lastList(fetchMock)).not.toHaveProperty('probability')
+  })
+
+  it.each([
+    ['filter-status', 'closed', { status: 'closed' }],
+    ['filter-band', 'High', { band: 'High' }],
+    ['filter-category', 'ai', { category: 'ai' }],
+    ['filter-kind', 'opportunity', { kind: 'opportunity' }],
+  ])('sends the %s filter to the API', async (test, value, expected) => {
+    const { wrapper, fetchMock } = await mountRisks('auditor')
+    setSelect(wrapper, test, value)
+    await flushPromises()
+    expect(lastList(fetchMock)).toEqual({ ...expected, limit: '25', offset: '0' })
+  })
+
+  it('offers the policy band names as band filters', async () => {
+    const { wrapper } = await mountRisks('auditor')
+    const select = wrapper
+      .findAllComponents({ name: 'VSelect' })
+      .find((c) => c.attributes('data-test') === 'filter-band')!
+    expect(select.props('items')).toEqual(['Low', 'Medium', 'High'])
+  })
+
+  it("shows a judgement risk as needing a person's judgement, with owner names", async () => {
+    const { wrapper } = await mountRisks('auditor')
+    expect(wrapper.get('[data-test="score-4"]').text()).toBe(NEEDS_JUDGEMENT)
+    expect(wrapper.get('[data-test="score-1"]').text()).toBe('20')
+    expect(wrapper.get('[data-test="band-1"]').text()).toBe('High')
+    expect(wrapper.get('[data-test="risk-table"]').text()).toContain('Pat Owner')
+  })
+
+  it('opens a drawer with every field and the history', async () => {
+    const { wrapper } = await mountRisks('auditor')
+    await wrapper.get('[data-test="risk-row-2"]').trigger('click')
+    await flushPromises()
+    const drawer = wrapper.get('[data-test="risk-drawer"]')
+    expect(drawer.get('[data-test="drawer-title"]').text()).toBe('Risk 2')
+    for (const name of ['Cause', 'Effect', 'Response plan', 'Owner', 'Version', 'Source']) {
+      expect(drawer.find(`[data-test="field-${name}"]`).exists(), name).toBe(true)
+    }
+    expect(drawer.get('[data-test="field-Owner"]').text()).toBe('Pat Owner')
+    expect(drawer.get('[data-test="history"]').text()).toContain('Create (version 1) by Pat Owner')
+  })
+})
+
+describe('role-based buttons', () => {
+  it('shows a project manager the add, edit and close buttons', async () => {
+    const { wrapper } = await mountRisks('project_manager')
+    expect(wrapper.find('[data-test="add-risk"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="add-from-library"]').exists()).toBe(true)
+    await wrapper.get('[data-test="risk-row-2"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="edit-risk"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="close-risk"]').exists()).toBe(true)
+  })
+
+  it.each(['sponsor', 'auditor'])('hides every change button from a %s', async (role) => {
+    const { wrapper } = await mountRisks(role)
+    expect(wrapper.find('[data-test="add-risk"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="add-from-library"]').exists()).toBe(false)
+    await wrapper.get('[data-test="risk-row-2"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="risk-drawer"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="edit-risk"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="close-risk"]').exists()).toBe(false)
+  })
+
+  it('hides the close button on a closed risk', async () => {
+    const { wrapper } = await mountRisks('project_manager')
+    await wrapper.get('[data-test="risk-row-2"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="close-risk"]').trigger('click')
+    await flushPromises()
+    ;(document.querySelector('[data-test="confirm-close-yes"]') as HTMLElement).click()
+    await flushPromises()
+    expect(wrapper.get('[data-test="drawer-message"]').text()).toBe('Risk closed.')
+    expect(wrapper.find('[data-test="close-risk"]').exists()).toBe(false)
+  })
+})
+
+describe('version conflicts', () => {
+  it('shows a clear message and reloads the risk on a 409', async () => {
+    const stored = risk(2, { title: 'Changed by someone else', version: 5 })
+    const { wrapper, fetchMock } = await mountRisks('project_manager', {
+      patchStatus: 409,
+      stored,
+    })
+    await wrapper.get('[data-test="risk-row-2"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="close-risk"]').trigger('click')
+    await flushPromises()
+    ;(document.querySelector('[data-test="confirm-close-yes"]') as HTMLElement).click()
+    await flushPromises()
+
+    const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')!
+    expect(JSON.parse(String(patch[1]!.body))).toEqual({ version: 1, status: 'closed' })
+    expect(wrapper.get('[data-test="drawer-message"]').text()).toBe(CONFLICT_MESSAGE)
+    expect(wrapper.get('[data-test="drawer-title"]').text()).toBe('Changed by someone else')
+    expect(wrapper.get('[data-test="field-Version"]').text()).toBe('5')
+    const reloads = fetchMock.mock.calls.filter(
+      ([input, init]) => input === '/api/v1/projects/3/risks/2' && init?.method === 'GET',
+    )
+    expect(reloads.length).toBeGreaterThan(0)
+  })
+})

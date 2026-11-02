@@ -94,7 +94,13 @@ function describe(entry: HistoryEntry) {
       {{ message }}
     </v-alert>
     <div v-if="canWrite" class="d-flex flex-wrap ga-2 mb-4">
-      <v-btn color="primary" variant="flat" size="small" data-test="edit-risk" @click="emit('edit')">
+      <v-btn
+        color="primary"
+        variant="flat"
+        size="small"
+        data-test="edit-risk"
+        @click="emit('edit')"
+      >
         Edit
       </v-btn>
       <v-btn
