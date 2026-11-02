@@ -17,7 +17,7 @@ Kind = Literal["threat", "opportunity"]
 Category = Literal["ai", "project"]
 Objective = Literal["schedule", "cost", "quality"]
 Response = Literal["avoid", "reduce", "share", "accept", "pursue", "increase"]
-Level = Annotated[int, Field(ge=1, le=5)]
+Level = Annotated[int, Field(ge=1, le=5, strict=True)]
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 LongText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
 # On these routes a person may only open or close a risk; proposing, accepting and rejecting
