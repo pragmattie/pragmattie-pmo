@@ -1,5 +1,7 @@
 import os
 import tempfile
+from functools import cache
+from pathlib import Path
 
 import pytest
 
@@ -100,3 +102,31 @@ def _reset_login_limiter():
     login_limiter.reset()
     yield
     login_limiter.reset()
+
+
+# The starter risk library is drafted in ci/proposed/policies/ and applied to policies/ by a
+# person. Until it is applied, tests read the draft, so the library's routes can be tested.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+APPLIED_POLICIES = REPO_ROOT / "policies"
+DRAFT_POLICIES = REPO_ROOT / "ci" / "proposed" / "policies"
+
+
+def risk_library_dir() -> Path:
+    """Where the risk library is: policies/ once applied, else the draft."""
+    if (APPLIED_POLICIES / "risk-library.yaml").exists():
+        return APPLIED_POLICIES
+    return DRAFT_POLICIES
+
+
+@cache
+def _test_risk_library():
+    from app.policy import load_risk_library
+
+    return load_risk_library(risk_library_dir())
+
+
+@pytest.fixture(autouse=True)
+def _risk_library(monkeypatch):
+    from app import policy
+
+    monkeypatch.setattr(policy, "get_risk_library", _test_risk_library)

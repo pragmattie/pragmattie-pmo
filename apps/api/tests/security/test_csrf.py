@@ -47,6 +47,7 @@ def test_the_unsafe_routes_are_all_found():
         ("POST", "/api/v1/users/{user_id}/unlock"),
         ("POST", "/api/v1/projects/{project_id}/risks"),
         ("PATCH", "/api/v1/projects/{project_id}/risks/{risk_id}"),
+        ("POST", "/api/v1/projects/{project_id}/risks/from-library"),
     } <= set(UNSAFE)
 
 

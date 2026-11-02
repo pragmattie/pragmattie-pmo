@@ -1,0 +1,153 @@
+# Starter risk library: templates a person can add to a project's risk register.
+# Drafted by an agent for item 3.2 in its own words; a person reviews and applies it as
+# policies/risk-library.yaml.
+#
+# A template has no probability or impact: those depend on the project, so a person scores each
+# risk once it is on the register. Every key below is required, and no other key is allowed.
+#   id          unique, lower case words joined by hyphens
+#   kind        threat or opportunity
+#   category    ai or project
+#   objectives  one or more of schedule, cost, quality
+#   response    for a threat: avoid, reduce, share or accept;
+#               for an opportunity: pursue, increase, share or accept
+version: 1
+
+templates:
+  # --- Risks that come from using AI
+  - id: ai-biased-output
+    kind: threat
+    category: ai
+    title: The agent's output treats some groups unfairly
+    cause: The data or instructions behind the agent lean towards some people over others.
+    effect: Decisions built on its output disadvantage people and harm the client's reputation.
+    objectives: [quality]
+    response: reduce
+    response_plan: Test output across groups before release and have a person review samples.
+  - id: ai-model-drift
+    kind: threat
+    category: ai
+    title: The agent's answers get worse over time
+    cause: The data or the model behind the agent changes after it was checked.
+    effect: Quality falls without anyone noticing until users complain.
+    objectives: [quality, schedule]
+    response: reduce
+    response_plan: Re-run a fixed set of check questions on a schedule and compare the results.
+  - id: ai-made-up-answers
+    kind: threat
+    category: ai
+    title: The agent states things that are not true
+    cause: The model fills gaps with confident text that no source supports.
+    effect: Wrong facts reach a report or a client and must be corrected.
+    objectives: [quality]
+    response: reduce
+    response_plan: Require sources for factual claims and a person's check before anything is used.
+  - id: ai-over-reliance
+    kind: threat
+    category: ai
+    title: People accept the agent's work without checking it
+    cause: The agent is usually right, so reviews become a quick glance.
+    effect: An error passes review and a person signs off on something they did not read.
+    objectives: [quality]
+    response: reduce
+    response_plan: Keep review steps explicit, record who reviewed, and spot-check approved work.
+  - id: ai-personal-data-exposure
+    kind: threat
+    category: ai
+    title: Personal data leaks through the agent
+    cause: Personal details are sent to the agent or kept in its prompts, output or logs.
+    effect: Private information is exposed and the client faces a breach and its costs.
+    objectives: [quality, cost]
+    response: avoid
+    response_plan: Remove personal details before data reaches the agent and keep none in logs.
+  - id: ai-runaway-cost
+    kind: threat
+    category: ai
+    title: Spending on the agent runs far over budget
+    cause: Calls to the model repeat, loop or grow larger than planned.
+    effect: The bill exceeds the budget before anyone sees it.
+    objectives: [cost]
+    response: reduce
+    response_plan: Set a spending cap in code, stop runs at the cap, and review the cost each week.
+  - id: ai-misuse
+    kind: threat
+    category: ai
+    title: The agent is used for something it was not meant for
+    cause: Users ask the agent to do work outside its agreed purpose and limits.
+    effect: It produces harmful or unchecked output that the project is answerable for.
+    objectives: [quality]
+    response: reduce
+    response_plan: Write down what the agent is for, refuse other requests in code, and log use.
+  - id: ai-hidden-instructions
+    kind: threat
+    category: ai
+    title: Text the agent reads carries hidden instructions
+    cause: A document, email or web page the agent reads contains instructions aimed at it.
+    effect: The agent follows them instead of its own limits and leaks or changes data.
+    objectives: [quality]
+    response: reduce
+    response_plan: Treat input text as data, never as instructions, and limit what the agent can do.
+
+  # --- Ordinary project risks
+  - id: project-scope-creep
+    kind: threat
+    category: project
+    title: Work grows beyond what was agreed
+    cause: New requests are added without a change being agreed and priced.
+    effect: The finish date and the budget slip while the original work waits.
+    objectives: [schedule, cost]
+    response: reduce
+    response_plan: Log every new request as a change and have the sponsor agree it first.
+  - id: project-key-person-loss
+    kind: threat
+    category: project
+    title: A key person leaves or becomes unavailable
+    cause: Important knowledge or skills sit with one person.
+    effect: Work stops or slows while someone else learns what they knew.
+    objectives: [schedule, quality]
+    response: reduce
+    response_plan: Name a backup for each key role and keep working notes where the team finds them.
+  - id: project-supplier-delay
+    kind: threat
+    category: project
+    title: A supplier delivers late
+    cause: A supplier the project depends on misses an agreed date.
+    effect: Work that needs the delivery waits and the plan slips.
+    objectives: [schedule, cost]
+    response: share
+    response_plan: Agree dated deliveries in the contract, with a remedy for lateness.
+  - id: project-wrong-estimate
+    kind: threat
+    category: project
+    title: The estimate turns out to be wrong
+    cause: The work was sized before it was well understood.
+    effect: The project needs more time or money than was approved.
+    objectives: [schedule, cost]
+    response: reduce
+    response_plan: Re-estimate at each stage and compare actual effort with the plan every month.
+  - id: project-sponsor-change
+    kind: threat
+    category: project
+    title: The sponsor changes
+    cause: The sponsor moves role, leaves or hands the project to someone else.
+    effect: Decisions stall and the new sponsor may change priorities.
+    objectives: [schedule, quality]
+    response: reduce
+    response_plan: Keep decisions written down and brief any new sponsor in their first week.
+  - id: project-poor-data-quality
+    kind: threat
+    category: project
+    title: The data the project needs is poor
+    cause: Source data is incomplete, out of date or inconsistent.
+    effect: Results are wrong and time goes on cleaning data instead of building.
+    objectives: [quality, schedule]
+    response: reduce
+    response_plan: Check a sample of the data early and agree who fixes problems at the source.
+  - id: project-slow-decisions
+    kind: threat
+    category: project
+    title: Decisions take too long
+    cause: It is unclear who decides, or the people who decide are hard to reach.
+    effect: The team waits on answers and the plan slips.
+    objectives: [schedule]
+    response: reduce
+    response_plan: Name who decides each kind of question and agree how quickly they answer.
