@@ -1,6 +1,7 @@
 import 'vuetify/styles'
 
 import { createVuetify, type ThemeDefinition } from 'vuetify'
+import { aliases, mdi } from 'vuetify/iconsets/mdi-svg'
 
 export const brandColors = {
   navy: '#2E3F55',
@@ -30,6 +31,8 @@ export const pragmattiePmo: ThemeDefinition = {
 
 export function makeVuetify() {
   return createVuetify({
+    // Vuetify's built-in SVG icons (menu, close, select arrows, paging): no icon font to load.
+    icons: { defaultSet: 'mdi', aliases, sets: { mdi } },
     theme: {
       defaultTheme: 'pragmattiePmo',
       themes: { pragmattiePmo },
