@@ -1,4 +1,4 @@
-# Stage gates. A placeholder until milestone P5 defines the gates and their criteria; the loader
+# Stage gates. A placeholder until milestone P4 defines the gates and their criteria; the loader
 # accepts only an empty list for now. Drafted by an agent for item 1.4.
 version: 1
 gates: []

@@ -3,13 +3,13 @@
 # GET /api/v1/standards and validated by apps/api/app/standards.py.
 #
 # Rules for editing:
-# - id is "P<milestone>-<slug>", so every plan milestone (P1 to P7) can be checked for an entry.
+# - id is "P<milestone>-<slug>", so every plan milestone (P1 to P8) can be checked for an entry.
 # - rules lists rule numbers from policies/project-rules.md, and may be empty when none applies.
 # - Keep entries short: title + notes is at most 200 characters.
 #
-# Milestones follow the plan: P1 Foundation; P2 Login and roles; P3 Intake, planning baseline,
-# proposals, status reports and closure; P4 Risk register; P5 Stage gates; P6 Portfolio dashboard
-# and agent registry; P7 Demo and standards lens.
+# Milestones follow docs/roadmap.md: P1 Foundation; P2 Login and roles; P3 Risk register; P4 Intake
+# and the approval gate; P5 Planning, proposals and the go-ahead gate; P6 Delivery and closure;
+# P7 Portfolio and oversight; P8 Demo.
 version: 1
 features:
   # --- P1 Foundation
@@ -54,44 +54,45 @@ features:
     title: Demo users and secret scan
     rules: [R6]
     notes: One demo user per role; random passwords shown once, never stored in plaintext; a test scans tracked files for keys, tokens and passwords.
-  # --- P3 Intake, planning baseline, proposals, status reports and closure
-  - id: P3-project-intake
-    title: Project and work-item intake
-    rules: [R1, R11]
-    notes: An agent may propose a triage; a person authorises the project.
-  - id: P3-client-proposals
-    title: Client proposal workflow
-    rules: [R1]
-    notes: An agent may draft; a person commits the price and sends the document.
-  - id: P3-status-reports
-    title: Status reports
-    rules: [R1, R5]
-    notes: Agent drafts are proposals; a person edits and releases each report.
-  - id: P3-closure
-    title: Closure report and lessons learned
-    rules: []
-    notes: A closure report and lessons learned are recorded when a project ends.
-  # --- P4 Risk register
-  - id: P4-risk-register
+  # --- P3 Risk register
+  - id: P3-risk-register
     title: Risk register
     rules: [R7, R8, R9, R10]
     notes: Threats and opportunities scored against the risk policy; a person accepts a risk.
-  # --- P5 Stage gates
-  - id: P5-stage-gates
-    title: Stage gates
+  # --- P4 Intake and the approval gate
+  - id: P4-project-intake
+    title: Project requests, value case and readiness check
+    rules: [R1, R11]
+    notes: An agent may draft the value case and readiness check; a person passes the approval gate.
+  - id: P4-gates
+    title: Gates between stages
     rules: [R1, R3]
-    notes: Gates sit between project stages; criteria come from policy and only a person approves a gate.
-  # --- P6 Portfolio dashboard and agent registry
-  - id: P6-portfolio-dashboard
+    notes: Gate criteria come from policy and only a person passes a gate.
+  # --- P5 Planning, proposals and the go-ahead gate
+  - id: P5-client-proposals
+    title: Client proposal workflow
+    rules: [R1]
+    notes: An agent may draft; a person commits the price and sends the document.
+  # --- P6 Delivery and closure
+  - id: P6-status-reports
+    title: Status reports
+    rules: [R1, R5]
+    notes: Agent drafts are proposals; a person edits and releases each report.
+  - id: P6-closure
+    title: Closure report and lessons
+    rules: []
+    notes: A closure report and lessons are recorded when a project ends.
+  # --- P7 Portfolio and oversight
+  - id: P7-portfolio-dashboard
     title: Portfolio dashboard
     rules: [R5]
     notes: Health, budget and risk across projects, from recorded data only.
-  - id: P6-agent-registry
+  - id: P7-agent-registry
     title: Agent registry
     rules: [R2, R4, R5]
     notes: Each agent's purpose, limits, mode and owner, with its run history.
-  # --- P7 Demo and standards lens
-  - id: P7-standards-lens
+  # --- P8 Demo
+  - id: P8-standards-lens
     title: Standards lens
     rules: []
     notes: Shows each feature with the rules it follows, from this file.

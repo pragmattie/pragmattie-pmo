@@ -17,12 +17,12 @@ from app.config import get_settings
 
 SCHEMA_VERSION = 1
 MAX_PROSE_CHARS = 200
-PLAN_MILESTONES = ("P1", "P2", "P3", "P4", "P5", "P6", "P7")
+PLAN_MILESTONES = ("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8")
 
 # The rules in `policies/project-rules.md`; a test keeps this in step with that file.
 RULE_IDS = tuple(f"R{number}" for number in range(1, 13))
 
-ID_PATTERN = re.compile(r"^(P[1-7])-[a-z0-9]+(?:-[a-z0-9]+)*$")
+ID_PATTERN = re.compile(r"^(P[1-8])-[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class StandardsError(ValueError):
@@ -43,7 +43,7 @@ class Feature(_Strict):
     @classmethod
     def _id_names_a_milestone(cls, value: str) -> str:
         if not ID_PATTERN.match(value):
-            raise ValueError("must be P<1-7>-<lower-case-slug>, e.g. P1-audit-trail")
+            raise ValueError("must be P<1-8>-<lower-case-slug>, e.g. P1-audit-trail")
         return value
 
     @field_validator("rules")
