@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from conftest import risk_library_dir
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,7 +17,10 @@ from app.main import app
 from app.models import AuditDecision, Base, Project, Risk, User
 from app.policy import RISK_LIBRARY_FILE, PolicyError, load_risk_library
 
-LIBRARY = risk_library_dir() / RISK_LIBRARY_FILE
+# policies/ once a person applies the library; until then, the draft (as in tests/conftest.py).
+REPO_ROOT = Path(__file__).resolve().parents[3]
+APPLIED = REPO_ROOT / "policies" / RISK_LIBRARY_FILE
+LIBRARY = APPLIED if APPLIED.exists() else REPO_ROOT / "ci" / "proposed" / "policies" / APPLIED.name
 
 AI_RISKS = {
     "ai-biased-output",
