@@ -117,7 +117,7 @@ def test_repr_hides_secrets(clean_env):
 
 
 def test_url_built_from_parts_survives_special_characters(clean_env):
-    password = "p@ss:w/rd#1?%"
+    password = "p@ss:w/rd#1?%"  # secret-scan: allow
     settings = Settings(
         _env_file=None,
         jwt_secret=SECRET,

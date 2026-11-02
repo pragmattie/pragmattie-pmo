@@ -19,7 +19,7 @@ from app.schemas.auth import PASSWORD_MAX_LENGTH
 from app.security import CSRF_COOKIE, SESSION_COOKIE, hash_password, issue_token
 
 # Made up for these tests only; never a real credential.
-PASSWORD = "correct-horse-battery-staple-test"
+PASSWORD = "correct-horse-battery-staple-test"  # secret-scan: allow
 EMAIL = "ada.reviewer@pmo.example"
 LOGIN = "/api/v1/auth/login"
 LOGOUT = "/api/v1/auth/logout"
@@ -199,7 +199,7 @@ def test_too_long_password_is_refused_with_the_generic_message(web, user, monkey
 
 
 def test_password_at_the_cap_is_checked_normally(web, db):
-    password = "p" * PASSWORD_MAX_LENGTH
+    password = "p" * PASSWORD_MAX_LENGTH  # secret-scan: allow
     password_hash = hash_password(password)
     db.add(
         User(email=EMAIL, display_name="Ada", password_hash=password_hash, role="project_manager")

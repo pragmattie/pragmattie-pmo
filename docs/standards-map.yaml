@@ -50,6 +50,10 @@ features:
     title: Security tests and threat notes
     rules: [R6, R10]
     notes: Threats incl. AI ones, each with mitigation and test, seed the risk register; reviews each milestone, quarter and auth change.
+  - id: P2-demo-users
+    title: Demo users and secret scan
+    rules: [R6]
+    notes: One demo user per role; random passwords shown once, never stored in plaintext; a test scans tracked files for keys, tokens and passwords.
   # --- P3 Intake, planning baseline, proposals, status reports and closure
   - id: P3-project-intake
     title: Project and work-item intake

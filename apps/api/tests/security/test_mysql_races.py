@@ -33,7 +33,7 @@ from app.security import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, hash_password
 
 CSRF_VALUE = "mysql-race-csrf-value"
 # Made up for these tests only; never a real credential.
-PASSWORD = "mysql-race-test-passphrase"
+PASSWORD = "mysql-race-test-passphrase"  # secret-scan: allow
 # Below both the lockout threshold and the per-IP login limit, so neither can hide a lost count.
 PARALLEL_FAILURES = 4
 ROUNDS = 5
