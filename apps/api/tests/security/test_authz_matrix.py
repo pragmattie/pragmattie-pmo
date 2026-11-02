@@ -30,7 +30,7 @@ def _forged_session(web, db, sign_in, real: Role, claimed: Role) -> None:
 def test_a_claimed_admin_role_grants_nothing(web, db, sign_in, target, real, method, path, guard):
     _forged_session(web, db, sign_in, real, Role.ADMIN)
     response = _request(web, method, path, target.id)
-    assert response.status_code == _expected(guard, real), response.text
+    assert response.status_code == _expected(guard, real, method, path), response.text
 
 
 @pytest.mark.parametrize(
@@ -40,7 +40,7 @@ def test_a_claimed_lesser_role_takes_nothing_away(web, db, sign_in, target, meth
     # The other direction: an admin whose token says auditor still has admin rights.
     _forged_session(web, db, sign_in, Role.ADMIN, Role.AUDITOR)
     response = _request(web, method, path, target.id)
-    assert response.status_code == _expected(guard, Role.ADMIN), response.text
+    assert response.status_code == _expected(guard, Role.ADMIN, method, path), response.text
 
 
 @pytest.mark.parametrize("claimed", ["superuser", "", "admin "])

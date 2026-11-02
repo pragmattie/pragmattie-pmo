@@ -1,7 +1,7 @@
 """Risk register logic shared by the API and the `rescore` command: scoring and audit rows.
 
 `python -m app.risks rescore` recomputes every risk's score and band from the current risk policy.
-Run it after `policies/risk.yaml` changes: stored scores and bands are otherwise only refreshed
+Run it after the risk policy file changes: stored scores and bands are otherwise only refreshed
 when a risk is next edited.
 
 Every create, change, close and re-score of a risk is one audit row: agent `risk_register`,
