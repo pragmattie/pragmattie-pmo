@@ -18,7 +18,7 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, create_engine, select, text
+from sqlalchemy import Engine, create_engine, make_url, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 import app.api.auth as auth_api
@@ -31,8 +31,6 @@ from app.models.audit import AUDIT_TABLE
 from app.models.auth import REVOKED_TOKENS_TABLE, USERS_TABLE
 from app.security import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, hash_password, issue_token
 
-pytestmark = pytest.mark.mysql
-
 CSRF_VALUE = "mysql-race-csrf-value"
 # Made up for these tests only; never a real credential.
 PASSWORD = "mysql-race-test-passphrase"
@@ -40,6 +38,15 @@ PASSWORD = "mysql-race-test-passphrase"
 PARALLEL_FAILURES = 4
 ROUNDS = 5
 BARRIER_TIMEOUT = 20
+# These tests delete rows, audit rows included, so they only ever touch a local server.
+LOCAL_HOSTS = {"localhost", "127.0.0.1"}
+
+
+def _assert_local(url: str) -> None:
+    """Fail (not skip) unless TEST_MYSQL_URL names a local host, so a wrong URL can never
+    reach the hosted database."""
+    host = make_url(url).host
+    assert host in LOCAL_HOSTS, f"TEST_MYSQL_URL must point at localhost or 127.0.0.1, not {host!r}"
 
 
 @pytest.fixture(scope="module")
@@ -47,6 +54,7 @@ def mysql_engine() -> Iterator[Engine]:
     url = get_settings().test_mysql_url
     if not url:
         pytest.skip("TEST_MYSQL_URL is not set; these tests need a real, migrated MySQL database")
+    _assert_local(url)
     engine = create_engine(url, pool_pre_ping=True, pool_size=10)
     assert engine.dialect.name == "mysql", "TEST_MYSQL_URL must be a MySQL database"
     yield engine
@@ -104,6 +112,32 @@ def _run_together(calls) -> list:
     return results
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "mysql+pymysql://root@localhost:3307/pragmattie_pmo",
+        "mysql+pymysql://root@127.0.0.1:3306/pragmattie_pmo",
+    ],
+)
+def test_local_mysql_urls_are_allowed(url):
+    _assert_local(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "mysql+pymysql://user@db-hosted.example:3306/pragmattie_pmo",
+        "mysql+pymysql://user@localhost.example:3306/pragmattie_pmo",
+        "mysql+pymysql://user@10.0.0.5/pragmattie_pmo",
+        "mysql+pymysql:///pragmattie_pmo",
+    ],
+)
+def test_non_local_mysql_urls_are_refused(url):
+    with pytest.raises(AssertionError, match="localhost or 127.0.0.1"):
+        _assert_local(url)
+
+
+@pytest.mark.mysql
 def test_two_admins_demoting_each_other_leave_one_admin(mysql_db, monkeypatch):
     factory = mysql_db
     a = _add_user(factory, "admin.a@pmo.example", "admin", "not-a-real-hash")
@@ -154,8 +188,11 @@ def test_two_admins_demoting_each_other_leave_one_admin(mysql_db, monkeypatch):
     # Normally one demotion goes through and the other is refused (409). If MySQL picks a
     # deadlock victim instead, that request is a clean 409 too and nothing is lost.
     assert all(codes in ([200, 409], [409, 409]) for codes in statuses), statuses
+    # At least one demotion must go through, or a guard that refuses everything would pass.
+    assert [200, 409] in statuses, statuses
 
 
+@pytest.mark.mysql
 def test_parallel_login_failures_are_all_counted(mysql_db, monkeypatch):
     settings = get_settings()
     assert PARALLEL_FAILURES < settings.lockout_threshold
