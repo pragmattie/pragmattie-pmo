@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict
 
-# Our own cap: longer passwords are refused before argon2 sees them.
+# Longer passwords are refused before argon2 sees them.
 PASSWORD_MAX_LENGTH = 256
 
 

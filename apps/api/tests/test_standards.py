@@ -1,4 +1,5 @@
 import copy
+import re
 from pathlib import Path
 
 import pytest
@@ -11,9 +12,9 @@ from app.config import Settings
 from app.db import engine
 from app.models import Base
 from app.standards import (
-    AI_STANDARD_REFS,
     MAX_PROSE_CHARS,
     PLAN_MILESTONES,
+    RULE_IDS,
     StandardsError,
     get_standards,
     load_standards,
@@ -22,6 +23,7 @@ from app.standards import (
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MAP_PATH = REPO_ROOT / "docs" / "standards-map.yaml"
+RULES_PATH = REPO_ROOT / "policies" / "project-rules.md"
 
 
 def _valid() -> dict:
@@ -31,14 +33,7 @@ def _valid() -> dict:
             {
                 "id": "P1-audit-trail",
                 "title": "Append-only audit trail",
-                "focus_area": "monitoring_controlling",
-                "domain": "governance",
-                "ai_standard": {
-                    "kind": "principle",
-                    "name": "Governance",
-                    "section": "0",
-                },
-                "ai_phase": "none",
+                "rules": ["R5"],
                 "notes": "One row per decision.",
             }
         ],
@@ -73,8 +68,12 @@ def test_every_plan_milestone_has_an_entry():
 
 def test_repository_map_keeps_prose_short():
     for feature in load_standards(MAP_PATH).features:
-        prose = len(feature.title) + len(feature.notes) + len(feature.ai_standard.name)
-        assert prose <= MAX_PROSE_CHARS, feature.id
+        assert len(feature.title) + len(feature.notes) <= MAX_PROSE_CHARS, feature.id
+
+
+def test_rule_ids_match_the_rules_file():
+    written = re.findall(r"^- \*\*(R\d+)\.\*\*", RULES_PATH.read_text(encoding="utf-8"), re.M)
+    assert tuple(written) == RULE_IDS
 
 
 def test_standards_map_path_defaults_to_repository_docs():
@@ -88,138 +87,37 @@ def test_valid_minimal_map_parses_into_a_frozen_model():
     standards = parse_standards(_valid())
     feature = standards.features[0]
     assert feature.milestone == "P1"
-    assert feature.ai_standard.section == "2.3"
+    assert feature.rules == ("R5",)
     with pytest.raises(Exception, match="frozen"):
         feature.title = "changed"
 
 
 @pytest.mark.parametrize(
-    ("key", "value"),
+    ("rules", "message"),
     [
-        ("focus_area", "intake"),
-        ("focus_area", "Planning"),
-        ("domain", "quality"),
-        ("ai_phase", "VII"),
-        ("ai_phase", "1"),
-        ("ai_phase", None),
+        (["R13"], "unknown rules: R13"),
+        (["r1"], "unknown rules: r1"),
+        (["R1", "R1"], "listed twice"),
     ],
 )
-def test_rejects_unknown_enum_values(key, value):
-    with pytest.raises(StandardsError, match=key):
-        parse_standards(_with(_set(key, value)))
+def test_rejects_bad_rule_references(rules, message):
+    with pytest.raises(StandardsError, match=message):
+        parse_standards(_with(_set("rules", rules)))
 
 
-def test_rejects_unknown_ai_standard_kind():
-    def change(feature):
-        feature["ai_standard"]["kind"] = "guideline"
+def test_rules_are_required_but_may_be_empty():
+    assert parse_standards(_with(_set("rules", []))).features[0].rules == ()
 
-    with pytest.raises(StandardsError, match="ai_standard.kind"):
-        parse_standards(_with(change))
+    def drop_rules(feature):
+        del feature["rules"]
 
-
-@pytest.mark.parametrize("section", ["", "three", "3.", "3.2a"])
-def test_rejects_ai_standard_without_a_section_number(section):
-    def change(feature):
-        feature["ai_standard"]["section"] = section
-
-    with pytest.raises(StandardsError, match="section"):
-        parse_standards(_with(change))
-
-
-EXPECTED_AI_STANDARD_REFS = {
-    ("principle", "Value"): "0",
-    ("principle", "Risk"): "0",
-    ("principle", "Governance"): "0",
-    ("principle", "People"): "0",
-    ("principle", "Ethics"): "0",
-    ("principle", "Stakeholders"): "0",
-    ("principle", "Improvement"): "0",
-    ("principle", "Data"): "0",
-    ("practice_area", "AI stakeholders"): "0",
-    ("practice_area", "AI scope"): "0",
-    ("practice_area", "AI quality"): "0",
-    ("practice_area", "AI delivery"): "0",
-    ("practice_area", "AI risk"): "0",
-}
-
-
-def _ref(kind, name, section):
-    def change(feature):
-        feature["ai_standard"] = {"kind": kind, "name": name, "section": section}
-
-    return change
-
-
-def test_ai_standard_references_are_exactly_the_checked_list():
-    assert AI_STANDARD_REFS == EXPECTED_AI_STANDARD_REFS
-
-
-@pytest.mark.parametrize(("ref", "section"), sorted(EXPECTED_AI_STANDARD_REFS.items()))
-def test_accepts_every_checked_ai_standard_reference(ref, section):
-    kind, name = ref
-    feature = parse_standards(_with(_ref(kind, name, section))).features[0]
-    assert (feature.ai_standard.kind, feature.ai_standard.name) == ref
-    assert feature.ai_standard.section == section
-
-
-@pytest.mark.parametrize(
-    ("kind", "name", "section"),
-    [
-        ("principle", "Accountability", "0"),
-        ("principle", "Human oversight", "0"),
-        ("practice_area", "Governance", "0"),
-        ("principle", "governance", "0"),
-        ("principle", "Value", "0"),
-        ("practice_area", "AI scope", "0"),
-        ("practice_area", "Risk", "0"),
-        ("principle", "AI risk", "0"),
-    ],
-)
-def test_rejects_ai_standard_references_not_in_the_list(kind, name, section):
-    with pytest.raises(StandardsError, match="ai_standard"):
-        parse_standards(_with(_ref(kind, name, section)))
-
-
-def test_repository_map_uses_the_checked_assignments():
-    expected = {
-        "P1-audit-trail": "2.3",
-        "P1-policy-loader": "2.3",
-        "P1-standards-map": "2.3",
-        "P5-stage-gates": "2.3",
-        "P6-agent-registry": "2.3",
-        "P7-standards-lens": "2.3",
-        "P1-seed-portfolio": "2.5",
-        "P3-client-proposals": "2.5",
-        "P1-agent-build-workflow": "2.7",
-        "P3-closure": "2.7",
-        "P2-login-and-roles": "3.3",
-        "P2-roles": "3.3",
-        "P2-login-audit": "3.3",
-        "P3-project-intake": "2.1",
-        "P3-status-reports": "3.1",
-        "P4-risk-register": "3.5",
-        "P6-portfolio-dashboard": "3.4",
-    }
-    features = {f.id: f for f in load_standards(MAP_PATH).features}
-    assert {fid: f.ai_standard.section for fid, f in features.items()} == expected
-    phases = {fid: f.ai_phase for fid, f in features.items() if f.ai_phase != "none"}
-    assert phases == {"P3-project-intake": "I", "P6-agent-registry": "VI"}
-    assert features["P3-closure"].focus_area == "closing"
-    assert features["P3-closure"].domain == "governance"
-    assert features["P6-portfolio-dashboard"].domain == "governance"
-
-
-def test_requires_a_section_number():
-    def change(feature):
-        del feature["ai_standard"]["section"]
-
-    with pytest.raises(StandardsError, match="section"):
-        parse_standards(_with(change))
+    with pytest.raises(StandardsError, match="rules"):
+        parse_standards(_with(drop_rules))
 
 
 def test_rejects_entries_over_the_prose_limit():
-    # Title, notes and ai_standard.name together: one character over the limit.
-    used = len("Append-only audit trail") + len("Governance")
+    # Title and notes together: one character over the limit.
+    used = len("Append-only audit trail")
     over = "x" * (MAX_PROSE_CHARS - used + 1)
     with pytest.raises(StandardsError, match="limit is 200"):
         parse_standards(_with(_set("notes", over)))

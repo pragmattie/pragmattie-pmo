@@ -1,203 +1,89 @@
-# Standards traceability map (item 1.6). Every feature is tagged to general practice so the
-# standards lens (milestone P7) can show it. Served read-only at GET /api/v1/standards and
-# validated by apps/api/app/standards.py.
+# Standards traceability map. Every feature lists the rules it follows from
+# policies/project-rules.md, so the standards lens (milestone P7) can show it. Served read-only at
+# GET /api/v1/standards and validated by apps/api/app/standards.py.
 #
 # Rules for editing:
-# - Paraphrase only. Cite section numbers; never paste text, tables or figures from a source.
-#   Prose (title + notes + ai_standard.name) is at most 200 characters per entry.
 # - id is "P<milestone>-<slug>", so every plan milestone (P1 to P7) can be checked for an entry.
-# - focus_area: a general project practice stage: initiating, planning, executing,
-#   monitoring_controlling or closing.
-# - domain: a general project practice domain: governance, scope, schedule, finance,
-#   stakeholders, resources or risk.
-# - ai_standard: a principle or practice area of AI governance practice, with its section number. kind is principle or practice_area.
-# - ai_phase: the phase of AI project practice: I Business
-#   Understanding, II Data Understanding, III Data Preparation, IV Model Development, V Model
-#   Evaluation, VI Model Operationalization; or none when the feature does not belong to one phase.
-#
-# The ai_standard names and section numbers come from the source's table of contents, and only
-# those combinations are accepted (see AI_STANDARD_REFS in apps/api/app/standards.py). Which
-# section fits each feature is our own judgement.
+# - rules lists rule numbers from policies/project-rules.md, and may be empty when none applies.
+# - Keep entries short: title + notes is at most 200 characters.
 #
 # Milestones follow the plan: P1 Foundation; P2 Login and roles; P3 Intake, planning baseline,
-# proposals, status reports and closing; P4 Risk register; P5 Stage gates; P6 Portfolio dashboard
+# proposals, status reports and closure; P4 Risk register; P5 Stage gates; P6 Portfolio dashboard
 # and agent registry; P7 Demo and standards lens.
 version: 1
 features:
   # --- P1 Foundation
   - id: P1-audit-trail
     title: Append-only audit trail
-    focus_area: monitoring_controlling
-    domain: governance
-    ai_standard:
-      kind: principle
-      name: Governance
-      section: "0"
-    ai_phase: none
+    rules: [R5]
     notes: Every agent and human decision is one row; corrections add a row, never edit one.
   - id: P1-policy-loader
     title: Governance policies with strict validation
-    focus_area: planning
-    domain: risk
-    ai_standard:
-      kind: principle
-      name: Governance
-      section: "0"
-    ai_phase: none
+    rules: [R3, R7, R8]
     notes: Tiers, risk thresholds and approvers come from files a person applies, not from code.
   - id: P1-seed-portfolio
     title: Fictional demo clients and portfolio
-    focus_area: initiating
-    domain: stakeholders
-    ai_standard:
-      kind: principle
-      name: Ethics
-      section: "0"
-    ai_phase: none
+    rules: []
     notes: Invented clients on the .example domain; no real people or companies.
   - id: P1-standards-map
     title: Standards traceability map
-    focus_area: planning
-    domain: governance
-    ai_standard:
-      kind: principle
-      name: Governance
-      section: "0"
-    ai_phase: none
-    notes: Tags each feature to general practice by section number, paraphrased.
+    rules: []
+    notes: Lists the rules each feature follows.
   - id: P1-agent-build-workflow
     title: Audited agent build workflow
-    focus_area: executing
-    domain: governance
-    ai_standard:
-      kind: principle
-      name: Improvement
-      section: "0"
-    ai_phase: none
+    rules: [R1, R4, R5]
     notes: A person approves each spec and merge; every run records model, tokens and cost.
   # --- P2 Login and roles
   - id: P2-login-and-roles
     title: Login, roles and route guards
-    focus_area: executing
-    domain: governance
-    ai_standard:
-      kind: practice_area
-      name: AI quality
-      section: "0"
-    ai_phase: none
+    rules: [R6]
     notes: Argon2id passwords, short signed sessions with CSRF checks; every route needs a permission; no self-approval.
   - id: P2-roles
     title: Roles and route guards
-    focus_area: executing
-    domain: governance
-    ai_standard:
-      kind: practice_area
-      name: AI quality
-      section: "0"
-    ai_phase: none
+    rules: [R1, R6]
     notes: One permissions table; every route needs a guard; only admins change roles, never their own, and each change is audited.
   - id: P2-login-audit
     title: Login audit, lockout and rate limits
-    focus_area: monitoring_controlling
-    domain: risk
-    ai_standard:
-      kind: practice_area
-      name: AI quality
-      section: "0"
-    ai_phase: none
+    rules: [R5, R6]
     notes: Sign-in events are audited without secrets; repeated failures lock an account; per-IP throttling.
-  # --- P3 Intake, planning baseline, proposals, status reports and closing
+  # --- P3 Intake, planning baseline, proposals, status reports and closure
   - id: P3-project-intake
     title: Project and work-item intake
-    focus_area: initiating
-    domain: scope
-    ai_standard:
-      kind: principle
-      name: Value
-      section: "0"
-    ai_phase: I
+    rules: [R1, R11]
     notes: An agent may propose a triage; a person authorises the project.
   - id: P3-client-proposals
     title: Client proposal workflow
-    focus_area: planning
-    domain: finance
-    ai_standard:
-      kind: principle
-      name: Ethics
-      section: "0"
-    ai_phase: none
+    rules: [R1]
     notes: An agent may draft; a person commits the price and sends the document.
   - id: P3-status-reports
     title: Status reports
-    focus_area: monitoring_controlling
-    domain: stakeholders
-    ai_standard:
-      kind: practice_area
-      name: AI stakeholders
-      section: "0"
-    ai_phase: none
+    rules: [R1, R5]
     notes: Agent drafts are proposals; a person edits and releases each report.
   - id: P3-closure
     title: Closure report and lessons learned
-    focus_area: closing
-    domain: governance
-    ai_standard:
-      kind: principle
-      name: Improvement
-      section: "0"
-    ai_phase: none
+    rules: []
     notes: A closure report and lessons learned are recorded when a project ends.
   # --- P4 Risk register
   - id: P4-risk-register
     title: Risk register
-    focus_area: monitoring_controlling
-    domain: risk
-    ai_standard:
-      kind: practice_area
-      name: AI risk
-      section: "0"
-    ai_phase: none
+    rules: [R7, R8, R9, R10]
     notes: Threats and opportunities scored against the risk policy; a person accepts a risk.
   # --- P5 Stage gates
   - id: P5-stage-gates
     title: Stage gates
-    focus_area: monitoring_controlling
-    domain: governance
-    ai_standard:
-      kind: principle
-      name: Governance
-      section: "0"
-    ai_phase: none
-    notes: Gates apply at the end of each AI project stages; criteria come from policy and only a person approves a gate.
+    rules: [R1, R3]
+    notes: Gates sit between project stages; criteria come from policy and only a person approves a gate.
   # --- P6 Portfolio dashboard and agent registry
   - id: P6-portfolio-dashboard
     title: Portfolio dashboard
-    focus_area: monitoring_controlling
-    domain: governance
-    ai_standard:
-      kind: practice_area
-      name: AI delivery
-      section: "0"
-    ai_phase: none
+    rules: [R5]
     notes: Health, budget and risk across projects, from recorded data only.
   - id: P6-agent-registry
     title: Agent registry
-    focus_area: executing
-    domain: resources
-    ai_standard:
-      kind: principle
-      name: Governance
-      section: "0"
-    ai_phase: VI
+    rules: [R2, R4, R5]
     notes: Each agent's purpose, limits, mode and owner, with its run history.
   # --- P7 Demo and standards lens
   - id: P7-standards-lens
     title: Standards lens
-    focus_area: monitoring_controlling
-    domain: governance
-    ai_standard:
-      kind: principle
-      name: Governance
-      section: "0"
-    ai_phase: none
-    notes: Shows each feature with the standards it traces to, from this file.
+    rules: []
+    notes: Shows each feature with the rules it follows, from this file.

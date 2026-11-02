@@ -1,7 +1,7 @@
 """Roles, actions and the one permissions table.
 
 Every API route depends on a guard from this module, except the few on `OPEN_PATHS`. The API is
-the enforcement point; the web only hides what a role cannot do. The table is our own choice.
+the enforcement point; the web only hides what a role cannot do.
 
 `require(action)` gives 401 when nobody is signed in and 403 when the user's role lacks the
 action. `current_user` loads the user's database row on every request and the role is read from

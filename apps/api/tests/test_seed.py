@@ -42,7 +42,7 @@ def _count(db: Session, model) -> int:
 def _own_project(client_id: int) -> Project:
     """A project a person created: no seed_key."""
     return Project(
-        client_id=client_id, name="Own", stage="initiating", sponsor="S", pm="P", status="on_track"
+        client_id=client_id, name="Own", stage="intake", sponsor="S", pm="P", status="on_track"
     )
 
 
@@ -58,8 +58,6 @@ def test_seed_creates_three_clients_and_an_internal_project(db):
 
 
 def test_seeded_projects_use_known_stages_and_statuses():
-    # Stage names follow general project practice stages, e.g. "initiating", not "intake".
-    assert "initiating" in STAGES and "intake" not in STAGES
     for project in PROJECTS:
         assert project["stage"] in STAGES, project["seed_key"]
         assert project["status"] in STATUSES, project["seed_key"]
