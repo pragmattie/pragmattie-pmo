@@ -18,14 +18,13 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`policies/risk-library.yaml`** (item 3.2): the starter risk library, drafted at
-  `ci/proposed/policies/risk-library.yaml`. Apply it to `policies/risk-library.yaml` and delete
-  the draft. Until then `GET /api/v1/risk-library` and `POST .../risks/from-library` answer 503;
-  the rest of the API is unaffected (the library loads apart from the other policies). The tests
-  read the applied file when it exists and the draft otherwise, so no test change is needed.
+Nothing is pending.
 
 ## Applied
 
+- **`policies/risk-library.yaml`** (item 3.2): the starter risk library, moved from
+  `ci/proposed/policies/risk-library.yaml` unchanged. The library routes now answer instead of
+  returning 503.
 - **`ci.yml`** (item 2.4): applied over `.github/workflows/ci.yml` and the copy here deleted. It
   adds `API (security tests)`, a required check in the `main` ruleset. `API (migrations on MySQL)`
   keeps its name and now also runs `pytest -m mysql --require-mysql` (the last-admin and
