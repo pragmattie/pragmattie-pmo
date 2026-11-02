@@ -18,20 +18,16 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`ci.yml`** (item 2.4): copy `ci/proposed/ci.yml` over `.github/workflows/ci.yml` and delete
-  the copy here. Then, in the same sitting, add one required check to the `main` ruleset, with
-  this exact name:
-
-  `API (security tests)`
-
-  The other changes need no ruleset update: `API (migrations on MySQL)` keeps its name and now
-  also runs `pytest -m mysql --require-mysql` (the last-admin and parallel-login-failure races,
-  on its throwaway MySQL service, via `TEST_MYSQL_URL`); a skipped MySQL test fails that step.
-  The new `Dependency audit` job (`pip-audit`, `npm audit --omit=dev`) is report-only, so do
-  **not** make it a required check yet. The workflow still needs no secrets.
+Nothing is pending.
 
 ## Applied
 
+- **`ci.yml`** (item 2.4): applied over `.github/workflows/ci.yml` and the copy here deleted. It
+  adds `API (security tests)`, a required check in the `main` ruleset. `API (migrations on MySQL)`
+  keeps its name and now also runs `pytest -m mysql --require-mysql` (the last-admin and
+  parallel-login-failure races, on its throwaway MySQL service, via `TEST_MYSQL_URL`); a skipped
+  MySQL test fails that step. `Dependency audit` (`pip-audit`, `npm audit --omit=dev`) is
+  report-only, so it is **not** a required check yet. The workflow still needs no secrets.
 - **`CLAUDE.md` standards note** (item 1.6): the standards map bullet was added to `CLAUDE.md`.
 - **`policies/`** (item 1.4): the first real `tiers.yaml`, `risk.yaml`, `gates.yaml` and
   `approvers.yaml`, moved from `ci/proposed/policies/`. `apps/api/app/policy.py` validates them
