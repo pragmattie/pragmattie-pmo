@@ -91,7 +91,7 @@ class RiskPolicy:
 
 @dataclass(frozen=True)
 class GatesPolicy:
-    """Placeholder until stage gates arrive in milestone P5."""
+    """Placeholder until stage gates arrive in milestone P4."""
 
     gates: tuple[str, ...]
 
