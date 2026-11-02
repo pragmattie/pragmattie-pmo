@@ -16,7 +16,7 @@ from app.security import CSRF_COOKIE, SESSION_COOKIE, hash_password
 
 # Made up for these tests only; never a real credential.
 EMAIL = "cookie.check@pmo.example"
-PASSWORD = "cookie-flags-test-passphrase"
+PASSWORD = "cookie-flags-test-passphrase"  # secret-scan: allow
 
 
 @pytest.fixture
