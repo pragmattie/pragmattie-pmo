@@ -10,6 +10,7 @@ from functools import lru_cache
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, make_url
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings, get_settings
@@ -44,6 +45,16 @@ def make_engine(settings: Settings, **kwargs: Any) -> Engine:
         connect_args=connect_args(settings),
         **kwargs,
     )
+
+
+# MySQL error codes for a lock wait timeout and a deadlock: the transaction lost a race with a
+# parallel one and was rolled back, so the request can be refused cleanly and tried again.
+LOCK_CONFLICT_CODES = frozenset({1205, 1213})
+
+
+def is_lock_conflict(exc: OperationalError) -> bool:
+    args = getattr(exc.orig, "args", ())
+    return bool(args) and args[0] in LOCK_CONFLICT_CODES
 
 
 engine = make_engine(get_settings())

@@ -11,6 +11,9 @@ from sqlalchemy.orm import Session
 
 MAX_LIMIT = 100
 DEFAULT_LIMIT = 50
+# Far beyond any real list, and small enough for every database's OFFSET: without a cap, an
+# offset past 2**63 reached the driver and failed with a 500 instead of a 422.
+MAX_OFFSET = 1_000_000_000
 
 # Money is a decimal in Python and a JSON string with exactly 2 decimal places.
 MoneyStr = Annotated[
@@ -25,7 +28,7 @@ MoneyStr = Annotated[
 
 # Query parameters for list routes: `limit: Limit = DEFAULT_LIMIT, offset: Offset = 0`.
 Limit = Annotated[int, Query(ge=1, le=MAX_LIMIT)]
-Offset = Annotated[int, Query(ge=0)]
+Offset = Annotated[int, Query(ge=0, le=MAX_OFFSET)]
 
 
 class Page[T](BaseModel):

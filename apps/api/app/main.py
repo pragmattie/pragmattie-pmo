@@ -1,11 +1,26 @@
 """FastAPI application entry point."""
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
 
 from app import __version__
 from app.api import audit, auth, health, portfolio, standards, users
 from app.config import get_settings
+from app.db import is_lock_conflict
+from app.headers import BodyLimitMiddleware, SecurityHeadersMiddleware
+
+LOCK_CONFLICT = "the data changed while you were saving; try again"
+
+
+async def _lock_conflict(request: Request, exc: Exception) -> JSONResponse:
+    """A deadlock or lock timeout is a clash with a parallel request, not a crash: 409. The
+    session is rolled back when the request's `get_db` closes it. Any other database error is
+    raised again and stays a 500."""
+    if isinstance(exc, OperationalError) and is_lock_conflict(exc):
+        return JSONResponse({"detail": LOCK_CONFLICT}, status_code=status.HTTP_409_CONFLICT)
+    raise exc
 
 
 def create_app() -> FastAPI:
@@ -27,6 +42,11 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Added last, so they run first: an oversized body is refused before CORS or any route sees
+    # it, and the security headers go on every response, the 413 included.
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_exception_handler(OperationalError, _lock_conflict)
     # Every unsafe method under /api/v1 needs the CSRF header (login excepted). Every route also
     # needs a guard from app/authz.py, except those on OPEN_PATHS; a test checks this.
     api = APIRouter(prefix="/api/v1", dependencies=[Depends(auth.require_csrf)])

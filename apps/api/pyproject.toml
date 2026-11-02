@@ -15,6 +15,9 @@ select = ["E", "F", "I", "B", "UP"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra"
+markers = [
+    "mysql: needs a real MySQL server at TEST_MYSQL_URL; skipped without one",
+]
 
 [tool.ruff.lint.isort]
 # The local alembic/ folder holds migrations; the package of that name is third-party.

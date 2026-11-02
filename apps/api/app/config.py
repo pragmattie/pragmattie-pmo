@@ -81,7 +81,15 @@ class Settings(BaseSettings):
     lockout_minutes: int = Field(default=15, ge=1)
     login_rate_per_minute: int = Field(default=10, ge=1)
 
+    # Request bodies larger than this get 413 (app/headers.py). Every body today is a few hundred
+    # bytes; 64 KiB leaves room without letting a client make the API buffer much.
+    max_body_bytes: int = Field(default=64 * 1024, ge=1)
+
     anthropic_api_key: str | None = Field(default=None, repr=False)
+
+    # Read only by tests/security/test_mysql_races.py: a throwaway MySQL database those tests
+    # empty and fill. Never point it at a database whose data matters.
+    test_mysql_url: str | None = Field(default=None, repr=False)
 
     cors_origins: str = "http://localhost:5173"
     agent_mode: AgentMode = "off"

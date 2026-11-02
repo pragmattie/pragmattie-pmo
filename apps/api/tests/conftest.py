@@ -19,6 +19,44 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
 
+# How the tests marked `mysql` ended in this run (see `--require-mysql`).
+_MYSQL_OUTCOMES = {"skipped": 0, "passed": 0}
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--require-mysql",
+        action="store_true",
+        help="fail the run if a test marked mysql is skipped, or if none runs (CI uses this)",
+    )
+
+
+def pytest_runtest_logreport(report):
+    """Count how tests marked `mysql` ended, for `--require-mysql`."""
+    if "mysql" not in report.keywords:
+        return
+    if report.skipped:
+        _MYSQL_OUTCOMES["skipped"] += 1
+    elif report.when == "call" and report.passed:
+        _MYSQL_OUTCOMES["passed"] += 1
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """With `--require-mysql`, a skipped MySQL test is a failure: otherwise a missing
+    TEST_MYSQL_URL would let CI pass without testing anything."""
+    if not session.config.getoption("--require-mysql"):
+        return
+    skipped, passed = _MYSQL_OUTCOMES["skipped"], _MYSQL_OUTCOMES["passed"]
+    if skipped or not passed:
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line(
+                f"--require-mysql: {skipped} mysql test(s) skipped, {passed} passed; "
+                "set TEST_MYSQL_URL to a throwaway MySQL database",
+                red=True,
+            )
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
 
 @pytest.fixture
 def client() -> TestClient:
