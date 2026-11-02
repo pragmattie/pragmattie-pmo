@@ -4,6 +4,8 @@ The matrix is built from the app's own route list, so a new route is covered as 
 added, and a route without a guard fails `test_every_route_has_a_guard`.
 """
 
+from datetime import datetime
+
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.routing import APIRoute, iter_route_contexts
@@ -223,6 +225,9 @@ SAMPLES = {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
     },
+    ("POST", "/api/v1/users/{user_id}/unlock"): lambda target: {
+        "url": f"/api/v1/users/{target}/unlock",
+    },
 }
 
 
@@ -247,12 +252,14 @@ def test_matrix_covers_the_existing_routes():
         ("GET", "/api/v1/standards"),
         ("GET", "/api/v1/auth/me"),
         ("PATCH", "/api/v1/users/{user_id}/role"),
+        ("POST", "/api/v1/users/{user_id}/unlock"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
     assert guards["/api/v1/clients"] == guards["/api/v1/projects"] == Action.PROJECT_READ
     assert guards["/api/v1/standards"] == Action.STANDARDS_READ
     assert guards["/api/v1/users/{user_id}/role"] == Action.USER_ADMIN
+    assert guards["/api/v1/users/{user_id}/unlock"] == Action.USER_ADMIN
     assert guards["/api/v1/auth/me"] == "signed_in"
 
 
@@ -433,3 +440,97 @@ def test_no_secret_in_the_role_change_audit_row(web, db, sign_in):
     for secret in secrets:
         assert secret not in text
     assert row.action_taken == {"action": "role_change", "from": "project_manager", "to": "sponsor"}
+
+
+# --- Unlocking an account
+
+
+def _locked_target(db: Session) -> User:
+    target = _target(db)
+    target.locked_until = datetime(2999, 1, 1)
+    target.failed_logins = 3
+    target.failed_window_started_at = datetime(2026, 11, 1)
+    db.commit()
+    return target
+
+
+def test_admin_unlocks_an_account_and_the_unlock_is_one_audit_row(web, db, sign_in):
+    admin = sign_in(web, db, "admin")
+    target = _locked_target(db)
+    response = web.post(f"/api/v1/users/{target.id}/unlock")
+    assert response.status_code == 200
+    db.refresh(target)
+    assert target.locked_until is None
+    assert target.failed_logins == 0
+    assert target.failed_window_started_at is None
+
+    (row,) = _audit_rows(db)
+    assert (row.agent, row.trigger, row.subject_type, row.subject_id, row.status) == (
+        "auth",
+        "human",
+        "user",
+        str(target.id),
+        "ok",
+    )
+    assert row.actor_user_id == admin.id
+    assert row.signals == {"event": "unlock"}
+    assert row.action_taken == {"action": "unlock", "was_locked": True}
+
+
+def test_unlocking_an_expired_lock_records_was_locked_false(web, db, sign_in):
+    sign_in(web, db, "admin")
+    target = _target(db)
+    target.locked_until = datetime(2000, 1, 1)
+    db.commit()
+    assert web.post(f"/api/v1/users/{target.id}/unlock").status_code == 200
+    (row,) = _audit_rows(db)
+    assert row.action_taken == {"action": "unlock", "was_locked": False}
+
+
+def test_unlocking_an_account_that_was_never_locked_records_was_locked_false(web, db, sign_in):
+    sign_in(web, db, "admin")
+    target = _target(db)
+    assert web.post(f"/api/v1/users/{target.id}/unlock").status_code == 200
+    (row,) = _audit_rows(db)
+    assert row.action_taken == {"action": "unlock", "was_locked": False}
+
+
+def test_unlock_and_role_change_share_the_attempt_sequence(web, db, sign_in):
+    sign_in(web, db, "admin")
+    target = _locked_target(db)
+    assert web.post(f"/api/v1/users/{target.id}/unlock").status_code == 200
+    assert _role_change(web, target.id, "auditor").status_code == 200
+    assert [r.attempt for r in _audit_rows(db)] == [1, 2]
+
+
+@pytest.mark.parametrize("role", [r for r in Role if r is not Role.ADMIN])
+def test_only_admin_can_unlock(web, db, sign_in, role):
+    sign_in(web, db, role)
+    target = _locked_target(db)
+    assert web.post(f"/api/v1/users/{target.id}/unlock").status_code == 403
+    db.refresh(target)
+    assert target.locked_until is not None
+    assert _audit_rows(db) == []
+
+
+def test_an_admin_cannot_unlock_their_own_account(web, db, sign_in):
+    admin = sign_in(web, db, "admin")
+    admin.locked_until = datetime(2999, 1, 1)
+    db.commit()
+    assert web.post(f"/api/v1/users/{admin.id}/unlock").status_code == 403
+    db.refresh(admin)
+    assert admin.locked_until is not None
+    assert _audit_rows(db) == []
+
+
+def test_unlock_of_an_unknown_user_is_404(web, db, sign_in):
+    sign_in(web, db, "admin")
+    assert web.post("/api/v1/users/9999/unlock").status_code == 404
+
+
+def test_unlock_needs_the_csrf_header(web, db, sign_in):
+    sign_in(web, db, "admin")
+    target = _locked_target(db)
+    del web.headers["X-CSRF-Token"]
+    assert web.post(f"/api/v1/users/{target.id}/unlock").status_code == 403
+    assert _audit_rows(db) == []

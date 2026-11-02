@@ -45,7 +45,7 @@ features:
   - id: P2-login-audit
     title: Login audit, lockout and rate limits
     rules: [R5, R6]
-    notes: Sign-in attempts are recorded and throttled; messages stay generic.
+    notes: Sign-in events are audited without secrets; repeated failures lock an account; per-IP throttling.
   # --- P3 Intake, planning baseline, proposals, status reports and closure
   - id: P3-project-intake
     title: Project and work-item intake
