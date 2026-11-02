@@ -18,7 +18,17 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-Nothing is waiting.
+- **`ci.yml`** (item 2.4): copy `ci/proposed/ci.yml` over `.github/workflows/ci.yml` and delete
+  the copy here. Then, in the same sitting, add one required check to the `main` ruleset, with
+  this exact name:
+
+  `API (security tests)`
+
+  The other changes need no ruleset update: `API (migrations on MySQL)` keeps its name and now
+  also runs `pytest -m mysql --require-mysql` (the last-admin and parallel-login-failure races,
+  on its throwaway MySQL service, via `TEST_MYSQL_URL`); a skipped MySQL test fails that step.
+  The new `Dependency audit` job (`pip-audit`, `npm audit --omit=dev`) is report-only, so do
+  **not** make it a required check yet. The workflow still needs no secrets.
 
 ## Applied
 

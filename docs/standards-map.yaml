@@ -46,6 +46,10 @@ features:
     title: Login audit, lockout and rate limits
     rules: [R5, R6]
     notes: Sign-in events are audited without secrets; repeated failures lock an account; per-IP throttling.
+  - id: P2-security-tests
+    title: Security tests and threat notes
+    rules: [R6, R10]
+    notes: Threats incl. AI ones, each with mitigation and test, seed the risk register; reviews each milestone, quarter and auth change.
   # --- P3 Intake, planning baseline, proposals, status reports and closure
   - id: P3-project-intake
     title: Project and work-item intake
