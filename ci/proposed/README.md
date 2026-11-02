@@ -18,7 +18,11 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-Nothing is pending.
+- **`policies/risk-library.yaml`** (item 3.2): the starter risk library, drafted at
+  `ci/proposed/policies/risk-library.yaml`. Apply it to `policies/risk-library.yaml` and delete
+  the draft. Until then `GET /api/v1/risk-library` and `POST .../risks/from-library` answer 503;
+  the rest of the API is unaffected (the library loads apart from the other policies). The tests
+  read the applied file when it exists and the draft otherwise, so no test change is needed.
 
 ## Applied
 
