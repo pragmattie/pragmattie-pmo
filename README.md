@@ -42,6 +42,22 @@ never starts empty. `GET /api/v1/risk-library` lists them, and
 ones to a project as `proposed` risks with no score, for the project's people to score. A
 template has no probability or impact, because those depend on the project.
 
+## The risk register screen
+
+**Risks** in the menu (any role with `project:read`) opens a project's risk register: a paged
+table with filters for status, band, category and kind, a 5 x 5 heat map of open risks coloured
+by band (click a cell to filter the table to it; threats and opportunities can be shown on their
+own), open totals per band, and a drawer with every field and the risk's history. Only a role
+with `project:write` (the project manager) sees the buttons to add, edit and close a risk. If
+someone else saved the risk first, the screen says so and shows the latest version.
+
+It reads three routes, each needing only `project:read`:
+`GET /api/v1/projects/{id}/risks/heatmap` (optionally `?kind=threat` or `?kind=opportunity`),
+`GET /api/v1/projects/{id}/risks/{risk_id}/history` (the risk's own audit rows, newest first)
+and `GET /api/v1/users` (active people's ids and names, to show and pick an owner). The risk
+list also takes `probability` and `impact` filters, for a heat map cell. Band colours are
+`band-low`, `band-medium` and `band-high` in the `pragmattiePmo` theme.
+
 ## Demo users for a rehearsal
 
 `python -m app.seed users` creates one demo user per role, each on a `.example` address, with a
