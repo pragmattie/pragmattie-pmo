@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useDisplay } from 'vuetify'
 
 import { NAV_ITEMS } from './lib/nav'
 
@@ -8,6 +9,10 @@ import { useAuthStore } from './stores/auth'
 
 const auth = useAuthStore()
 const router = useRouter()
+// At phone width the menu folds away behind a button so pages get the full screen.
+const { smAndDown } = useDisplay()
+const menuOpen = ref(!smAndDown.value)
+watch(smAndDown, (small) => (menuOpen.value = !small))
 // Only the pages this role may use; the API still refuses anything else.
 const navItems = computed(() => NAV_ITEMS.filter((item) => auth.can(item.action)))
 
@@ -20,13 +25,25 @@ async function logout() {
 <template>
   <v-app>
     <v-app-bar color="primary" flat>
+      <v-app-bar-nav-icon
+        v-if="auth.user && smAndDown"
+        aria-label="Menu"
+        data-test="menu-toggle"
+        @click="menuOpen = !menuOpen"
+      />
       <v-app-bar-title data-test="brand">PragMattie PMO</v-app-bar-title>
       <template v-if="auth.user">
         <span class="text-body-2 mr-2" data-test="user-name">{{ auth.user.display_name }}</span>
         <v-btn variant="outlined" class="mr-2" data-test="logout" @click="logout">Sign out</v-btn>
       </template>
     </v-app-bar>
-    <v-navigation-drawer v-if="auth.user" permanent data-test="nav">
+    <v-navigation-drawer
+      v-if="auth.user"
+      v-model="menuOpen"
+      :permanent="!smAndDown"
+      :temporary="smAndDown"
+      data-test="nav"
+    >
       <v-list nav>
         <v-list-item :to="{ name: 'home' }" title="Home" exact data-test="nav-home" />
         <v-list-item

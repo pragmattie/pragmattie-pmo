@@ -8,6 +8,14 @@ export const brandColors = {
   gold: '#E8B35A',
 } as const
 
+// Risk priority bands, by the band names in the risk policy. The Risks page reads them from the
+// theme as `band-low`, `band-medium` and `band-high`.
+export const bandColors = {
+  'band-low': '#3E8E5E',
+  'band-medium': brandColors.gold,
+  'band-high': '#B23A3A',
+} as const
+
 export const pragmattiePmo: ThemeDefinition = {
   dark: false,
   colors: {
@@ -16,6 +24,7 @@ export const pragmattiePmo: ThemeDefinition = {
     accent: brandColors.gold,
     background: '#FFFFFF',
     surface: '#FFFFFF',
+    ...bandColors,
   },
 }
 

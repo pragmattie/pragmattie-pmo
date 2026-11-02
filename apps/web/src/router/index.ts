@@ -1,3 +1,4 @@
+import type { Component } from 'vue'
 import { createMemoryHistory, createRouter, createWebHistory } from 'vue-router'
 
 import { setUnauthorizedHandler } from '../lib/api'
@@ -7,6 +8,10 @@ import { useAuthStore } from '../stores/auth'
 import HomeView from '../views/HomeView.vue'
 import LoginView from '../views/LoginView.vue'
 import PlaceholderView from '../views/PlaceholderView.vue'
+import RisksView from '../views/RisksView.vue'
+
+// Menu pages that have a real view; the rest show a placeholder.
+const VIEWS: Record<string, Component> = { risks: RisksView }
 
 export function makeRouter(memory = false) {
   const router = createRouter({
@@ -17,8 +22,8 @@ export function makeRouter(memory = false) {
       ...NAV_ITEMS.map((item) => ({
         path: item.path,
         name: item.name,
-        component: PlaceholderView,
-        props: { title: item.title },
+        component: VIEWS[item.name] ?? PlaceholderView,
+        props: VIEWS[item.name] ? {} : { title: item.title },
         meta: { action: item.action },
       })),
     ],
