@@ -27,7 +27,7 @@ from app.authz import (
 from app.config import get_settings
 from app.db import engine
 from app.main import app, create_app
-from app.models import AuditDecision, Base, User
+from app.models import AuditDecision, Base, Project, Risk, User
 from app.security import CSRF_COOKIE, SESSION_COOKIE, issue_token
 
 CSRF = {"X-CSRF-Token": "test-csrf-value"}
@@ -218,9 +218,50 @@ def _guarded_routes() -> list[tuple[str, str, object]]:
 
 GUARDED = _guarded_routes()
 
+RISK_BODY = {
+    "kind": "threat",
+    "title": "Model drift",
+    "cause": "Training data ages",
+    "effect": "Answers get worse",
+    "category": "ai",
+    "objectives": ["quality"],
+    "probability": 3,
+    "impact": 4,
+    "response": "reduce",
+    "response_plan": "Retrain every quarter",
+}
+
+
+def _project_with_risk() -> tuple[int, int]:
+    """A project holding one risk, for the risk routes' samples."""
+    with Session(engine) as session:
+        project = Project(name="Matrix", stage="delivery", sponsor="S", pm="P", status="on_track")
+        session.add(project)
+        session.flush()
+        risk = Risk(project_id=project.id, status="open", source="person", **RISK_BODY)
+        session.add(risk)
+        session.commit()
+        return project.id, risk.id
+
+
+def _risk_sample(item: bool, body: dict | None = None):
+    def sample(_target: int) -> dict:
+        project_id, risk_id = _project_with_risk()
+        url = f"/api/v1/projects/{project_id}/risks" + (f"/{risk_id}" if item else "")
+        return {"url": url, "json": body} if body is not None else {"url": url}
+
+    return sample
+
+
 # Routes with path parameters or a body need a sample request that succeeds when allowed. Each
 # takes the id of a project-manager user that the caller may act on.
 SAMPLES = {
+    ("GET", "/api/v1/projects/{project_id}/risks"): _risk_sample(item=False),
+    ("POST", "/api/v1/projects/{project_id}/risks"): _risk_sample(False, RISK_BODY),
+    ("GET", "/api/v1/projects/{project_id}/risks/{risk_id}"): _risk_sample(item=True),
+    ("PATCH", "/api/v1/projects/{project_id}/risks/{risk_id}"): _risk_sample(
+        True, {"version": 1, "status": "closed"}
+    ),
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -239,8 +280,14 @@ def _request(web: TestClient, method: str, path: str, target: int):
     return web.request(method, **sample(target))
 
 
-def _expected(guard, role: Role) -> int:
-    return 200 if guard == "signed_in" or guard in PERMISSIONS[role] else 403
+# Allowed requests that create something answer 201 rather than 200.
+CREATED = {("POST", "/api/v1/projects/{project_id}/risks")}
+
+
+def _expected(guard, role: Role, method: str = "GET", path: str = "") -> int:
+    if guard != "signed_in" and guard not in PERMISSIONS[role]:
+        return 403
+    return 201 if (method, path) in CREATED else 200
 
 
 def test_matrix_covers_the_existing_routes():
@@ -253,6 +300,10 @@ def test_matrix_covers_the_existing_routes():
         ("GET", "/api/v1/auth/me"),
         ("PATCH", "/api/v1/users/{user_id}/role"),
         ("POST", "/api/v1/users/{user_id}/unlock"),
+        ("GET", "/api/v1/projects/{project_id}/risks"),
+        ("POST", "/api/v1/projects/{project_id}/risks"),
+        ("GET", "/api/v1/projects/{project_id}/risks/{risk_id}"),
+        ("PATCH", "/api/v1/projects/{project_id}/risks/{risk_id}"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -261,6 +312,13 @@ def test_matrix_covers_the_existing_routes():
     assert guards["/api/v1/users/{user_id}/role"] == Action.USER_ADMIN
     assert guards["/api/v1/users/{user_id}/unlock"] == Action.USER_ADMIN
     assert guards["/api/v1/auth/me"] == "signed_in"
+    by_method = {(method, path): guard for method, path, guard in GUARDED}
+    risks, risk = (
+        "/api/v1/projects/{project_id}/risks",
+        "/api/v1/projects/{project_id}/risks/{risk_id}",
+    )
+    assert by_method[("GET", risks)] == by_method[("GET", risk)] == Action.PROJECT_READ
+    assert by_method[("POST", risks)] == by_method[("PATCH", risk)] == Action.PROJECT_WRITE
 
 
 @pytest.mark.parametrize("role", list(Role))
@@ -271,7 +329,7 @@ def test_matrix(web, db, sign_in, role, method, path, guard):
     target = _target(db)
     sign_in(web, db, role)
     response = _request(web, method, path, target.id)
-    assert response.status_code == _expected(guard, role), response.text
+    assert response.status_code == _expected(guard, role, method, path), response.text
 
 
 @pytest.mark.parametrize(

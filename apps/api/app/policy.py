@@ -404,3 +404,25 @@ def get_policies() -> Policies:
     """The policies in the configured directory, loaded on first use. A failure is not cached,
     so the next call tries again once the files are fixed."""
     return load_policies(get_settings().policies_dir)
+
+
+def score_risk(
+    policy: RiskPolicy, probability: int | None, impact: int | None
+) -> tuple[int | None, str | None]:
+    """A risk's score (probability x impact) and priority band under `policy`.
+
+    The band is the one whose range holds the score, raised to `minimum_band_by_impact` for the
+    risk's impact where that is higher. With no probability or impact yet (a risk that needs a
+    person's judgement and has not had one) there is no score and no band: `(None, None)`.
+    """
+    if probability is None or impact is None:
+        return None, None
+    if probability not in SCALE_LEVELS or impact not in SCALE_LEVELS:
+        raise ValueError("probability and impact must each be 1 to 5")
+    score = probability * impact
+    bands = policy.priority_bands
+    index = next(i for i, band in enumerate(bands) if band.min_score <= score <= band.max_score)
+    floor = policy.minimum_band_by_impact.get(impact)
+    if floor is not None:
+        index = max(index, next(i for i, band in enumerate(bands) if band.name == floor))
+    return score, bands[index].name

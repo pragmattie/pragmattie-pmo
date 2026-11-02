@@ -29,6 +29,12 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         assert {"ck_pmo_audit_trigger", "ck_pmo_audit_status"} <= checks
         user_columns = {c["name"] for c in inspector.get_columns("users")}
         assert "failed_window_started_at" in user_columns
+        risk_checks = {ck["name"] for ck in inspector.get_check_constraints("risks")}
+        assert {"ck_risks_kind", "ck_risks_probability", "ck_risks_score"} <= risk_checks
+        risk_fks = {fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("risks")}
+        assert risk_fks == {"fk_risks_project": "projects", "fk_risks_owner_user": "users"}
+        risk_indexes = {ix["name"] for ix in inspector.get_indexes("risks")}
+        assert {"ix_risks_project_status", "ix_risks_band", "ix_risks_score"} <= risk_indexes
         # Fails if the models and the migrations disagree.
         command.check(config)
         command.downgrade(config, "base")

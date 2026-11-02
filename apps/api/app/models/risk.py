@@ -1,0 +1,89 @@
+"""The risk register: threats and opportunities, one project each.
+
+`score` and `band` are written only by the server, from the risk policy (`app.policy.score_risk`);
+they are stored so the list can filter by band and sort by score in SQL. After the policy file
+changes, `python -m app.risks rescore` brings every stored score and band up to date.
+
+`version` guards concurrent edits: a client sends the version it read, and SQLAlchemy also adds
+it to every UPDATE (`version_id_col`), so a write that lost a race fails instead of overwriting.
+"""
+
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    column,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.migrations_filter import table_name
+from app.models.base import Base, utcnow
+
+RISKS_TABLE = table_name("risks")
+PROJECTS_TABLE = table_name("projects")
+USERS_TABLE = table_name("users")
+
+KINDS = ("threat", "opportunity")
+CATEGORIES = ("ai", "project")
+THREAT_RESPONSES = ("avoid", "reduce", "share", "accept")
+OPPORTUNITY_RESPONSES = ("pursue", "increase", "share", "accept")
+RESPONSES_BY_KIND = {"threat": THREAT_RESPONSES, "opportunity": OPPORTUNITY_RESPONSES}
+RESPONSES = tuple(dict.fromkeys(THREAT_RESPONSES + OPPORTUNITY_RESPONSES))
+STATUSES = ("proposed", "open", "accepted", "closed", "rejected")
+SOURCES = ("person", "agent")
+
+
+def _check(name: str, sql: Any) -> CheckConstraint:
+    return CheckConstraint(sql, name=f"ck_risks_{name}")
+
+
+class Risk(Base):
+    __tablename__ = RISKS_TABLE
+    __table_args__ = (
+        _check("kind", column("kind").in_(KINDS)),
+        _check("category", column("category").in_(CATEGORIES)),
+        _check("response", column("response").in_(RESPONSES)),
+        _check("status", column("status").in_(STATUSES)),
+        _check("source", column("source").in_(SOURCES)),
+        _check("probability", column("probability").between(1, 5)),
+        _check("impact", column("impact").between(1, 5)),
+        _check("score", column("score").between(1, 25)),
+        Index("ix_risks_project_status", "project_id", "status"),
+        Index("ix_risks_band", "band"),
+        Index("ix_risks_score", "score"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{PROJECTS_TABLE}.id", name="fk_risks_project")
+    )
+    kind: Mapped[str] = mapped_column(String(16))
+    title: Mapped[str] = mapped_column(String(200))
+    cause: Mapped[str] = mapped_column(Text)
+    effect: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(16))
+    objectives: Mapped[list[str]] = mapped_column(JSON)
+    probability: Mapped[int | None]
+    impact: Mapped[int | None]
+    score: Mapped[int | None]
+    band: Mapped[str | None] = mapped_column(String(32))
+    response: Mapped[str] = mapped_column(String(16))
+    response_plan: Mapped[str] = mapped_column(Text)
+    owner_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey(f"{USERS_TABLE}.id", name="fk_risks_owner_user"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(16))
+    needs_judgement: Mapped[bool] = mapped_column(default=False)
+    source: Mapped[str] = mapped_column(String(16))
+    version: Mapped[int] = mapped_column(default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    __mapper_args__ = {"version_id_col": version}

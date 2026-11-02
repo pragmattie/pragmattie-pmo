@@ -6,9 +6,10 @@ Each request carries a valid admin session, so only the CSRF token is wrong.
 
 import pytest
 from fastapi.routing import APIRoute, iter_route_contexts
-from test_authz import SAMPLES
+from test_authz import GUARDED, SAMPLES
 
 from app.api.auth import LOGIN_PATH, LOGOUT_PATH, SAFE_METHODS
+from app.authz import PERMISSIONS, Role
 from app.main import app
 from app.models import AuditDecision
 from app.security import CSRF_COOKIE, CSRF_HEADER
@@ -44,6 +45,8 @@ def test_the_unsafe_routes_are_all_found():
         ("POST", LOGOUT_PATH),
         ("PATCH", "/api/v1/users/{user_id}/role"),
         ("POST", "/api/v1/users/{user_id}/unlock"),
+        ("POST", "/api/v1/projects/{project_id}/risks"),
+        ("PATCH", "/api/v1/projects/{project_id}/risks/{risk_id}"),
     } <= set(UNSAFE)
 
 
@@ -86,6 +89,8 @@ def test_an_empty_cookie_and_empty_header_are_refused(web, db, sign_in, target, 
 
 @pytest.mark.parametrize(("method", "path"), UNSAFE, ids=[f"{m} {p}" for m, p in UNSAFE])
 def test_a_matching_token_is_accepted(web, db, sign_in, target, method, path):
-    sign_in(web, db, "admin")
+    # Admin, unless the route needs an action admin lacks: then the first role that has it.
+    guard = {(m, p): g for m, p, g in GUARDED}.get((method, path))
+    sign_in(web, db, next(r for r in (Role.ADMIN, *Role) if guard in (None, *PERMISSIONS[r])))
     response = _send(web, method, path, target.id, {CSRF_HEADER: CSRF_VALUE})
-    assert response.status_code in (200, 204), response.text
+    assert response.status_code in (200, 201, 204), response.text

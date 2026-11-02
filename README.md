@@ -65,6 +65,16 @@ docker compose exec api python -m app.seed users
 Copy them somewhere safe; they are not shown again. When the `CI` environment variable is set,
 printing is refused, because CI logs in this repository are public.
 
+## After the risk policy changes
+
+Each risk stores the score and band the server worked out from `policies/risk.yaml` when the risk
+was last saved. After that file changes, run the rescore command so every stored score and band
+matches the new policy. Each risk whose score or band changes gets one audit row:
+
+```sh
+docker compose exec api python -m app.risks rescore
+```
+
 ## Checks
 
 ```sh
