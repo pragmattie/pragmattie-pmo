@@ -4,6 +4,8 @@
 Run it after the risk policy file changes: stored scores and bands are otherwise only refreshed
 when a risk is next edited.
 
+`risk_from_template` turns a starter risk library template into a `proposed`, unscored risk.
+
 Every create, change, close and re-score of a risk is one audit row: agent `risk_register`,
 subject the risk, `version` the risk's version after the change, the values before in `signals`
 (none for a create) and the values after in `output`.
@@ -16,9 +18,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import policy as policies
 from app.audit import record_decision
 from app.models import Risk
-from app.policy import PolicyError, RiskPolicy, get_policies, score_risk
+from app.policy import PolicyError, RiskLibrary, RiskPolicy, RiskTemplate, get_policies, score_risk
 
 AUDIT_AGENT = "risk_register"
 AUDIT_SUBJECT = "risk"
@@ -51,6 +54,34 @@ def risk_policy() -> RiskPolicy:
     return get_policies().risk
 
 
+def risk_library() -> RiskLibrary:
+    """The starter risk library; raises `PolicyError` when its file can't be loaded."""
+    return policies.get_risk_library()
+
+
+def risk_from_template(project_id: int, template: RiskTemplate) -> Risk:
+    """A `proposed` risk from a person, with no score: the project's people score it."""
+    return Risk(
+        project_id=project_id,
+        kind=template.kind,
+        title=template.title,
+        cause=template.cause,
+        effect=template.effect,
+        category=template.category,
+        objectives=list(template.objectives),
+        probability=None,
+        impact=None,
+        score=None,
+        band=None,
+        response=template.response,
+        response_plan=template.response_plan,
+        owner_user_id=None,
+        status="proposed",
+        needs_judgement=False,
+        source="person",
+    )
+
+
 def apply_score(risk: Risk, policy: RiskPolicy) -> None:
     """Set the risk's score and band from the policy. Only the server ever writes them."""
     risk.score, risk.band = score_risk(policy, risk.probability, risk.impact)
@@ -69,8 +100,10 @@ def record_risk_change(
     action: str,
     before: dict[str, Any] | None,
     actor_user_id: int | None,
+    details: dict[str, Any] | None = None,
 ) -> None:
-    """One audit row for a change already flushed to `risk` (so its version is the new one)."""
+    """One audit row for a change already flushed to `risk` (so its version is the new one).
+    `details` adds to the recorded action, e.g. the library template a risk came from."""
     record_decision(
         db,
         agent=AUDIT_AGENT,
@@ -83,7 +116,7 @@ def record_risk_change(
         actor_user_id=actor_user_id,
         signals=before,
         output=snapshot(risk),
-        action_taken={"action": action},
+        action_taken={"action": action, **(details or {})},
     )
 
 

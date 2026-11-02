@@ -107,3 +107,38 @@ class RiskOut(BaseModel):
     version: int
     created_at: datetime
     updated_at: datetime
+
+
+TemplateId = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+# More than the library holds, and small enough to keep one request quick.
+MAX_TEMPLATES_PER_REQUEST = 50
+
+
+class RiskTemplateOut(BaseModel):
+    """A starter risk from the library: no probability or impact, which depend on the project."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    kind: str
+    category: str
+    title: str
+    cause: str
+    effect: str
+    objectives: list[str]
+    response: str
+    response_plan: str
+
+
+class FromLibrary(BaseModel):
+    """The library templates to add to a project, each at most once."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    template_ids: list[TemplateId] = Field(min_length=1, max_length=MAX_TEMPLATES_PER_REQUEST)
+
+    @model_validator(mode="after")
+    def _unique(self) -> Self:
+        if len(set(self.template_ids)) != len(self.template_ids):
+            raise ValueError("template_ids must not repeat")
+        return self

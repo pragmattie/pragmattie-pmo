@@ -5,6 +5,7 @@ This module is the only code that reads policy files. A missing or invalid file 
 first use (`get_policies`), not at startup, so the API starts before the real files are applied.
 """
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -16,6 +17,9 @@ from typing import Any
 import yaml
 
 from app.config import get_settings
+from app.models.risk import CATEGORIES as RISK_CATEGORIES
+from app.models.risk import KINDS as RISK_KINDS
+from app.models.risk import RESPONSES_BY_KIND
 
 SCHEMA_VERSION = 1
 TIERS = ("T0", "T1", "T2", "T3")
@@ -397,6 +401,109 @@ def load_policies(directory: Path | str) -> Policies:
         gates=parse_gates(_read(directory, "gates.yaml")),
         approvers=approvers,
     )
+
+
+@dataclass(frozen=True)
+class RiskTemplate:
+    """One starter risk. No probability or impact: those depend on the project."""
+
+    id: str
+    kind: str
+    category: str
+    title: str
+    cause: str
+    effect: str
+    objectives: tuple[str, ...]
+    response: str
+    response_plan: str
+
+
+@dataclass(frozen=True)
+class RiskLibrary:
+    templates: Mapping[str, RiskTemplate]  # by id, in file order
+
+
+RISK_LIBRARY_FILE = "risk-library.yaml"
+TEMPLATE_KEYS = (
+    "id",
+    "kind",
+    "category",
+    "title",
+    "cause",
+    "effect",
+    "objectives",
+    "response",
+    "response_plan",
+)
+TEMPLATE_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+MAX_TEMPLATE_ID = 64
+MAX_TEMPLATE_TITLE = 200
+
+
+def _choice(value: Any, where: str, allowed: tuple[str, ...], what: str) -> str:
+    if value not in allowed:
+        raise PolicyError(f"{where}: unknown {what} {value!r}; {what}s are {', '.join(allowed)}")
+    return value
+
+
+def parse_risk_library(data: dict, where: str = RISK_LIBRARY_FILE) -> RiskLibrary:
+    _keys(data, where, ("version", "templates"))
+    raw = data["templates"]
+    if not isinstance(raw, list) or not raw:
+        raise PolicyError(f"{where} templates: expected a non-empty list of templates")
+    templates: dict[str, RiskTemplate] = {}
+    for index, entry in enumerate(raw):
+        at = f"{where} templates[{index}]"
+        entry = _mapping(entry, at)
+        _keys(entry, at, TEMPLATE_KEYS)
+        template_id = _text(entry["id"], f"{at}.id")
+        if len(template_id) > MAX_TEMPLATE_ID or not TEMPLATE_ID.match(template_id):
+            raise PolicyError(
+                f"{at}.id: {template_id!r} must be lower-case words joined by hyphens, "
+                f"at most {MAX_TEMPLATE_ID} characters"
+            )
+        if template_id in templates:
+            raise PolicyError(f"{at}.id: duplicate id {template_id!r}")
+        at = f"{where} templates.{template_id}"
+        kind = _choice(entry["kind"], f"{at}.kind", RISK_KINDS, "kind")
+        objectives = entry["objectives"]
+        if not isinstance(objectives, list) or not objectives:
+            raise PolicyError(f"{at}.objectives: expected a non-empty list of objectives")
+        for objective in objectives:
+            _choice(objective, f"{at}.objectives", OBJECTIVES, "objective")
+        if len(set(objectives)) != len(objectives):
+            raise PolicyError(f"{at}.objectives: objectives must not repeat")
+        title = _text(entry["title"], f"{at}.title")
+        if len(title) > MAX_TEMPLATE_TITLE:
+            raise PolicyError(f"{at}.title: at most {MAX_TEMPLATE_TITLE} characters")
+        templates[template_id] = RiskTemplate(
+            id=template_id,
+            kind=kind,
+            category=_choice(entry["category"], f"{at}.category", RISK_CATEGORIES, "category"),
+            title=title,
+            cause=_text(entry["cause"], f"{at}.cause"),
+            effect=_text(entry["effect"], f"{at}.effect"),
+            objectives=tuple(objectives),
+            response=_choice(
+                entry["response"], f"{at}.response", RESPONSES_BY_KIND[kind], f"{kind} response"
+            ),
+            response_plan=_text(entry["response_plan"], f"{at}.response_plan"),
+        )
+    return RiskLibrary(templates=MappingProxyType(templates))
+
+
+def load_risk_library(directory: Path | str) -> RiskLibrary:
+    """Read and validate `risk-library.yaml` in `directory`; raise `PolicyError` on any problem.
+
+    Loaded apart from `load_policies`, so a missing library only affects the library's routes."""
+    return parse_risk_library(_read(Path(directory), RISK_LIBRARY_FILE))
+
+
+@lru_cache
+def get_risk_library() -> RiskLibrary:
+    """The risk library in the configured policies directory, loaded on first use. A failure is
+    not cached, so the next call tries again once the file is fixed."""
+    return load_risk_library(get_settings().policies_dir)
 
 
 @lru_cache

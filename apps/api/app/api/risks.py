@@ -4,6 +4,9 @@ Reading needs `project:read`; creating and changing need `project:write`. There 
 risk is closed with a PATCH that sets `status` to `closed`. On these routes a person may only open
 or close a risk; proposing, accepting and rejecting come with item 3.4.
 
+`POST .../risks/from-library` adds starter templates (`app.api.risk_library`) as `proposed`
+risks from a person, unscored, one audit row each; an unknown template id adds nothing (422).
+
 Score and band come from the risk policy, never from the client. If the policy can't be loaded,
 writes are refused with a 503 rather than saving a risk unscored. A PATCH carries the `version` the
 client read: a different stored version, or a parallel write that lands first, is a 409.
@@ -20,15 +23,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
+from app.api.risk_library import library
 from app.authz import Action, require
 from app.db import get_db
 from app.models import Project, Risk, User
 from app.policy import PolicyError, RiskPolicy
-from app.risks import apply_score, record_risk_change, risk_policy, snapshot
+from app.risks import apply_score, record_risk_change, risk_from_template, risk_policy, snapshot
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
 from app.schemas.risk import (
     Category,
     EditableStatus,
+    FromLibrary,
     Kind,
     RiskCreate,
     RiskFields,
@@ -138,6 +143,39 @@ def create_risk(
     record_risk_change(db, risk, action="create", before=None, actor_user_id=user.id)
     _commit(db)
     return RiskOut.model_validate(risk)
+
+
+@router.post("/from-library", response_model=list[RiskOut], status_code=status.HTTP_201_CREATED)
+def add_from_library(
+    project_id: int,
+    body: FromLibrary,
+    user: Annotated[User, Depends(require(Action.PROJECT_WRITE))],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[RiskOut]:
+    templates = library().templates
+    _project(db, project_id)
+    unknown = [template_id for template_id in body.template_ids if template_id not in templates]
+    if unknown:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"not in the risk library: {', '.join(unknown)}",
+        )
+    added = []
+    for template_id in body.template_ids:
+        risk = risk_from_template(project_id, templates[template_id])
+        db.add(risk)
+        db.flush()
+        record_risk_change(
+            db,
+            risk,
+            action="create",
+            before=None,
+            actor_user_id=user.id,
+            details={"template_id": template_id},
+        )
+        added.append(risk)
+    _commit(db)
+    return [RiskOut.model_validate(risk) for risk in added]
 
 
 @router.get("/{risk_id}", response_model=RiskOut)

@@ -61,6 +61,12 @@ features:
     notes: >-
       Threats and opportunities, AI and project, scored by the server from the risk policy;
       judgement risks wait for a person's score; each change is one audit row; a person accepts.
+  - id: P3-risk-library
+    title: Starter risk library
+    rules: [R5, R10]
+    notes: >-
+      AI and project risk templates, strictly validated; added risks are proposed and unscored,
+      one audit row each; seeded risks cover every band.
   # --- P4 Intake and the approval gate
   - id: P4-project-intake
     title: Project requests, value case and readiness check

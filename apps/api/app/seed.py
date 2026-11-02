@@ -1,12 +1,15 @@
 """Demo data: `python -m app.seed [--reset]` and `python -m app.seed users [--password-file PATH]`.
 
 Creates three invented client companies, a project for each, and "PragMattie Sync" as an internal
-project (no client). Every person, company, email address and website is made up and uses the
+project (no client), and gives each project a few scored risks, AI and ordinary, so every priority
+band appears. Every person, company, email address and website is made up and uses the
 reserved `.example` domain.
 
 Seeding is deterministic and idempotent: each seeded row has a fixed `seed_key`, and running the
 seed again sets those rows back to the values below without adding duplicates. `--reset` first
 clears the seeded rows (and only those), then seeds afresh. Rows people created are never touched.
+Each seeded risk gets one audit row when it is created or set back, none when it is unchanged; its
+score and band come from the risk policy, as for any risk.
 
 `users` creates or restores one demo user per role, on `.example` addresses. Every run gives each
 of them a new random password, sets the role, display name and active flag back to their seed
@@ -35,7 +38,9 @@ from sqlalchemy.orm import Session
 
 from app.audit import record_decision
 from app.authz import Role
-from app.models import Client, Project, User
+from app.models import Client, Project, Risk, User
+from app.policy import PolicyError, RiskPolicy
+from app.risks import apply_score, record_risk_change, risk_policy, snapshot
 from app.security import hash_password
 
 SEEDED_AT = datetime(2026, 10, 1, 9, 0, 0)
@@ -116,10 +121,185 @@ PROJECTS: tuple[dict[str, Any], ...] = (
 )
 
 
+# A few scored risks per project, AI and ordinary, so every priority band appears. `project`
+# names a project's seed_key. Bands follow from the risk policy; the comments show today's.
+RISKS: tuple[dict[str, Any], ...] = (
+    {
+        "seed_key": "risk-quillmere-carrier-feed",
+        "project": "project-quillmere-routing",
+        "kind": "threat",
+        "category": "project",
+        "title": "The carrier's depot data feed arrives late",
+        "cause": "The carrier is rebuilding its export and has not dated the new feed.",
+        "effect": "Route testing waits and the depot go-live slips.",
+        "objectives": ["schedule", "cost"],
+        "probability": 4,
+        "impact": 4,  # 16, High
+        "response": "share",
+        "response_plan": "Agree a dated feed in the carrier contract, with a fee for lateness.",
+    },
+    {
+        "seed_key": "risk-quillmere-route-drift",
+        "project": "project-quillmere-routing",
+        "kind": "threat",
+        "category": "ai",
+        "title": "Suggested routes get worse as traffic patterns change",
+        "cause": "The routing model was checked against last year's traffic.",
+        "effect": "Drivers get longer routes and stop trusting the suggestions.",
+        "objectives": ["quality"],
+        "probability": 3,
+        "impact": 3,  # 9, Medium
+        "response": "reduce",
+        "response_plan": "Compare suggested and driven routes monthly; retrain when they part.",
+    },
+    {
+        "seed_key": "risk-quillmere-model-spend",
+        "project": "project-quillmere-routing",
+        "kind": "threat",
+        "category": "ai",
+        "title": "Route planning calls cost more than budgeted",
+        "cause": "Each re-plan sends the whole depot's stops to the model.",
+        "effect": "Monthly running cost goes over the agreed figure.",
+        "objectives": ["cost"],
+        "probability": 2,
+        "impact": 2,  # 4, Low
+        "response": "reduce",
+        "response_plan": "Cap calls per depot per day in code and send only changed stops.",
+    },
+    {
+        "seed_key": "risk-brackenfold-unfair-triage",
+        "project": "project-brackenfold-intake",
+        "kind": "threat",
+        "category": "ai",
+        "title": "Intake suggestions rank some patients unfairly",
+        "cause": "Past intake notes under-record needs for some groups of patients.",
+        "effect": "Some patients wait longer and the clinic's trust suffers.",
+        "objectives": ["quality"],
+        "probability": 3,
+        "impact": 5,  # 15, High
+        "response": "reduce",
+        "response_plan": "Check suggestions by patient group before launch; keep a nurse's review.",
+    },
+    {
+        "seed_key": "risk-brackenfold-patient-data",
+        "project": "project-brackenfold-intake",
+        "kind": "threat",
+        "category": "ai",
+        "title": "Patient details reach the model's logs",
+        "cause": "Free-text intake answers can hold names and medical details.",
+        "effect": "Private health information is exposed outside the clinic.",
+        "objectives": ["quality", "cost"],
+        "probability": 2,
+        "impact": 5,  # 10, Medium
+        "response": "avoid",
+        "response_plan": "Strip personal details before any text reaches the model; log no text.",
+    },
+    {
+        "seed_key": "risk-brackenfold-clinical-lead",
+        "project": "project-brackenfold-intake",
+        "kind": "threat",
+        "category": "project",
+        "title": "The clinical lead is called back to the wards",
+        "cause": "Only one clinician knows the current intake rules in detail.",
+        "effect": "Design questions wait until a cover clinician is found.",
+        "objectives": ["schedule"],
+        "probability": 2,
+        "impact": 3,  # 6, Low
+        "response": "reduce",
+        "response_plan": "Name a second clinician now and record intake rules as they are agreed.",
+    },
+    {
+        "seed_key": "risk-larchwick-wrong-answers",
+        "project": "project-larchwick-onboarding",
+        "kind": "threat",
+        "category": "ai",
+        "title": "The onboarding helper gives members wrong account terms",
+        "cause": "The helper answers from general text when the product sheet says nothing.",
+        "effect": "Members open accounts on terms the society does not offer.",
+        "objectives": ["quality"],
+        "probability": 3,
+        "impact": 4,  # 12, Medium
+        "response": "reduce",
+        "response_plan": "Answer only from the product sheets and hand other questions to staff.",
+    },
+    {
+        "seed_key": "risk-larchwick-slow-sign-off",
+        "project": "project-larchwick-onboarding",
+        "kind": "threat",
+        "category": "project",
+        "title": "Compliance sign-off takes weeks",
+        "cause": "The compliance committee meets once a month.",
+        "effect": "Each design change waits for the next meeting.",
+        "objectives": ["schedule"],
+        "probability": 4,
+        "impact": 2,  # 8, Medium
+        "response": "reduce",
+        "response_plan": "Agree with the committee which changes one named member can approve.",
+    },
+    {
+        "seed_key": "risk-larchwick-reuse-id-check",
+        "project": "project-larchwick-onboarding",
+        "kind": "opportunity",
+        "category": "project",
+        "title": "Reuse the branch identity check online",
+        "cause": "The branches already use an identity check that works remotely.",
+        "effect": "Onboarding needs less new work and finishes sooner.",
+        "objectives": ["schedule", "cost"],
+        "probability": 3,
+        "impact": 2,  # 6, Low
+        "response": "pursue",
+        "response_plan": "Ask the branch systems team for the check's interface in the first week.",
+    },
+    {
+        "seed_key": "risk-sync-hidden-instructions",
+        "project": "project-pragmattie-sync",
+        "kind": "threat",
+        "category": "ai",
+        "title": "Issue text steers the build agent",
+        "cause": "The build agent reads issue and comment text that anyone can write.",
+        "effect": "The agent acts on instructions planted in that text.",
+        "objectives": ["quality"],
+        "probability": 3,
+        "impact": 5,  # 15, High
+        "response": "reduce",
+        "response_plan": "Treat issue text as data, limit the agent's tools, review every change.",
+    },
+    {
+        "seed_key": "risk-sync-review-fatigue",
+        "project": "project-pragmattie-sync",
+        "kind": "threat",
+        "category": "ai",
+        "title": "Reviewers approve agent changes without reading them",
+        "cause": "Most agent changes are small and pass, so reviews get quicker.",
+        "effect": "A faulty change is merged with a person's approval on it.",
+        "objectives": ["quality"],
+        "probability": 3,
+        "impact": 3,  # 9, Medium
+        "response": "reduce",
+        "response_plan": "Keep a checklist on each review and spot-check merged changes monthly.",
+    },
+    {
+        "seed_key": "risk-sync-extra-requests",
+        "project": "project-pragmattie-sync",
+        "kind": "threat",
+        "category": "project",
+        "title": "New requests keep joining the current milestone",
+        "cause": "Ideas raised in demos are added to the milestone as they come up.",
+        "effect": "The milestone keeps moving and planned items wait.",
+        "objectives": ["schedule"],
+        "probability": 2,
+        "impact": 3,  # 6, Low
+        "response": "reduce",
+        "response_plan": "Log new ideas for the next milestone unless the sponsor agrees a change.",
+    },
+)
+
+
 @dataclass
 class SeedResult:
     clients: int
     projects: int
+    risks: int
     cleared_clients: int = 0
     cleared_projects: int = 0
 
@@ -136,27 +316,61 @@ def _upsert[T: (Client, Project)](db: Session, model: type[T], values: dict[str,
 
 
 def clear_seeded(db: Session) -> tuple[int, int]:
-    """Delete seeded projects, then seeded clients that no remaining project uses. A seeded client
-    that a person's project refers to is kept (it is reset to its seed values on the next seed).
-    Returns (clients, projects) deleted. The caller commits."""
-    projects = db.execute(delete(Project).where(Project.seed_key.is_not(None))).rowcount
+    """Delete seeded risks, then seeded projects that no person's risk is on, then seeded clients
+    that no remaining project uses. A seeded project or client that a person's row refers to is
+    kept (it is reset to its seed values on the next seed). Their audit rows stay. Returns
+    (clients, projects) deleted. The caller commits."""
+    db.execute(delete(Risk).where(Risk.seed_key.is_not(None)))
+    has_risk = exists().where(Risk.project_id == Project.id)
+    projects = db.execute(delete(Project).where(Project.seed_key.is_not(None), ~has_risk)).rowcount
     in_use = exists().where(Project.client_id == Client.id)
     clients = db.execute(delete(Client).where(Client.seed_key.is_not(None), ~in_use)).rowcount
     return clients, projects
 
 
-def seed(db: Session, *, reset: bool = False) -> SeedResult:
-    """Create or restore the demo rows. The caller commits."""
+def _seed_risk(db: Session, policy: RiskPolicy, values: dict[str, Any], project_id: int) -> None:
+    """Create or restore one seeded risk, scored from the policy, with one audit row when it is
+    new or was changed (no actor: the seed command acts for whoever runs it)."""
+    risk = db.scalar(select(Risk).where(Risk.seed_key == values["seed_key"]))
+    before = None if risk is None else snapshot(risk)
+    if risk is None:
+        risk = Risk()
+        db.add(risk)
+    for key, value in values.items():
+        setattr(risk, key, value)
+    risk.project_id = project_id
+    risk.status = "open"
+    risk.source = "person"
+    risk.needs_judgement = False
+    risk.owner_user_id = None
+    risk.created_at = SEEDED_AT
+    apply_score(risk, policy)
+    db.flush()
+    if before is None:
+        record_risk_change(db, risk, action="create", before=None, actor_user_id=None)
+    elif snapshot(risk) != before:
+        record_risk_change(db, risk, action="seed", before=before, actor_user_id=None)
+
+
+def seed(db: Session, *, reset: bool = False, policy: RiskPolicy | None = None) -> SeedResult:
+    """Create or restore the demo rows. Risks are scored from `policy`, by default the risk
+    policy (a `PolicyError` if it can't be loaded, before anything is written). The caller
+    commits."""
+    policy = policy or risk_policy()
     cleared = clear_seeded(db) if reset else (0, 0)
     clients = {values["seed_key"]: _upsert(db, Client, values) for values in CLIENTS}
     db.flush()
+    projects = {}
     for values in PROJECTS:
         project = dict(values)
         client_key = project.pop("client")
         project["client_id"] = clients[client_key].id if client_key else None
-        _upsert(db, Project, project)
+        projects[project["seed_key"]] = _upsert(db, Project, project)
     db.flush()
-    return SeedResult(len(CLIENTS), len(PROJECTS), *cleared)
+    for values in RISKS:
+        risk = dict(values)
+        _seed_risk(db, policy, risk, projects[risk.pop("project")].id)
+    return SeedResult(len(CLIENTS), len(PROJECTS), len(RISKS), *cleared)
 
 
 # One demo user per role. `demo_users()` derives the rest, so a new role gets a user too.
@@ -378,9 +592,12 @@ def main(argv: list[str] | None = None) -> int:
         name = type(exc).__name__
         print(f"Seed failed: {name}. Has `alembic upgrade head` run?", file=sys.stderr)
         return 1
+    except PolicyError as exc:
+        print(f"Seed failed: the risk policy could not be loaded: {exc}", file=sys.stderr)
+        return 1
     if args.reset:
         print(f"Cleared {result.cleared_clients} clients and {result.cleared_projects} projects.")
-    print(f"Seeded {result.clients} clients and {result.projects} projects.")
+    print(f"Seeded {result.clients} clients, {result.projects} projects and {result.risks} risks.")
     return 0
 
 

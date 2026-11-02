@@ -262,6 +262,10 @@ SAMPLES = {
     ("PATCH", "/api/v1/projects/{project_id}/risks/{risk_id}"): _risk_sample(
         True, {"version": 1, "status": "closed"}
     ),
+    ("POST", "/api/v1/projects/{project_id}/risks/from-library"): lambda _target: {
+        "url": f"/api/v1/projects/{_project_with_risk()[0]}/risks/from-library",
+        "json": {"template_ids": ["ai-model-drift", "project-scope-creep"]},
+    },
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -281,7 +285,10 @@ def _request(web: TestClient, method: str, path: str, target: int):
 
 
 # Allowed requests that create something answer 201 rather than 200.
-CREATED = {("POST", "/api/v1/projects/{project_id}/risks")}
+CREATED = {
+    ("POST", "/api/v1/projects/{project_id}/risks"),
+    ("POST", "/api/v1/projects/{project_id}/risks/from-library"),
+}
 
 
 def _expected(guard, role: Role, method: str = "GET", path: str = "") -> int:
@@ -304,6 +311,8 @@ def test_matrix_covers_the_existing_routes():
         ("POST", "/api/v1/projects/{project_id}/risks"),
         ("GET", "/api/v1/projects/{project_id}/risks/{risk_id}"),
         ("PATCH", "/api/v1/projects/{project_id}/risks/{risk_id}"),
+        ("GET", "/api/v1/risk-library"),
+        ("POST", "/api/v1/projects/{project_id}/risks/from-library"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -319,6 +328,8 @@ def test_matrix_covers_the_existing_routes():
     )
     assert by_method[("GET", risks)] == by_method[("GET", risk)] == Action.PROJECT_READ
     assert by_method[("POST", risks)] == by_method[("PATCH", risk)] == Action.PROJECT_WRITE
+    assert by_method[("GET", "/api/v1/risk-library")] == Action.PROJECT_READ
+    assert by_method[("POST", f"{risks}/from-library")] == Action.PROJECT_WRITE
 
 
 @pytest.mark.parametrize("role", list(Role))

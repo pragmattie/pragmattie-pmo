@@ -8,11 +8,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import engine
-from app.models import Base, Client, Project
+from app.models import AuditDecision, Base, Client, Project, Risk
 from app.models.portfolio import STAGES, STATUSES
-from app.seed import CLIENTS, PROJECTS, clear_seeded, main, seed
+from app.policy import load_policies, score_risk
+from app.schemas.risk import RiskFields
+from app.seed import CLIENTS, PROJECTS, RISKS, clear_seeded, main, seed
 
 API_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = API_DIR.parents[1]
 EMAIL = re.compile(r"[\w.+-]+@([\w-]+\.)+[\w-]+")
 
 
@@ -29,10 +32,16 @@ def db():
 def _snapshot(db: Session) -> list[tuple]:
     clients = db.execute(select(Client).order_by(Client.id)).scalars()
     projects = db.execute(select(Project).order_by(Project.id)).scalars()
+    risks = db.execute(select(Risk).order_by(Risk.id)).scalars()
     return [
         tuple(getattr(row, col) for col in row.__table__.columns.keys())
-        for row in [*clients, *projects]
+        for row in [*clients, *projects, *risks]
     ]
+
+
+def _risk_audit(db: Session) -> list[AuditDecision]:
+    stmt = select(AuditDecision).where(AuditDecision.subject_type == "risk")
+    return list(db.scalars(stmt.order_by(AuditDecision.id)))
 
 
 def _count(db: Session, model) -> int:
@@ -92,6 +101,99 @@ def test_seed_is_deterministic_and_idempotent(db):
     assert _snapshot(db) == first
 
 
+# --- Seeded risks
+
+
+def test_every_seeded_project_has_ai_and_ordinary_risks(db):
+    seed(db)
+    db.commit()
+    for project in db.scalars(select(Project)):
+        risks = db.scalars(select(Risk).where(Risk.project_id == project.id)).all()
+        assert len(risks) >= 2, project.name
+        assert {risk.category for risk in risks} == {"ai", "project"}, project.name
+
+
+def test_every_band_has_a_seeded_risk(db):
+    seed(db)
+    db.commit()
+    bands = [band.name for band in load_policies(REPO_ROOT / "policies").risk.priority_bands]
+    assert bands == ["Low", "Medium", "High"]
+    assert set(db.scalars(select(Risk.band))) == set(bands)
+
+
+def test_seeded_risks_are_scored_from_the_policy_and_valid(db):
+    policy = load_policies(REPO_ROOT / "policies").risk
+    seed(db)
+    db.commit()
+    for risk in db.scalars(select(Risk)):
+        assert (risk.score, risk.band) == score_risk(policy, risk.probability, risk.impact)
+        assert (risk.status, risk.source, risk.needs_judgement) == ("open", "person", False)
+        RiskFields.model_validate({name: getattr(risk, name) for name in RiskFields.model_fields})
+    assert len({values["seed_key"] for values in RISKS}) == len(RISKS)
+
+
+def test_seeding_risks_is_idempotent_and_audited(db):
+    seed(db)
+    db.commit()
+    first = _snapshot(db)
+    created = _risk_audit(db)
+    assert len(created) == len(RISKS)
+    assert {row.action_taken["action"] for row in created} == {"create"}
+    assert all(row.actor_user_id is None for row in created)
+
+    # Unchanged: no new rows and no new audit rows.
+    seed(db)
+    db.commit()
+    assert _snapshot(db) == first
+    assert len(_risk_audit(db)) == len(RISKS)
+
+    # A drifted seeded risk is set back, with one audit row.
+    drifted = db.scalar(select(Risk).where(Risk.band == "High").order_by(Risk.id))
+    drifted.probability, drifted.impact, drifted.score, drifted.band = 1, 1, 1, "Low"
+    db.commit()
+    seed(db)
+    db.commit()
+    db.refresh(drifted)
+    assert drifted.band == "High"
+    rows = _risk_audit(db)
+    assert len(rows) == len(RISKS) + 1
+    assert rows[-1].subject_id == str(drifted.id)
+    assert rows[-1].action_taken == {"action": "seed"}
+    assert rows[-1].signals["band"] == "Low" and rows[-1].output["band"] == "High"
+
+
+def test_seeding_leaves_a_persons_risk_alone(db):
+    seed(db)
+    project = db.scalar(select(Project).where(Project.seed_key == "project-pragmattie-sync"))
+    own = Risk(
+        project_id=project.id,
+        kind="threat",
+        title="A person's own risk",
+        cause="c",
+        effect="e",
+        category="project",
+        objectives=["cost"],
+        response="accept",
+        response_plan="p",
+        status="proposed",
+        source="person",
+    )
+    db.add(own)
+    db.commit()
+    seed(db)
+    db.commit()
+    db.refresh(own)
+    assert own.seed_key is None and own.status == "proposed" and own.version == 1
+
+    # --reset keeps the project that the person's risk is on, and seeding restores it.
+    assert clear_seeded(db) == (3, 3)  # the internal project has no client
+    db.commit()
+    assert db.scalars(select(Risk.title)).all() == ["A person's own risk"]
+    seed(db)
+    db.commit()
+    assert _count(db, Project) == 4 and _count(db, Risk) == len(RISKS) + 1
+
+
 def test_reset_clears_only_seeded_rows(db):
     seed(db)
     own_client = Client(name="A Person's Client Ltd", website="https://own.example")
@@ -139,7 +241,22 @@ def test_main_seeds_and_resets(db, capsys):
     assert main(["--reset"]) == 0
     out = capsys.readouterr().out
     assert "Cleared 3 clients and 4 projects." in out
+    assert f"Seeded 3 clients, 4 projects and {len(RISKS)} risks." in out
     assert _count(db, Client) == 3 and _count(db, Project) == 4
+    assert _count(db, Risk) == len(RISKS)
+
+
+def test_main_reports_a_policy_failure_without_writing(db, capsys, monkeypatch):
+    import app.seed as seed_module
+    from app.policy import PolicyError
+
+    def broken():
+        raise PolicyError("risk.yaml: not valid YAML")
+
+    monkeypatch.setattr(seed_module, "risk_policy", broken)
+    assert main([]) == 1
+    assert "the risk policy could not be loaded" in capsys.readouterr().err
+    assert _count(db, Client) == 0 and _count(db, Risk) == 0
 
 
 def test_main_reports_a_missing_schema_without_a_traceback(capsys):

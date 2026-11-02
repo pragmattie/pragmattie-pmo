@@ -19,6 +19,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    UniqueConstraint,
     column,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -58,6 +59,10 @@ class Risk(Base):
         Index("ix_risks_project_status", "project_id", "status"),
         Index("ix_risks_band", "band"),
         Index("ix_risks_score", "score"),
+        UniqueConstraint("seed_key", name="uq_risks_seed_key"),
+        # Audit rows name a risk by id, so an id is never reused, even after a delete (the demo
+        # seed's --reset). MySQL never reuses one; SQLite needs AUTOINCREMENT for that.
+        {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -83,6 +88,8 @@ class Risk(Base):
     needs_judgement: Mapped[bool] = mapped_column(default=False)
     source: Mapped[str] = mapped_column(String(16))
     version: Mapped[int] = mapped_column(default=1)
+    # Set only on demo risks made by `python -m app.seed`; risks people add leave it empty.
+    seed_key: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 

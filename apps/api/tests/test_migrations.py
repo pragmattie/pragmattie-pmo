@@ -35,6 +35,16 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         assert risk_fks == {"fk_risks_project": "projects", "fk_risks_owner_user": "users"}
         risk_indexes = {ix["name"] for ix in inspector.get_indexes("risks")}
         assert {"ix_risks_project_status", "ix_risks_band", "ix_risks_score"} <= risk_indexes
+        risk_uniques = {
+            uq["name"]: uq["column_names"] for uq in inspector.get_unique_constraints("risks")
+        }
+        assert risk_uniques == {"uq_risks_seed_key": ["seed_key"]}
+        # Risk ids are never reused, so their audit rows can't be mixed up.
+        with create_engine(get_settings().database_url).connect() as conn:
+            risks_sql = conn.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE name = 'risks'"
+            ).scalar_one()
+        assert "AUTOINCREMENT" in risks_sql
         # Fails if the models and the migrations disagree.
         command.check(config)
         command.downgrade(config, "base")

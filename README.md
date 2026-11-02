@@ -30,6 +30,18 @@ docker compose exec api python -m app.seed           # idempotent
 docker compose exec api python -m app.seed --reset   # clear seeded rows only, then seed again
 ```
 
+Each seeded project gets a few scored risks, AI and ordinary, covering every priority band. The
+seed scores them from `policies/risk.yaml` and records one audit row for each risk it creates or
+sets back. `--reset` keeps a seeded project that holds a risk a person added.
+
+## The starter risk library
+
+`policies/risk-library.yaml` holds starter risks, AI and ordinary, so a new project's register
+never starts empty. `GET /api/v1/risk-library` lists them, and
+`POST /api/v1/projects/{id}/risks/from-library` with `{"template_ids": [...]}` adds the chosen
+ones to a project as `proposed` risks with no score, for the project's people to score. A
+template has no probability or impact, because those depend on the project.
+
 ## Demo users for a rehearsal
 
 `python -m app.seed users` creates one demo user per role, each on a `.example` address, with a
