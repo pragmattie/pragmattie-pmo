@@ -419,6 +419,9 @@ def test_the_list_filters(web, db, pm, project):
     assert listed(band="Medium", kind="threat") == {ids["medium"]}
     assert web.get(_url(project.id), params={"status": "deleted"}).status_code == 422
     assert web.get(_url(project.id), params={"kind": "issue"}).status_code == 422
+    assert listed(probability=2, impact=4) == {ids["medium"]}
+    assert listed(probability=4) == {ids["medium_too"]}
+    assert web.get(_url(project.id), params={"impact": 6}).status_code == 422
 
 
 def test_the_list_holds_only_this_projects_risks(web, db, pm, project):
@@ -436,6 +439,126 @@ def test_a_reader_cannot_create_or_change(web, db, sign_in, project):
     assert web.get(_url(project.id, risk["id"])).status_code == 200
     assert _create(web, project.id).status_code == 403
     assert web.patch(_url(project.id, risk["id"]), json={"version": 1}).status_code == 403
+
+
+# --- The heat map and history (item 3.3)
+
+
+def _heatmap(web, project_id: int, **params) -> dict:
+    response = web.get(_url(project_id) + "/heatmap", params=params)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _cell(heatmap: dict, probability: int, impact: int) -> dict:
+    return next(
+        c for c in heatmap["cells"] if (c["probability"], c["impact"]) == (probability, impact)
+    )
+
+
+def test_the_heatmap_counts_open_risks_by_cell_and_band(web, db, pm, project):
+    ids = _seed_list(web, project.id)
+    _create(web, project.id, probability=2, impact=4)
+    web.patch(_url(project.id, ids["low"]), json={"version": 1, "status": "closed"})
+    _create(web, _project(db, "Elsewhere").id, probability=2, impact=4)
+
+    heatmap = _heatmap(web, project.id)
+    assert len(heatmap["cells"]) == 25
+    assert _cell(heatmap, 2, 4)["count"] == 2
+    assert _cell(heatmap, 5, 4)["count"] == 1
+    assert _cell(heatmap, 1, 2)["count"] == 0  # closed
+    assert heatmap["bands"] == [
+        {"band": "Low", "count": 0},
+        {"band": "Medium", "count": 3},
+        {"band": "High", "count": 1},
+    ]
+    assert heatmap["unscored"] == 1
+    assert sum(c["count"] for c in heatmap["cells"]) == 4
+
+
+def test_each_heatmap_cell_has_its_policy_band(web, db, pm, project):
+    heatmap = _heatmap(web, project.id)
+    for cell in heatmap["cells"]:
+        assert cell["band"] == _expected_from_yaml(cell["probability"], cell["impact"])[1]
+
+
+def test_the_heatmap_shows_threats_and_opportunities_separately(web, db, pm, project):
+    _seed_list(web, project.id)
+    threats = _heatmap(web, project.id, kind="threat")
+    opportunities = _heatmap(web, project.id, kind="opportunity")
+    assert (threats["kind"], opportunities["kind"]) == ("threat", "opportunity")
+    assert _cell(opportunities, 4, 2)["count"] == 1
+    assert sum(c["count"] for c in opportunities["cells"]) == 1
+    assert _cell(threats, 4, 2)["count"] == 0
+    assert web.get(_url(project.id) + "/heatmap", params={"kind": "issue"}).status_code == 422
+
+
+def test_the_heatmap_of_an_unknown_project_is_404(web, db, pm):
+    assert web.get(_url(9999) + "/heatmap").status_code == 404
+
+
+def test_a_policy_failure_refuses_the_heatmap(web, db, pm, project, monkeypatch):
+    def broken():
+        raise PolicyError("broken")
+
+    monkeypatch.setattr(risks_api, "risk_policy", broken)
+    assert web.get(_url(project.id) + "/heatmap").status_code == 503
+
+
+def test_history_lists_the_risks_audit_rows_newest_first_with_names(web, db, pm, project):
+    risk = _create(web, project.id).json()
+    _create(web, project.id)  # another risk's rows stay out
+    web.patch(_url(project.id, risk["id"]), json={"version": 1, "title": "Renamed"})
+    web.patch(_url(project.id, risk["id"]), json={"version": 2, "status": "closed"})
+
+    sign_in_reader = TestClient(app, base_url="http://localhost")
+    response = sign_in_reader.get(_url(project.id, risk["id"]) + "/history")
+    assert response.status_code == 401
+
+    response = web.get(_url(project.id, risk["id"]) + "/history")
+    assert response.status_code == 200, response.text
+    page = response.json()
+    assert page["total"] == 3
+    assert [e["action"] for e in page["items"]] == ["close", "update", "create"]
+    assert [e["version"] for e in page["items"]] == [3, 2, 1]
+    assert {e["actor_name"] for e in page["items"]} == {pm.display_name}
+    create, update = page["items"][2], page["items"][1]
+    assert create["before"] is None and create["after"]["title"] == BODY["title"]
+    assert (update["before"]["title"], update["after"]["title"]) == (BODY["title"], "Renamed")
+
+
+def test_history_pages_and_needs_the_risk_in_the_project(web, db, pm, project):
+    risk = _create(web, project.id).json()
+    web.patch(_url(project.id, risk["id"]), json={"version": 1, "title": "Renamed"})
+    first = web.get(_url(project.id, risk["id"]) + "/history", params={"limit": 1}).json()
+    second = web.get(
+        _url(project.id, risk["id"]) + "/history", params={"limit": 1, "offset": 1}
+    ).json()
+    assert [first["items"][0]["action"], second["items"][0]["action"]] == ["update", "create"]
+    other = _project(db, "Other")
+    assert web.get(_url(other.id, risk["id"]) + "/history").status_code == 404
+
+
+def test_every_reader_sees_history_without_audit_read(web, db, sign_in, project):
+    pm_client = TestClient(app, base_url="http://localhost")
+    sign_in(pm_client, db, "project_manager", "writer@pmo.example")
+    risk = _create(pm_client, project.id).json()
+    sign_in(web, db, "sponsor")
+    assert web.get("/api/v1/audit").status_code == 403
+    assert web.get(_url(project.id, risk["id"]) + "/history").json()["total"] == 1
+
+
+def test_people_lists_active_users_by_name_without_emails(web, db, sign_in):
+    sign_in(web, db, "auditor", "zed@pmo.example")
+    other = TestClient(app, base_url="http://localhost")
+    gone = sign_in(other, db, "sponsor", "gone@pmo.example")
+    gone.is_active = False
+    db.commit()
+    response = web.get("/api/v1/users")
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    assert gone.id not in {p["id"] for p in items}
+    assert all(set(p) == {"id", "display_name"} for p in items)
 
 
 # --- Re-scoring after a policy change

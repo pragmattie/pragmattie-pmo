@@ -262,6 +262,12 @@ SAMPLES = {
     ("PATCH", "/api/v1/projects/{project_id}/risks/{risk_id}"): _risk_sample(
         True, {"version": 1, "status": "closed"}
     ),
+    ("GET", "/api/v1/projects/{project_id}/risks/heatmap"): lambda _target: {
+        "url": f"/api/v1/projects/{_project_with_risk()[0]}/risks/heatmap",
+    },
+    ("GET", "/api/v1/projects/{project_id}/risks/{risk_id}/history"): lambda _target: {
+        "url": "/api/v1/projects/{}/risks/{}/history".format(*_project_with_risk()),
+    },
     ("POST", "/api/v1/projects/{project_id}/risks/from-library"): lambda _target: {
         "url": f"/api/v1/projects/{_project_with_risk()[0]}/risks/from-library",
         "json": {"template_ids": ["ai-model-drift", "project-scope-creep"]},
@@ -313,6 +319,9 @@ def test_matrix_covers_the_existing_routes():
         ("PATCH", "/api/v1/projects/{project_id}/risks/{risk_id}"),
         ("GET", "/api/v1/risk-library"),
         ("POST", "/api/v1/projects/{project_id}/risks/from-library"),
+        ("GET", "/api/v1/projects/{project_id}/risks/heatmap"),
+        ("GET", "/api/v1/projects/{project_id}/risks/{risk_id}/history"),
+        ("GET", "/api/v1/users"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -330,6 +339,9 @@ def test_matrix_covers_the_existing_routes():
     assert by_method[("POST", risks)] == by_method[("PATCH", risk)] == Action.PROJECT_WRITE
     assert by_method[("GET", "/api/v1/risk-library")] == Action.PROJECT_READ
     assert by_method[("POST", f"{risks}/from-library")] == Action.PROJECT_WRITE
+    assert by_method[("GET", f"{risks}/heatmap")] == Action.PROJECT_READ
+    assert by_method[("GET", f"{risk}/history")] == Action.PROJECT_READ
+    assert by_method[("GET", "/api/v1/users")] == Action.PROJECT_READ
 
 
 @pytest.mark.parametrize("role", list(Role))

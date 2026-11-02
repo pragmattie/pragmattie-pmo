@@ -1,5 +1,8 @@
 """Manage users. Only `user:admin` (the admin role) may change a role.
 
+`GET /users` lists active people by name (id and display name only) for anyone with
+`project:read`, so the risk register can show and pick an owner.
+
 Nobody can change their own role, and no change may leave the system without an active admin.
 Each change is one audit row, written in the same transaction as the change itself: agent
 `auth`, trigger `human`, subject the target user, actor the admin, and the old and new roles.
@@ -22,7 +25,8 @@ from app.authz import Action, Role, require
 from app.db import get_db
 from app.models import AuditDecision, User, utcnow
 from app.schemas.auth import UserOut
-from app.schemas.users import RoleChangeIn
+from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
+from app.schemas.users import PersonOut, RoleChangeIn
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -50,6 +54,26 @@ def _active_admin_ids(db: Session) -> set[int]:
     each other at once, the second waits, sees the first change and is refused."""
     stmt = select(User.id).where(User.role == Role.ADMIN, User.is_active.is_(True))
     return set(db.scalars(stmt.with_for_update()).all())
+
+
+@router.get("", response_model=Page[PersonOut])
+def list_people(
+    _user: Annotated[User, Depends(require(Action.PROJECT_READ))],
+    db: Annotated[Session, Depends(get_db)],
+    limit: Limit = DEFAULT_LIMIT,
+    offset: Offset = 0,
+) -> Page[PersonOut]:
+    # By name; the primary key breaks ties so pages are stable.
+    stmt = select(User).where(User.is_active.is_(True))
+    rows, total = paginate(
+        db, stmt, order_by=(User.display_name, User.id), limit=limit, offset=offset
+    )
+    return Page[PersonOut](
+        items=[PersonOut.model_validate(row) for row in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.patch("/{user_id}/role", response_model=UserOut)

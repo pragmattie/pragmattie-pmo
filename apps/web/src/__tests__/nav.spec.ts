@@ -73,11 +73,11 @@ describe('menu', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it.each([
-    ['admin', ['home', 'projects', 'audit', 'standards']],
-    ['sponsor', ['home', 'projects', 'standards']],
-    ['project_manager', ['home', 'projects', 'standards']],
-    ['ethics_reviewer', ['home', 'projects', 'audit', 'standards']],
-    ['auditor', ['home', 'projects', 'audit', 'standards']],
+    ['admin', ['home', 'projects', 'risks', 'audit', 'standards']],
+    ['sponsor', ['home', 'projects', 'risks', 'standards']],
+    ['project_manager', ['home', 'projects', 'risks', 'standards']],
+    ['ethics_reviewer', ['home', 'projects', 'risks', 'audit', 'standards']],
+    ['auditor', ['home', 'projects', 'risks', 'audit', 'standards']],
   ])('shows %s the pages that role may use', async (role, expected) => {
     vi.stubGlobal('fetch', signedInAs(role))
     const { wrapper } = await mountAt('/')

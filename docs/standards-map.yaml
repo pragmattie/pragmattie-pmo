@@ -67,6 +67,12 @@ features:
     notes: >-
       AI and project risk templates, strictly validated; added risks are proposed and unscored,
       one audit row each; seeded risks cover every band.
+  - id: P3-risk-register-screen
+    title: Risk register screen
+    rules: [R5, R8, R9, R12]
+    notes: >-
+      Heat map on the shared scales for threats and opportunities; judgement risks show they need a
+      person; history from the audit trail; only a project manager sees change buttons.
   # --- P4 Intake and the approval gate
   - id: P4-project-intake
     title: Project requests, value case and readiness check

@@ -7,7 +7,7 @@ stored risk and validating the result as `RiskFields`.
 """
 
 from datetime import datetime
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -142,3 +142,41 @@ class FromLibrary(BaseModel):
         if len(set(self.template_ids)) != len(self.template_ids):
             raise ValueError("template_ids must not repeat")
         return self
+
+
+class HeatCell(BaseModel):
+    """One probability x impact cell of the heat map: how many open risks sit in it."""
+
+    probability: int
+    impact: int
+    band: str
+    count: int
+
+
+class BandTotal(BaseModel):
+    band: str
+    count: int
+
+
+class RiskHeatmap(BaseModel):
+    """Open risks by probability and impact, every cell present (25), plus totals per band in the
+    policy's order (lowest first). `unscored` counts open risks still waiting for a person's
+    judgement, which have no cell."""
+
+    kind: str | None
+    cells: list[HeatCell]
+    bands: list[BandTotal]
+    unscored: int
+
+
+class RiskHistoryEntry(BaseModel):
+    """One change to a risk, from its audit row: the values before (none on a create) and after."""
+
+    id: int
+    version: int
+    action: str
+    actor_user_id: int | None
+    actor_name: str | None
+    before: dict[str, Any] | None
+    after: dict[str, Any] | None
+    created_at: datetime

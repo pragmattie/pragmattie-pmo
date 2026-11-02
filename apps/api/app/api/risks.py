@@ -7,6 +7,11 @@ or close a risk; proposing, accepting and rejecting come with item 3.4.
 `POST .../risks/from-library` adds starter templates (`app.api.risk_library`) as `proposed`
 risks from a person, unscored, one audit row each; an unknown template id adds nothing (422).
 
+`GET .../risks/heatmap` counts open risks by probability and impact, with totals per band, for
+the risk register screen; `GET .../risks/{id}/history` is the risk's own audit rows, newest
+first. Both need only `project:read`, so the people who work from the register can see how each
+risk changed without the wider `audit:read`.
+
 Score and band come from the risk policy, never from the client. If the policy can't be loaded,
 writes are refused with a 503 rather than saving a risk unscored. A PATCH carries the `version` the
 client read: a different stored version, or a parallel write that lands first, is a 409.
@@ -18,25 +23,38 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.api.risk_library import library
+from app.audit import ORDER_BY, decisions_query
 from app.authz import Action, require
 from app.db import get_db
-from app.models import Project, Risk, User
-from app.policy import PolicyError, RiskPolicy
-from app.risks import apply_score, record_risk_change, risk_from_template, risk_policy, snapshot
+from app.models import AuditDecision, Project, Risk, User
+from app.policy import SCALE_LEVELS, PolicyError, RiskPolicy, score_risk
+from app.risks import (
+    AUDIT_AGENT,
+    AUDIT_SUBJECT,
+    apply_score,
+    record_risk_change,
+    risk_from_template,
+    risk_policy,
+    snapshot,
+)
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
 from app.schemas.risk import (
+    BandTotal,
     Category,
     EditableStatus,
     FromLibrary,
+    HeatCell,
     Kind,
     RiskCreate,
     RiskFields,
+    RiskHeatmap,
+    RiskHistoryEntry,
     RiskOut,
     RiskUpdate,
 )
@@ -101,6 +119,8 @@ def list_risks(
     band: Annotated[str | None, Query(max_length=32)] = None,
     category: Category | None = None,
     kind: Kind | None = None,
+    probability: Annotated[int | None, Query(ge=1, le=5)] = None,
+    impact: Annotated[int | None, Query(ge=1, le=5)] = None,
     sort: Literal["-score", "score"] = "-score",
     limit: Limit = DEFAULT_LIMIT,
     offset: Offset = 0,
@@ -112,6 +132,11 @@ def list_risks(
             stmt = stmt.where(col == value)
     if kind is not None:
         stmt = stmt.where(Risk.kind == kind)
+    # One heat map cell; the screen sets both.
+    if probability is not None:
+        stmt = stmt.where(Risk.probability == probability)
+    if impact is not None:
+        stmt = stmt.where(Risk.impact == impact)
     # Unscored risks last either way; the primary key breaks ties so pages are stable.
     score = Risk.score.desc() if sort == "-score" else Risk.score.asc()
     rows, total = paginate(
@@ -176,6 +201,78 @@ def add_from_library(
         added.append(risk)
     _commit(db)
     return [RiskOut.model_validate(risk) for risk in added]
+
+
+@router.get("/heatmap", response_model=RiskHeatmap)
+def heatmap(
+    project_id: int,
+    _user: Annotated[User, Depends(require(Action.PROJECT_READ))],
+    db: Annotated[Session, Depends(get_db)],
+    kind: Kind | None = None,
+) -> RiskHeatmap:
+    policy = _policy()
+    _project(db, project_id)
+    stmt = select(Risk.probability, Risk.impact, func.count()).where(
+        Risk.project_id == project_id, Risk.status == "open"
+    )
+    if kind is not None:
+        stmt = stmt.where(Risk.kind == kind)
+    counts = {
+        (probability, impact): count
+        for probability, impact, count in db.execute(stmt.group_by(Risk.probability, Risk.impact))
+    }
+    cells = []
+    band_counts = {band.name: 0 for band in policy.priority_bands}
+    for probability in SCALE_LEVELS:
+        for impact in SCALE_LEVELS:
+            # The cell's band from the current policy, so the map matches a re-scored register.
+            _, band = score_risk(policy, probability, impact)
+            count = counts.get((probability, impact), 0)
+            band_counts[band] += count
+            cells.append(HeatCell(probability=probability, impact=impact, band=band, count=count))
+    return RiskHeatmap(
+        kind=kind,
+        cells=cells,
+        bands=[BandTotal(band=name, count=count) for name, count in band_counts.items()],
+        unscored=counts.get((None, None), 0),
+    )
+
+
+@router.get("/{risk_id}/history", response_model=Page[RiskHistoryEntry])
+def risk_history(
+    project_id: int,
+    risk_id: int,
+    _user: Annotated[User, Depends(require(Action.PROJECT_READ))],
+    db: Annotated[Session, Depends(get_db)],
+    limit: Limit = DEFAULT_LIMIT,
+    offset: Offset = 0,
+) -> Page[RiskHistoryEntry]:
+    risk = _risk(db, project_id, risk_id)
+    stmt = decisions_query(agent=AUDIT_AGENT, subject_type=AUDIT_SUBJECT, subject_id=str(risk.id))
+    rows, total = paginate(db, stmt, order_by=ORDER_BY, limit=limit, offset=offset)
+    actor_ids = {row.actor_user_id for row in rows if row.actor_user_id is not None}
+    names = (
+        dict(db.execute(select(User.id, User.display_name).where(User.id.in_(actor_ids))).all())
+        if actor_ids
+        else {}
+    )
+    return Page[RiskHistoryEntry](
+        items=[_history_entry(row, names) for row in rows], total=total, limit=limit, offset=offset
+    )
+
+
+def _history_entry(row: AuditDecision, names: dict[int, str]) -> RiskHistoryEntry:
+    action = row.action_taken.get("action") if isinstance(row.action_taken, dict) else None
+    return RiskHistoryEntry(
+        id=row.id,
+        version=row.version,
+        action=str(action or "change"),
+        actor_user_id=row.actor_user_id,
+        actor_name=names.get(row.actor_user_id) if row.actor_user_id is not None else None,
+        before=row.signals if isinstance(row.signals, dict) else None,
+        after=row.output if isinstance(row.output, dict) else None,
+        created_at=row.created_at,
+    )
 
 
 @router.get("/{risk_id}", response_model=RiskOut)
