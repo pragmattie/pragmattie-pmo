@@ -15,8 +15,20 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
     try:
         config = Config(str(API_DIR / "alembic.ini"))
         command.upgrade(config, "head")
-        tables = set(inspect(create_engine(get_settings().database_url)).get_table_names())
-        assert {"users", "revoked_tokens"} <= tables
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert {"users", "revoked_tokens"} <= set(inspector.get_table_names())
+        actor_fks = [
+            fk
+            for fk in inspector.get_foreign_keys("pmo_audit")
+            if fk["constrained_columns"] == ["actor_user_id"]
+        ]
+        assert [(fk["name"], fk["referred_table"], fk["referred_columns"]) for fk in actor_fks] == [
+            ("fk_pmo_audit_actor_user", "users", ["id"])
+        ]
+        checks = {ck["name"] for ck in inspector.get_check_constraints("pmo_audit")}
+        assert {"ck_pmo_audit_trigger", "ck_pmo_audit_status"} <= checks
+        user_columns = {c["name"] for c in inspector.get_columns("users")}
+        assert "failed_window_started_at" in user_columns
         # Fails if the models and the migrations disagree.
         command.check(config)
         command.downgrade(config, "base")

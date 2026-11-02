@@ -3,14 +3,15 @@ from datetime import datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import app.audit as audit_module
 from app.audit import count_decisions, list_decisions, record_decision
-from app.db import engine
-from app.models import AuditDecision, Base
+from app.db import SessionLocal, engine
+from app.models import AuditDecision, Base, User
+from app.models.audit import AppendOnlyError
 
 
 @pytest.fixture
@@ -201,3 +202,68 @@ def test_api_validates_paging(db, client, sign_in):
     sign_in(client, db, "auditor")
     assert client.get("/api/v1/audit", params={"limit": 101}).status_code == 422
     assert client.get("/api/v1/audit", params={"offset": -1}).status_code == 422
+
+
+# --- Append-only, enforced in the ORM
+
+
+def _stored_row(db) -> AuditDecision:
+    row = record_decision(db, **_fields())
+    db.commit()
+    return row
+
+
+def test_an_orm_update_of_an_audit_row_raises(db):
+    row = _stored_row(db)
+    row.status = "error"
+    with pytest.raises(AppendOnlyError):
+        db.commit()
+    db.rollback()
+    assert db.scalar(select(AuditDecision.status)) == "ok"
+
+
+def test_an_orm_delete_of_an_audit_row_raises(db):
+    row = _stored_row(db)
+    db.delete(row)
+    with pytest.raises(AppendOnlyError):
+        db.commit()
+    db.rollback()
+    assert count_decisions(db) == 1
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        update(AuditDecision).values(status="error"),
+        update(AuditDecision.__table__).values(status="error"),
+        delete(AuditDecision),
+        delete(AuditDecision.__table__),
+    ],
+    ids=["orm-update", "table-update", "orm-delete", "table-delete"],
+)
+def test_bulk_update_or_delete_of_audit_rows_raises(db, statement):
+    _stored_row(db)
+    with pytest.raises(AppendOnlyError):
+        db.execute(statement)
+    db.rollback()
+    assert db.scalar(select(AuditDecision.status)) == "ok"
+
+
+def test_the_guard_covers_every_session_including_the_apps(db):
+    _stored_row(db)
+    with SessionLocal() as other, pytest.raises(AppendOnlyError):
+        other.execute(delete(AuditDecision))
+    assert count_decisions(db) == 1
+
+
+def test_bulk_changes_to_other_tables_are_still_allowed(db):
+    db.add(User(email="x@pmo.example", display_name="X", password_hash="h", role="auditor"))
+    db.commit()
+    db.execute(update(User).values(display_name="Y"))
+    db.execute(delete(User))
+    db.commit()
+
+
+def test_actor_user_id_references_users():
+    (fk,) = AuditDecision.__table__.c.actor_user_id.foreign_keys
+    assert fk.target_fullname == "users.id"
