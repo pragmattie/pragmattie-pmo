@@ -502,3 +502,11 @@ def test_a_stakeholder_of_another_project_is_404(web, db, project_id):
     [sid, *_] = [s["id"] for s in web.get(f"{PROJECTS}/{project_id}/stakeholders").json()["items"]]
     url = f"{PROJECTS}/{other_id}/stakeholders/{sid}"
     assert web.patch(url, json={"version": 1, "how_often": "x"}).status_code == 404
+
+
+def test_people_can_be_listed_by_role_for_the_project_manager_picker(web, db, sign_in, pm):
+    _client(db, sign_in, "sponsor")
+    other = _client(db, sign_in, "project_manager", "other.pm@pmo.example")[1]
+    page = web.get("/api/v1/users?role=project_manager").json()
+    assert [p["id"] for p in page["items"]] == sorted([pm.id, other.id])
+    assert web.get("/api/v1/users?role=superuser").status_code == 422

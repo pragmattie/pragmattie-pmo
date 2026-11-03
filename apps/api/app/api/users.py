@@ -1,7 +1,8 @@
 """Manage users. Only `user:admin` (the admin role) may change a role.
 
 `GET /users` lists active people by name (id and display name only) for anyone with
-`project:read`, so the risk register can show and pick an owner.
+`project:read`, so the risk register can show and pick an owner. `?role=` keeps one role's people,
+so the approval gate can offer only project managers (item 4.6).
 
 Nobody can change their own role, and no change may leave the system without an active admin.
 Each change is one audit row, written in the same transaction as the change itself: agent
@@ -60,11 +61,14 @@ def _active_admin_ids(db: Session) -> set[int]:
 def list_people(
     _user: Annotated[User, Depends(require(Action.PROJECT_READ))],
     db: Annotated[Session, Depends(get_db)],
+    role: Role | None = None,
     limit: Limit = DEFAULT_LIMIT,
     offset: Offset = 0,
 ) -> Page[PersonOut]:
     # By name; the primary key breaks ties so pages are stable.
     stmt = select(User).where(User.is_active.is_(True))
+    if role is not None:
+        stmt = stmt.where(User.role == role)
     rows, total = paginate(
         db, stmt, order_by=(User.display_name, User.id), limit=limit, offset=offset
     )
