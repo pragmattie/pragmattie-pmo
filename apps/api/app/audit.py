@@ -30,6 +30,50 @@ def record_decision(db: Session, **fields: Any) -> AuditDecision:
     return row
 
 
+def next_attempt(
+    db: Session, *, agent: str, subject_type: str, subject_id: str, version: int
+) -> int:
+    """The next free `attempt` for a subject's version: 1 when it has no row yet."""
+    stmt = select(func.max(AuditDecision.attempt)).where(
+        AuditDecision.agent == agent,
+        AuditDecision.subject_type == subject_type,
+        AuditDecision.subject_id == subject_id,
+        AuditDecision.version == version,
+    )
+    return (db.scalar(stmt) or 0) + 1
+
+
+def record_refusal(
+    db: Session,
+    *,
+    agent: str,
+    subject_type: str,
+    subject_id: str,
+    version: int,
+    actor_user_id: int,
+    output: Any,
+    action_taken: dict[str, Any],
+) -> AuditDecision:
+    """The audit row for a person's refused decision (`status: rejected`). Nothing about the
+    subject changed, so `output` is the subject as it stays. Several refusals of one version each
+    get their own `attempt`. The caller commits it before answering with the refusal."""
+    return record_decision(
+        db,
+        agent=agent,
+        trigger="human",
+        subject_type=subject_type,
+        subject_id=subject_id,
+        version=version,
+        attempt=next_attempt(
+            db, agent=agent, subject_type=subject_type, subject_id=subject_id, version=version
+        ),
+        status="rejected",
+        actor_user_id=actor_user_id,
+        output=output,
+        action_taken=action_taken,
+    )
+
+
 def decisions_query(
     *,
     agent: str | None = None,

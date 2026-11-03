@@ -18,7 +18,11 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-Nothing is pending.
+- **`policies/gates.yaml`** (item 4.4): the approval gate (intake to planning, for project
+  requests, decided by `sponsor`) with its four automatic checks and two person criteria. Apply it
+  over the live placeholder; until then `GET` and `POST /api/v1/requests/{id}/gate` answer 503.
+  The tests load this file from here while it is pending, and the applied file once this copy is
+  deleted.
 
 ## Applied
 

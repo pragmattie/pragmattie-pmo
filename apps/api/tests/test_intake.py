@@ -379,7 +379,9 @@ def test_an_unknown_request_is_404(web, pm):
 
 
 def test_no_route_can_approve_decline_or_return_to_draft(web, db, pm):
-    # Only submit and withdraw move a request, and no route takes a target status.
+    # Only submit and withdraw move a request here, and no route takes a target status. The
+    # approval gate (`POST .../gate`, test_gates.py) is the one route that approves, declines or
+    # returns a request, and only as a sponsor's recorded decision.
     request_routes = {
         (method, route.path)
         for route in iter_route_contexts(app.routes)
@@ -398,6 +400,8 @@ def test_no_route_can_approve_decline_or_return_to_draft(web, db, pm):
         ("PUT", "/api/v1/requests/{request_id}/value-case"),
         ("GET", "/api/v1/requests/{request_id}/readiness"),
         ("PUT", "/api/v1/requests/{request_id}/readiness"),
+        ("GET", "/api/v1/requests/{request_id}/gate"),
+        ("POST", "/api/v1/requests/{request_id}/gate"),
     }
     rid = _ready(web, pm)
     _move(web, rid, "submit", 1)

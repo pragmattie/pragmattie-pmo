@@ -59,7 +59,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.agents import risk_agent
 from app.api.risk_library import library
-from app.audit import ORDER_BY, decisions_query, record_decision
+from app.audit import ORDER_BY, decisions_query, record_refusal
 from app.authz import Action, may_accept_band, require
 from app.config import get_settings
 from app.db import get_db
@@ -71,7 +71,6 @@ from app.risks import (
     apply_score,
     band_owner,
     band_rank,
-    next_attempt,
     record_escalation,
     record_risk_change,
     rescore_decisions,
@@ -441,15 +440,12 @@ def _record_refusal(
 ) -> None:
     """The audit row for a refused decision (`status: rejected`): who tried what, on which band
     and owner. Nothing about the risk changes, so `output` is the risk as it stays."""
-    record_decision(
+    record_refusal(
         db,
         agent=AUDIT_AGENT,
-        trigger="human",
         subject_type=AUDIT_SUBJECT,
         subject_id=str(risk.id),
         version=risk.version,
-        attempt=next_attempt(db, risk),
-        status="rejected",
         actor_user_id=user.id,
         output=snapshot(risk),
         action_taken={

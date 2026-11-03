@@ -2,7 +2,8 @@
 
 A request is `draft` while its project manager works on it, `submitted` once it joins the queue,
 and `withdrawn` when the project manager takes it back. `approved`, `declined` and a return to
-`draft` are set only at the approval gate (a later item). `declined` and `withdrawn` are final.
+`draft` are set only at the approval gate (item 4.4, `app.api.gates`). `declined` and
+`withdrawn` are final.
 
 `requested_by` is the signed-in person who created it. A request with no client is internal work.
 

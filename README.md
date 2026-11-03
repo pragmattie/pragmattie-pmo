@@ -162,6 +162,36 @@ while the request is a draft.
   with the value case's gaps. A red result does not stop submission; the approval gate deals with
   it. A request that doesn't use AI needs no check.
 
+### The approval gate
+
+A submitted request waits at the approval gate, between intake and planning. The gate's criteria,
+and the roles that may decide it, come from `policies/gates.yaml`; the loader refuses a file with an
+unknown check or role, a stage outside intake, planning, delivery, closure and closed, or a
+repeated id. Until a person applies the drafted file in `ci/proposed/policies/gates.yaml`, the live
+file is an empty placeholder and both gate routes answer 503 with a plain message.
+
+- **Criteria.** Automatic checks: the value case is complete and confirmed; and, for a request
+  that uses AI only, the readiness check is confirmed, no area is red, and every yellow area has
+  an action with an active owner (these three are met on their own for other requests). Person
+  criteria: "The expected value justifies the cost" and "We have, or can get, the people to do
+  it", each ticked with a note by the person deciding.
+- `GET /api/v1/requests/{id}/gate` (`project:read`) shows each criterion's result now; person
+  criteria show unticked, because the ticks are sent with the decision.
+- `POST /api/v1/requests/{id}/gate` (`gate:decide`) records `pass` (the request becomes
+  `approved`), `return` (back to `draft` for more work) or `decline` (final), with a reason of at
+  least 20 characters and the request's `version` (stale is a 409). It needs a role the gate lists
+  (`sponsor`; an ethics reviewer holds `gate:decide` for later gates but is refused here), a
+  request the person didn't raise themselves, and a submitted request. `pass` needs every
+  criterion met; otherwise it is a 409 whose `detail` is `{message, unmet: [...]}` naming them.
+- Each decision is a `gate_decisions` row holding every criterion's result and note as they were,
+  and the SHA-256 of the gates file it was measured against, plus one audit row in the request's
+  history. Every refused attempt (no `gate:decide`, a role the gate doesn't list, the person's own
+  request, a `pass` with unmet criteria) is one audit row with `status: rejected`, and changes
+  nothing.
+- The request page has a Gate section: each criterion with a tick or a cross, and for a sponsor
+  on someone else's submitted request, tick boxes with notes and Pass, Return and Decline buttons,
+  each asking for the reason.
+
 ## Demo users for a rehearsal
 
 `python -m app.seed users` creates one demo user per role, each on a `.example` address, with a

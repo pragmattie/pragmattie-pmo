@@ -130,3 +130,17 @@ def _risk_library(monkeypatch):
     from app import policy
 
     monkeypatch.setattr(policy, "get_risk_library", _test_risk_library)
+
+
+@pytest.fixture
+def gates_policy(tmp_path, monkeypatch):
+    """Point the API at a policies directory holding the gates file, for the gate routes."""
+    from policy_files import gates_policy_dir
+
+    from app.config import get_settings
+    from app.policy import get_policies
+
+    monkeypatch.setattr(get_settings(), "policies_dir", gates_policy_dir(tmp_path))
+    get_policies.cache_clear()
+    yield
+    get_policies.cache_clear()

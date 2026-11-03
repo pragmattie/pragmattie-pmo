@@ -28,12 +28,13 @@ import argparse
 import sys
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import policy as policies
+from app.audit import next_attempt as audit_next_attempt
 from app.audit import record_decision
-from app.models import AuditDecision, Risk
+from app.models import Risk
 from app.policy import PolicyError, RiskLibrary, RiskPolicy, RiskTemplate, get_policies, score_risk
 
 AUDIT_AGENT = "risk_register"
@@ -156,13 +157,13 @@ def rescore_decisions(risk: Risk, policy: RiskPolicy, before: dict[str, Any]) ->
 
 def next_attempt(db: Session, risk: Risk) -> int:
     """The next free audit `attempt` for the risk's current version: 1 when it has no row yet."""
-    stmt = select(func.max(AuditDecision.attempt)).where(
-        AuditDecision.agent == AUDIT_AGENT,
-        AuditDecision.subject_type == AUDIT_SUBJECT,
-        AuditDecision.subject_id == str(risk.id),
-        AuditDecision.version == risk.version,
+    return audit_next_attempt(
+        db,
+        agent=AUDIT_AGENT,
+        subject_type=AUDIT_SUBJECT,
+        subject_id=str(risk.id),
+        version=risk.version,
     )
-    return (db.scalar(stmt) or 0) + 1
 
 
 def record_risk_change(
