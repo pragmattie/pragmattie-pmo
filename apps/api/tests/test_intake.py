@@ -11,7 +11,15 @@ from sqlalchemy.orm import Session
 from app.api.intake import FINAL, NOT_DRAFT_EDIT, NOT_DRAFT_SUBMIT, NOT_WITHDRAWABLE, STALE
 from app.db import engine
 from app.main import app
-from app.models import AuditDecision, Base, Client, ProjectRequest, User
+from app.models import (
+    AuditDecision,
+    Base,
+    Client,
+    ProjectRequest,
+    User,
+    ValueCase,
+    ValueCaseBenefit,
+)
 from app.models.intake import LONG_TEXT_MAX
 
 BODY = {
@@ -73,6 +81,35 @@ def _set_status(db: Session, request_id: int, status: str) -> int:
         row.status = status
         session.commit()
         return row.version
+
+
+def add_value_case(request_id: int, confirmed_by: int | None, **changes) -> None:
+    """A complete value case, straight into the database so the request's version is unchanged.
+    `confirmed_by=None` leaves it as an unconfirmed agent draft."""
+    fields = {
+        "cost_low": "10000.00",
+        "cost_high": "20000.00",
+        "cost_method": "Two weeks of analysis at the day rate",
+        "strategic_fit": "The client's goal of fewer stock-outs",
+        "source": "person" if confirmed_by else "agent",
+        "confirmed_by": confirmed_by,
+        "confirmed_at": datetime(2026, 11, 1) if confirmed_by else None,
+        **changes,
+    }
+    benefit = {"description": "Fewer stock-outs", "measure": "Stock-outs a quarter"}
+    benefit |= {"current_value": "12", "target": "6", "target_date": date(2027, 12, 31)}
+    with Session(engine) as session:
+        value_case = ValueCase(request_id=request_id, **fields)
+        value_case.benefits.append(ValueCaseBenefit(position=0, **benefit))
+        session.add(value_case)
+        session.commit()
+
+
+def _ready(web: TestClient, user: User, **changes) -> int:
+    """A draft request with a complete, confirmed value case, so it can be submitted."""
+    rid = _create(web, **changes).json()["id"]
+    add_value_case(rid, user.id)
+    return rid
 
 
 def _refused(response, detail: str) -> None:
@@ -168,8 +205,7 @@ def test_an_unknown_client_is_422(web, db, pm):
 
 
 def test_a_draft_is_edited_submitted_and_withdrawn_with_one_audit_row_each(web, db, pm):
-    created = _create(web).json()
-    rid = created["id"]
+    rid = _ready(web, pm)
 
     edited = web.patch(f"{URL}/{rid}", json={"version": 1, "title": "Forecast pilot"})
     assert edited.status_code == 200, edited.text
@@ -240,7 +276,7 @@ def test_an_edit_that_changes_nothing_writes_no_audit_row(web, db, pm):
 
 
 def test_another_project_manager_may_act_and_the_audit_row_names_them(web, db, pm, sign_in):
-    rid = _create(web).json()["id"]
+    rid = _ready(web, pm)
     other = TestClient(app, base_url="http://localhost")
     colleague = sign_in(other, db, "project_manager", email="colleague@pmo.example")
     assert other.patch(f"{URL}/{rid}", json={"version": 1, "title": "Handed over"}).status_code == (
@@ -257,14 +293,14 @@ def test_another_project_manager_may_act_and_the_audit_row_names_them(web, db, p
 
 
 def test_editing_a_submitted_request_is_409(web, db, pm):
-    rid = _create(web).json()["id"]
+    rid = _ready(web, pm)
     _move(web, rid, "submit", 1)
     _refused(web.patch(f"{URL}/{rid}", json={"version": 2, "title": "Late change"}), NOT_DRAFT_EDIT)
     assert len(_audit(db)) == 2
 
 
 def test_submitting_twice_is_409(web, db, pm):
-    rid = _create(web).json()["id"]
+    rid = _ready(web, pm)
     _move(web, rid, "submit", 1)
     _refused(_move(web, rid, "submit", 2), NOT_DRAFT_SUBMIT)
 
@@ -330,8 +366,10 @@ def test_no_route_can_approve_decline_or_return_to_draft(web, db, pm):
         ("PATCH", "/api/v1/requests/{request_id}"),
         ("POST", "/api/v1/requests/{request_id}/submit"),
         ("POST", "/api/v1/requests/{request_id}/withdraw"),
+        ("GET", "/api/v1/requests/{request_id}/value-case"),
+        ("PUT", "/api/v1/requests/{request_id}/value-case"),
     }
-    rid = _create(web).json()["id"]
+    rid = _ready(web, pm)
     _move(web, rid, "submit", 1)
     for action in ("approve", "decline", "return", "draft"):
         assert _move(web, rid, action, 2).status_code in (404, 405)
@@ -358,7 +396,7 @@ def test_other_roles_read_the_queue_but_cannot_change_it(web, db, pm, sign_in, r
 
 
 def test_history_is_this_requests_rows_newest_first_with_display_names(web, db, pm):
-    rid = _create(web).json()["id"]
+    rid = _ready(web, pm)
     other_id = _create(web, title="Another").json()["id"]
     _move(web, rid, "submit", 1)
     # An audit row for another subject with the same id is not this request's.
