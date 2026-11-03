@@ -633,6 +633,29 @@ describe('decision buttons', () => {
     expect(JSON.parse(String(post[1]!.body))).toEqual({ version: 1 })
     expect(wrapper.get('[data-test="drawer-message"]').text()).toBe('Risk opened.')
   })
+
+  it('rejects a proposed risk only with a reason', async () => {
+    const { wrapper, fetchMock } = await mountRisks('project_manager')
+    await openRow(wrapper, 6)
+    await wrapper.get('[data-test="reject-risk"]').trigger('click')
+    await flushPromises()
+    const yes = document.querySelector('[data-test="reject-yes"]') as HTMLButtonElement
+    expect(yes.disabled).toBe(true)
+    const reason = document.querySelector('[data-test="reject-reason"] textarea')!
+    ;(reason as HTMLTextAreaElement).value = 'Already covered by the vendor risk'
+    reason.dispatchEvent(new Event('input'))
+    await flushPromises()
+    expect(yes.disabled).toBe(false)
+    yes.click()
+    await flushPromises()
+    const post = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/6/reject'))!
+    expect(JSON.parse(String(post[1]!.body))).toEqual({
+      version: 1,
+      reason: 'Already covered by the vendor risk',
+    })
+    expect(wrapper.get('[data-test="drawer-message"]').text()).toBe('Risk rejected.')
+    expect(wrapper.get('[data-test="field-Status"]').text()).toBe('Rejected')
+  })
 })
 
 describe('escalations list', () => {
