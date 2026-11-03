@@ -7,6 +7,7 @@ import {
   confirmationText,
   costText,
   intakeApi,
+  isAgentDraft,
   MAX_BENEFITS,
   MAX_MEASURE,
   MAX_TARGET,
@@ -173,6 +174,15 @@ function benefitText(benefit: Benefit): string {
   <section class="mt-6" data-test="value-case">
     <div class="d-flex align-center ga-2 mb-2">
       <h2 class="text-subtitle-1">Value case</h2>
+      <v-chip
+        v-if="valueCase && !editing && isAgentDraft(valueCase)"
+        color="secondary"
+        size="small"
+        variant="outlined"
+        data-test="value-case-agent-draft"
+      >
+        Agent draft, not confirmed
+      </v-chip>
       <v-spacer />
       <v-btn
         v-if="editable && !editing && loaded"

@@ -4,11 +4,14 @@ import { computed, reactive, ref, watch } from 'vue'
 import {
   canEditReadiness,
   confirmationText,
+  dueText,
   intakeApi,
+  isAgentDraft,
   isOverdue,
   MAX_ACTION,
   MAX_ACTIONS,
   MAX_TEXT,
+  ownerText,
   type ProjectRequest,
   RATINGS,
   ratingColor,
@@ -84,7 +87,8 @@ function fromReadiness(stored: Readiness): ReadinessInput {
     actions: stored[key].actions.map(({ description, owner_id, due_date }) => ({
       description,
       owner_id,
-      due_date,
+      // An agent's draft has no date yet: the person adds one before saving.
+      due_date: due_date ?? '',
     })),
   })
   return { problem: area('problem'), approach: area('approach'), data: area('data') }
@@ -171,6 +175,15 @@ async function save() {
       >
         Overall: {{ ratingText(readiness.overall) }}
       </v-chip>
+      <v-chip
+        v-if="readiness && isAgentDraft(readiness)"
+        color="secondary"
+        size="small"
+        variant="outlined"
+        data-test="readiness-agent-draft"
+      >
+        Agent draft, not confirmed
+      </v-chip>
       <v-spacer />
       <v-btn
         v-if="editable && !editing && loaded"
@@ -222,8 +235,7 @@ async function save() {
             >
               {{ action.description }}
               <span class="text-caption text-medium-emphasis">
-                (owner {{ action.owner_name ?? `User ${action.owner_id}` }}, due
-                {{ action.due_date }})
+                ({{ ownerText(action) }}, {{ dueText(action) }})
               </span>
               <v-chip
                 v-if="isOverdue(action)"

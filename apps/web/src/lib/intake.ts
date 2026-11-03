@@ -83,11 +83,12 @@ export interface ValueCaseInput {
 export type Rating = 'green' | 'yellow' | 'red'
 export type ReadinessAreaName = 'problem' | 'approach' | 'data'
 
+// Owner and due date are empty only on an agent's draft, until a person adds them.
 export interface ReadinessAction {
   description: string
-  owner_id: number
+  owner_id: number | null
   owner_name: string | null
-  due_date: string
+  due_date: string | null
 }
 
 export interface ReadinessArea {
@@ -127,6 +128,22 @@ export interface ReadinessAreaInput {
 }
 
 export type ReadinessInput = Record<ReadinessAreaName, ReadinessAreaInput>
+
+// What the intake agent proposed (POST /requests/{id}/draft), after the API checked it. A dry run
+// has `request` and `cost_ceiling_usd` instead; `saved` names the sections stored as unconfirmed
+// agent drafts, `skipped` the ones a person had confirmed and the agent left alone.
+export interface DraftResult {
+  mode: 'shadow' | 'enforce'
+  dry_run: boolean
+  model: string
+  prompt_version: string
+  cost_ceiling_usd: string | null
+  saved: ('value_case' | 'readiness')[]
+  skipped: { section: 'value_case' | 'readiness'; reason: string }[]
+  dropped: { part: string; reason: string }[]
+  adjusted: { part: string; change: string }[]
+  audit_id: number | null
+}
 
 export interface Client {
   id: number
@@ -195,6 +212,32 @@ export function canSubmitRequest(request: Pick<ProjectRequest, 'status'>, canWri
   return canWrite && request.status === 'draft'
 }
 
+// The intake agent drafts only for a draft request, and only for a role with project:write.
+export function canDraftRequest(request: Pick<ProjectRequest, 'status'>, canWrite: boolean) {
+  return canWrite && request.status === 'draft'
+}
+
+// A section an agent drafted that no person has confirmed yet: it shows the "Agent draft" chip.
+export function isAgentDraft(section: Pick<ValueCase, 'source' | 'confirmed_by'>): boolean {
+  return section.source === 'agent' && section.confirmed_by === null
+}
+
+// What the page says after a draft run: what was saved, or that nothing was.
+export function draftText(result: Pick<DraftResult, 'mode' | 'saved' | 'skipped'>): string {
+  const names = { value_case: 'value case', readiness: 'readiness check' }
+  if (result.mode === 'shadow') {
+    return 'The agent ran in shadow mode: nothing was saved. Its proposal is in the audit trail.'
+  }
+  const skipped = result.skipped.length
+    ? ` Left alone, because a person confirmed it: ${result.skipped.map((s) => names[s.section]).join(' and ')}.`
+    : ''
+  if (!result.saved.length) return `The agent saved nothing.${skipped}`
+  return (
+    `The agent drafted the ${result.saved.map((s) => names[s]).join(' and ')}. ` +
+    `Check every part and save it to confirm it.${skipped}`
+  )
+}
+
 // The value case changes with its request: only while the request is a draft.
 export function canEditValueCase(request: Pick<ProjectRequest, 'status'>, canWrite: boolean) {
   return canWrite && request.status === 'draft'
@@ -249,8 +292,18 @@ export function localDate(now: Date = new Date()): string {
 }
 
 // An action whose due date has passed. Past dates are allowed, so they are flagged, not refused.
+// An action with no date yet (an agent's draft) is never overdue.
 export function isOverdue(action: Pick<ReadinessAction, 'due_date'>, now: Date = new Date()) {
-  return action.due_date < localDate(now)
+  return action.due_date !== null && action.due_date < localDate(now)
+}
+
+export function ownerText(action: Pick<ReadinessAction, 'owner_id' | 'owner_name'>): string {
+  if (action.owner_id === null) return 'No owner yet'
+  return `owner ${action.owner_name ?? `User ${action.owner_id}`}`
+}
+
+export function dueText(action: Pick<ReadinessAction, 'due_date'>): string {
+  return action.due_date === null ? 'No date yet' : `due ${action.due_date}`
 }
 
 // A draft or submitted request may be withdrawn; declined and withdrawn are final.
@@ -326,6 +379,8 @@ export const intakeApi = {
   },
   saveReadiness: (id: number, body: ReadinessInput & { version: number }) =>
     call<Readiness>(`${base}/${id}/readiness`, { method: 'PUT', body: JSON.stringify(body) }),
+  // Runs the intake agent; the API refuses (409) when AGENT_MODE is off.
+  draft: (id: number) => call<DraftResult>(`${base}/${id}/draft`, { method: 'POST' }),
   submit: (id: number, version: number) =>
     call<ProjectRequest>(`${base}/${id}/submit`, {
       method: 'POST',

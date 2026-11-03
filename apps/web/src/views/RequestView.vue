@@ -8,11 +8,13 @@ import RequestForm from '../components/RequestForm.vue'
 import ValueCaseSection from '../components/ValueCaseSection.vue'
 import {
   budgetText,
+  canDraftRequest,
   canEditRequest,
   canSubmitRequest,
   canWithdrawRequest,
   type Client,
   clientText,
+  draftText,
   intakeApi,
   type ProjectRequest,
   REQUEST_CONFLICT,
@@ -46,6 +48,9 @@ const showEdit = computed(() => !!request.value && canEditRequest(request.value,
 const showSubmit = computed(
   () => !!request.value && canSubmitRequest(request.value, canWrite.value),
 )
+// "Draft with the agent": a draft request and project:write. The API checks both, and AGENT_MODE.
+const showDraft = computed(() => !!request.value && canDraftRequest(request.value, canWrite.value))
+const drafting = ref(false)
 const showWithdraw = computed(
   () => !!request.value && canWithdrawRequest(request.value, canWrite.value),
 )
@@ -154,6 +159,28 @@ function submit() {
   if (current) act(() => intakeApi.submit(current.id, current.version), 'Request submitted.')
 }
 
+// The agent's sections are saved with a new request version, so reloading the request reloads
+// them too. A 409 is AGENT_MODE=off or a request that is no longer a draft.
+async function draftWithAgent() {
+  const current = request.value
+  if (!current) return
+  drafting.value = true
+  try {
+    const result = await intakeApi.draft(current.id)
+    await load()
+    show(draftText(result), 'success')
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      await load()
+      show(error.message, 'warning')
+    } else {
+      show((error as Error).message, 'error')
+    }
+  } finally {
+    drafting.value = false
+  }
+}
+
 async function withdraw() {
   const current = request.value
   confirmWithdraw.value = false
@@ -212,6 +239,17 @@ function describe(entry: HistoryEntry): string {
       <div class="d-flex flex-wrap align-center ga-2 mb-4">
         <h1 class="text-h4 text-primary" data-test="page-title">{{ request.title }}</h1>
         <v-spacer />
+        <v-btn
+          v-if="showDraft"
+          variant="outlined"
+          color="secondary"
+          :loading="drafting"
+          :disabled="busy"
+          data-test="draft-agent"
+          @click="draftWithAgent"
+        >
+          Draft with the agent
+        </v-btn>
         <v-btn v-if="showEdit" variant="outlined" data-test="edit" @click="formOpen = true">
           Edit
         </v-btn>
