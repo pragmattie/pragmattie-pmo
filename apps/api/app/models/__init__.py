@@ -3,7 +3,7 @@
 from app.models.audit import AuditDecision
 from app.models.auth import RevokedToken, User
 from app.models.base import Base, Money, utcnow
-from app.models.intake import ProjectRequest
+from app.models.intake import ProjectRequest, ValueCase, ValueCaseBenefit
 from app.models.portfolio import Client, Project
 from app.models.risk import Risk
 
@@ -17,5 +17,7 @@ __all__ = [
     "RevokedToken",
     "Risk",
     "User",
+    "ValueCase",
+    "ValueCaseBenefit",
     "utcnow",
 ]
