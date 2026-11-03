@@ -32,6 +32,7 @@ from app.models.base import Base, Money, utcnow
 
 REQUESTS_TABLE = table_name("project_requests")
 CLIENTS_TABLE = table_name("clients")
+PROJECTS_TABLE = table_name("projects")
 USERS_TABLE = table_name("users")
 
 STATUSES = ("draft", "submitted", "approved", "declined", "withdrawn")
@@ -58,6 +59,8 @@ class ProjectRequest(Base):
         Index("ix_project_requests_status", "status"),
         Index("ix_project_requests_submitted_at", "submitted_at"),
         Index("ix_project_requests_wanted_by", "wanted_by"),
+        # A request becomes at most one project, and a project comes from at most one request.
+        UniqueConstraint("project_id", name="uq_project_requests_project"),
         # Audit rows name a request by id, so an id is never reused. MySQL never reuses one;
         # SQLite needs AUTOINCREMENT for that.
         {"sqlite_autoincrement": True},
@@ -81,6 +84,10 @@ class ProjectRequest(Base):
     )
     status: Mapped[str] = mapped_column(String(16), default="draft")
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # The project this request became when it passed the approval gate (item 4.6).
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey(f"{PROJECTS_TABLE}.id", name="fk_project_requests_project")
+    )
     version: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
