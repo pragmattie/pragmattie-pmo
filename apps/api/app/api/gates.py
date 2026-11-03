@@ -16,8 +16,9 @@ Until a person applies a gates file that defines the `approval` gate, both route
 Each decision is one `gate_decisions` row (the criteria as they stood, and the SHA-256 of the
 gates file) and one audit row in the request's history. Each refused attempt is one audit row
 (`status: rejected`) naming the reason, and changes nothing: a role without `gate:decide` (the
-guard records it), a role the gate doesn't list, the caller's own submission, and a `pass` with
-unmet criteria. The route needs a signed-in person, so no agent can decide a gate.
+guard records it), a role the gate doesn't list, the caller's own submission, a stale version, a
+request in a final status, a request that isn't submitted (each for any outcome), and a `pass`
+with unmet criteria. The route needs a signed-in person, so no agent can decide a gate.
 """
 
 import logging
@@ -29,7 +30,8 @@ from sqlalchemy.orm import Session
 
 from app.api.intake import (
     AUDIT_SUBJECT,
-    _check_version,
+    FINAL,
+    STALE,
     _commit,
     _names,
     _request,
@@ -41,6 +43,7 @@ from app.authz import Action, not_own_submission, require, require_audited
 from app.db import get_db
 from app.gates import CHECKS
 from app.models import GateDecision, ProjectRequest, User
+from app.models.intake import FINAL_STATUSES
 from app.policy import Gate, PolicyError, get_policies
 from app.schemas.gate import (
     CriterionOut,
@@ -254,9 +257,15 @@ def decide_gate(
         _record_refused(db, request, user, refusal="own_submission", outcome=body.outcome)
         _commit(db)
         not_own_submission(user.id, request.requested_by)
-    _check_version(request, body.version)
-    if request.status != "submitted":
-        raise HTTPException(status.HTTP_409_CONFLICT, NOT_SUBMITTED)
+    for refusal, refused, message in (
+        ("stale_version", body.version != request.version, STALE),
+        ("final_status", request.status in FINAL_STATUSES, FINAL),
+        ("not_submitted", request.status != "submitted", NOT_SUBMITTED),
+    ):
+        if refused:
+            _record_refused(db, request, user, refusal=refusal, outcome=body.outcome)
+            _commit(db)
+            raise HTTPException(status.HTTP_409_CONFLICT, message)
 
     criteria = _evaluate(db, gate, request, _ticks(gate, body.criteria))
     recorded = [c.model_dump() for c in criteria]

@@ -368,21 +368,56 @@ def test_nobody_signed_in_is_401_without_a_row(web, db, pm):
     assert _gate_rows(db, rid) == []
 
 
+def _request_state(db: Session, rid: int) -> tuple[str, int]:
+    db.expire_all()
+    request = db.get(ProjectRequest, rid)
+    return request.status, request.version
+
+
+def _assert_one_refusal(db: Session, rid: int, refusal: str, outcome: str, before) -> None:
+    """Exactly one `gate_refused` row naming the refusal; the request and decisions unchanged."""
+    [row] = _gate_rows(db, rid)
+    assert row.status == "rejected"
+    assert row.action_taken["action"] == "gate_refused"
+    assert row.action_taken["refusal"] == refusal
+    assert row.action_taken["outcome"] == outcome
+    assert (row.output["status"], row.version) == before
+    assert _request_state(db, rid) == before
+    assert _decisions(db) == []
+
+
+@pytest.mark.parametrize("outcome", ["pass", "return", "decline"])
 @pytest.mark.parametrize("status", ["draft", "approved"])
-def test_only_a_submitted_request_is_decided(web, db, pm, sponsor, status):
+def test_only_a_submitted_request_is_decided(web, db, pm, sponsor, status, outcome):
     rid = _create(web).json()["id"]
     version = _set_status(db, rid, status)
-    response = _decide(sponsor, rid, version=version)
+    before = _request_state(db, rid)
+    response = _decide(sponsor, rid, outcome, version=version)
     assert response.status_code == 409
     assert response.json()["detail"] == NOT_SUBMITTED
+    _assert_one_refusal(db, rid, "not_submitted", outcome, before)
 
 
-def test_a_stale_version_is_a_409(web, db, pm, sponsor):
+@pytest.mark.parametrize("outcome", ["pass", "return", "decline"])
+@pytest.mark.parametrize("status", ["declined", "withdrawn"])
+def test_a_request_in_a_final_status_is_refused_and_audited(web, db, pm, sponsor, status, outcome):
     rid = _submitted(web, pm)
-    response = _decide(sponsor, rid, version=1)
+    version = _set_status(db, rid, status)
+    before = _request_state(db, rid)
+    response = _decide(sponsor, rid, outcome, version=version)
+    assert response.status_code == 409
+    assert response.json()["detail"] == FINAL
+    _assert_one_refusal(db, rid, "final_status", outcome, before)
+
+
+@pytest.mark.parametrize("outcome", ["pass", "return", "decline"])
+def test_a_stale_version_is_a_409(web, db, pm, sponsor, outcome):
+    rid = _submitted(web, pm)
+    before = _request_state(db, rid)
+    response = _decide(sponsor, rid, outcome, version=1)
     assert response.status_code == 409
     assert response.json()["detail"] == STALE
-    assert _status(db, rid) == "submitted"
+    _assert_one_refusal(db, rid, "stale_version", outcome, before)
 
 
 def test_a_short_reason_is_refused(web, db, pm, sponsor):
