@@ -135,6 +135,33 @@ is a draft.
   a target, a full cost estimate, and a person's confirmation. Otherwise submitting is a 409 whose
   `detail` is `{message, missing: [...]}`, and the page lists what is missing.
 
+### The readiness check
+
+A request that uses AI has one readiness check, recording whether the work is ready. It shows on
+the request's page only when the request uses AI; a role with `project:write` can add or edit it
+while the request is a draft.
+
+- **Three areas**, each rated green, yellow or red with a note: **Problem** (the problem is real
+  and worth solving), **Approach** (AI is the right tool, rather than simpler rules or software)
+  and **Data** (the data exists, can be used, and is good enough).
+- **Actions** (up to 10 per area): a description, an owner (any active user) and a due date. Any
+  area may have actions; every yellow area needs at least one. A past due date is allowed and
+  shows as "Overdue" on the request page.
+- The **overall result** is the worst of the three areas. It is computed, never stored, and is
+  "unrated" while an agent's draft waits for a person to confirm it.
+- `GET /api/v1/requests/{id}/readiness` needs `project:read` (404 until there is one);
+  `PUT .../{id}/readiness` needs `project:write` and replaces the whole check. Both are a 404 for a
+  request that doesn't use AI. A check kept from when it did is hidden, not deleted, and shows
+  again if `uses_ai` is turned back on. The PUT carries the request's `version`, bumps it, and is a
+  409 if the version is stale or the request isn't a draft.
+- Saving it as a person confirms it, as with the value case. Each change is one audit row (action
+  `readiness`) with the values before and after and the overall result; a save that changes
+  nothing on a check a person has already confirmed writes nothing.
+- A request that uses AI can be submitted only when its check rates every area, gives every yellow
+  area an action, and has a person's confirmation. Otherwise the submit 409 lists what is missing,
+  with the value case's gaps. A red result does not stop submission; the approval gate deals with
+  it. A request that doesn't use AI needs no check.
+
 ## Demo users for a rehearsal
 
 `python -m app.seed users` creates one demo user per role, each on a `.example` address, with a
