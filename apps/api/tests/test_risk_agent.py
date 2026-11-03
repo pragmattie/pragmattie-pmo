@@ -394,6 +394,56 @@ def test_a_failed_run_is_audited_and_creates_no_risks(
         assert run.cost_usd > 0
 
 
+def _bad_risk(project_id, proposal):
+    """A risk the database refuses when it is flushed (no title)."""
+    risk = real_risk(project_id, proposal)
+    risk.title = None
+    return risk
+
+
+def _no_change_rows(*args, **kwargs):
+    raise RuntimeError("the risk change row could not be written")
+
+
+real_risk = risk_agent._risk
+
+
+@pytest.mark.parametrize(
+    ("name", "replacement"), [("_risk", _bad_risk), ("record_risk_change", _no_change_rows)]
+)
+def test_an_error_while_saving_is_audited_and_creates_no_risks(
+    web, db, pm, project, fake, mode, monkeypatch, name, replacement
+):
+    mode("enforce")
+    fake.reply = _reply(_item(), _item(title="Second risk"))
+    monkeypatch.setattr(risk_agent, name, replacement)
+    response = _suggest(web, project.id)
+    assert response.status_code == 502, response.text
+    assert len(fake.requests) == 1
+    assert _risks(db) == []
+    (run,) = _runs(db)
+    assert run.status == "error" and run.error
+    assert run.attempt == 1
+    assert (run.input_tokens, run.output_tokens) == (1200, 300)
+    assert run.action_taken == {"action": "suggest", "mode": "enforce", "saved_risk_ids": []}
+    assert list(db.scalars(select(AuditDecision).where(AuditDecision.subject_type == "risk"))) == []
+
+
+def test_a_taken_attempt_moves_on_to_the_next_free_one(
+    web, db, pm, project, fake, mode, monkeypatch
+):
+    """A parallel run took attempt 1 after this run read the highest: the row lands at 2."""
+    mode("enforce")
+    assert _suggest(web, project.id).status_code == 200
+    stale = iter([1, 1])
+    monkeypatch.setattr(risk_agent, "_next_attempt", lambda db, project_id: next(stale))
+    fake.reply = _reply(_item(title="Another risk"))
+    response = _suggest(web, project.id)
+    assert response.status_code == 200, response.text
+    assert [(run.status, run.attempt) for run in _runs(db)] == [("ok", 1), ("ok", 2)]
+    assert len(_risks(db)) == 2
+
+
 def test_the_real_client_without_a_key_fails_safely(web, db, pm, project, mode, monkeypatch):
     """No fake: with no ANTHROPIC_API_KEY the real client refuses before any network call."""
     mode("enforce")

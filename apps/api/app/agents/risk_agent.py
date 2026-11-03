@@ -35,6 +35,7 @@ from decimal import ROUND_UP, Decimal
 from typing import Any, Protocol
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit import record_decision
@@ -57,6 +58,8 @@ MAX_REASON = 500
 MAX_EXISTING_RISKS = 200
 # Stored error text is cut to this length.
 MAX_ERROR = 500
+# How many attempt numbers a run tries for its audit row when parallel runs take them first.
+AUDIT_TRIES = 5
 PER_MTOK = Decimal(1_000_000)
 COST_PLACES = Decimal("0.000001")
 
@@ -469,6 +472,24 @@ def _next_attempt(db: Session, project_id: int) -> int:
     return (db.scalar(stmt) or 0) + 1
 
 
+def _record_run(db: Session, project_id: int, **fields: Any) -> AuditDecision:
+    """Write the run's audit row at the next free `attempt`, each try in its own savepoint.
+
+    Two runs on one project can pick the same number; the unique key refuses the second, which
+    then tries again. It moves past the number it just tried as well as re-reading the highest:
+    on MySQL the re-read can still show the transaction's older snapshot."""
+    attempt = 0
+    for tried in range(1, AUDIT_TRIES + 1):
+        attempt = max(_next_attempt(db, project_id), attempt + 1)
+        try:
+            with db.begin_nested():
+                return record_decision(db, attempt=attempt, **fields)
+        except IntegrityError:
+            if tried == AUDIT_TRIES:
+                raise
+    raise AssertionError("AUDIT_TRIES must be at least 1")
+
+
 def _error_text(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"[:MAX_ERROR]
 
@@ -485,21 +506,22 @@ def run(
     actor_user_id: int | None,
 ) -> RunResult:
     """One run: one Claude call, checked in code, one audit row. With `save`, each kept
-    proposal becomes a `proposed` risk with its own audit row. The caller commits; on failure
-    the error row is flushed and `AgentError` raised, and nothing else is added."""
+    proposal becomes a `proposed` risk with its own audit row. The caller commits; on failure,
+    whether in the call or while saving, the error row is flushed and `AgentError` raised, and
+    nothing else is added."""
     data = project_data(db, project, library, policy)
     request = build_request(data, settings)
     mode = "enforce" if save else "shadow"
 
     def audit(status: str, **fields: Any) -> AuditDecision:
-        return record_decision(
+        return _record_run(
             db,
+            project.id,
             agent=AGENT,
             trigger="human",
             subject_type=AUDIT_SUBJECT,
             subject_id=str(project.id),
             version=1,
-            attempt=_next_attempt(db, project.id),
             status=status,
             actor_user_id=actor_user_id,
             model=settings.risk_agent_model,
@@ -508,13 +530,7 @@ def run(
             **fields,
         )
 
-    reply: ClaudeReply | None = None
-    try:
-        reply = client.create(request)
-        if reply.stop_reason not in (None, "end_turn"):
-            raise ValueError(f"the model stopped early ({reply.stop_reason})")
-        checked = validate(json.loads(reply.text), (r["title"] for r in data["existing_risks"]))
-    except Exception as exc:
+    def failed(exc: Exception, reply: ClaudeReply | None) -> AgentError:
         tokens = {}
         if reply is not None:
             tokens = {
@@ -529,41 +545,57 @@ def run(
             action_taken={"action": "suggest", "mode": mode, "saved_risk_ids": []},
             **tokens,
         )
-        raise AgentError("the risk agent run failed", row.id) from exc
+        return AgentError("the risk agent run failed", row.id)
 
-    saved: list[Risk] = []
-    if save:
-        for proposal in checked.proposals:
-            risk = _risk(project.id, proposal)
-            db.add(risk)
-            db.flush()
-            saved.append(risk)
+    reply: ClaudeReply | None = None
+    try:
+        reply = client.create(request)
+        if reply.stop_reason not in (None, "end_turn"):
+            raise ValueError(f"the model stopped early ({reply.stop_reason})")
+        checked = validate(json.loads(reply.text), (r["title"] for r in data["existing_risks"]))
+    except Exception as exc:
+        raise failed(exc, reply) from exc
+
     run_cost = cost(reply.input_tokens, reply.output_tokens, settings)
-    row = audit(
-        "ok",
-        input_tokens=reply.input_tokens,
-        output_tokens=reply.output_tokens,
-        cost_usd=run_cost,
-        output={
-            "proposals": [asdict(p) for p in checked.proposals],
-            "dropped": checked.dropped,
-            "adjusted": checked.adjusted,
-        },
-        action_taken={
-            "action": "suggest",
-            "mode": mode,
-            "saved_risk_ids": [risk.id for risk in saved],
-        },
-    )
-    for risk in saved:
-        record_risk_change(
-            db,
-            risk,
-            action="create",
-            before=None,
-            actor_user_id=actor_user_id,
-            details={"by": AGENT, "run_audit_id": row.id},
-        )
+    try:
+        # The risks, the run's row and the risks' rows stand or fall together: on any error
+        # the savepoint is rolled back, so no risk is left behind, and the run is audited as an
+        # error instead.
+        with db.begin_nested():
+            saved: list[Risk] = []
+            if save:
+                for proposal in checked.proposals:
+                    risk = _risk(project.id, proposal)
+                    db.add(risk)
+                    db.flush()
+                    saved.append(risk)
+            row = audit(
+                "ok",
+                input_tokens=reply.input_tokens,
+                output_tokens=reply.output_tokens,
+                cost_usd=run_cost,
+                output={
+                    "proposals": [asdict(p) for p in checked.proposals],
+                    "dropped": checked.dropped,
+                    "adjusted": checked.adjusted,
+                },
+                action_taken={
+                    "action": "suggest",
+                    "mode": mode,
+                    "saved_risk_ids": [risk.id for risk in saved],
+                },
+            )
+            for risk in saved:
+                record_risk_change(
+                    db,
+                    risk,
+                    action="create",
+                    before=None,
+                    actor_user_id=actor_user_id,
+                    details={"by": AGENT, "run_audit_id": row.id},
+                )
+    except Exception as exc:
+        raise failed(exc, reply) from exc
     return RunResult(
         checked=checked,
         saved=saved,
