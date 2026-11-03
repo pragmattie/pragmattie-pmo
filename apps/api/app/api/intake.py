@@ -122,7 +122,14 @@ MISSING_ACTION = "an action with an owner and a due date for each yellow readine
 MISSING_ACTION_DETAILS = "an owner and a due date for every readiness action"
 MISSING_READINESS_CONFIRMATION = "a person's confirmation of the readiness check an agent drafted"
 
-SNAPSHOT_FIELDS = (*RequestFields.model_fields, "requested_by", "status", "submitted_at", "version")
+SNAPSHOT_FIELDS = (
+    *RequestFields.model_fields,
+    "requested_by",
+    "status",
+    "submitted_at",
+    "project_id",
+    "version",
+)
 VALUE_CASE_FIELDS = ("cost_low", "cost_high", "cost_method", "strategic_fit", "cost_of_not_doing")
 BENEFIT_FIELDS = ("description", "measure", "current_value", "target", "target_date")
 CONFIRMATION_FIELDS = ("source", "confirmed_by", "confirmed_at")

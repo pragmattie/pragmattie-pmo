@@ -19,6 +19,13 @@ gates file) and one audit row in the request's history. Each refused attempt is 
 guard records it), a role the gate doesn't list, the caller's own submission, a stale version, a
 request in a final status, a request that isn't submitted (each for any outcome), and a `pass`
 with unmet criteria. The route needs a signed-in person, so no agent can decide a gate.
+
+A `pass` names the project manager (`project_manager_id`, an active user with the
+`project_manager` role; anyone else is a 422) and turns the request into a project (item 4.6,
+`app.projects`): the project, its brief, stakeholders and first risks are created in the same
+transaction as the decision, and the decision's audit row records their ids. A request that is
+already a project is a refused 409. If anything fails, the whole transaction rolls back: nothing
+is created and the decision is not recorded.
 """
 
 import logging
@@ -45,6 +52,8 @@ from app.gates import CHECKS
 from app.models import GateDecision, ProjectRequest, User
 from app.models.intake import FINAL_STATUSES
 from app.policy import Gate, PolicyError, get_policies
+from app.projects import create_from_request
+from app.roles import Role
 from app.schemas.gate import (
     CriterionOut,
     GateDecisionIn,
@@ -69,6 +78,9 @@ GATES_UNAVAILABLE = (
 NOT_SUBMITTED = "only a submitted request can be decided at the approval gate"
 UNMET = "this request can't pass the approval gate until every criterion is met"
 BAD_TICK = "criteria may answer only this gate's person criteria"
+BAD_PROJECT_MANAGER = "project_manager_id must be an active user with the project_manager role"
+ALREADY_A_PROJECT = "this request is already a project"
+NOT_CREATED = "the project could not be created, so nothing was saved and no decision recorded"
 
 
 def _gate() -> tuple[Gate, str]:
@@ -173,6 +185,13 @@ def _ticks(gate: Gate, answers: list[PersonTick]) -> dict[str, PersonTick]:
     return ticks
 
 
+def _project_manager(db: Session, user_id: int | None) -> User:
+    manager = db.get(User, user_id) if user_id is not None else None
+    if manager is None or not manager.is_active or manager.role != Role.PROJECT_MANAGER:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, BAD_PROJECT_MANAGER)
+    return manager
+
+
 def _latest(db: Session, request_id: int) -> GateDecision | None:
     stmt = (
         select(GateDecision)
@@ -218,6 +237,7 @@ def _gate_out(
         request_version=request.version,
         request_status=request.status,
         requested_by=request.requested_by,
+        project_id=request.project_id,
         criteria=criteria,
         checks_met=all(c.met for c in criteria if c.kind == "check"),
         policy_version=digest,
@@ -269,7 +289,9 @@ def decide_gate(
 
     criteria = _evaluate(db, gate, request, _ticks(gate, body.criteria))
     recorded = [c.model_dump() for c in criteria]
+    manager = None
     if body.outcome == "pass":
+        manager = _project_manager(db, body.project_manager_id)
         unmet = [c for c in criteria if not c.met]
         if unmet:
             named = [{"id": c.id, "text": c.text, "detail": c.detail} for c in unmet]
@@ -278,8 +300,22 @@ def decide_gate(
             )
             _commit(db)
             raise HTTPException(status.HTTP_409_CONFLICT, {"message": UNMET, "unmet": named})
+        if request.project_id is not None:
+            _record_refused(db, request, user, refusal="already_a_project", outcome="pass")
+            _commit(db)
+            raise HTTPException(status.HTTP_409_CONFLICT, ALREADY_A_PROJECT)
 
     before = snapshot(request)
+    created = None
+    if manager is not None:
+        try:
+            created = create_from_request(db, request, user, manager)
+        except Exception:
+            # Nothing was committed: roll back the project and everything made with it.
+            db.rollback()
+            logger.exception("creating the project for request %s failed", request.id)
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, NOT_CREATED) from None
+        request.project_id = created.project.id
     request.status = OUTCOME_STATUS[body.outcome]
     _save(db)
     decision = GateDecision(
@@ -320,6 +356,7 @@ def decide_gate(
             "reason": body.reason,
             "criteria": recorded,
             "policy_version": digest,
+            **({"created": created.ids()} if created is not None else {}),
         },
     )
     _commit(db)
