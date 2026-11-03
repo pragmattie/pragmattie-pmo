@@ -50,3 +50,61 @@ project, success or failure: model, prompt version, tokens, cost, the proposals,
 and why, what it adjusted (clamped scores, judgement risks left unscored) and the ids of risks it
 saved. A failed run (an API error, output that isn't valid JSON or stopped early) is a 502, saves
 no risk and records the error. A dry run or a refused run calls nothing and records nothing.
+
+## Intake agent
+
+Code: `apps/api/app/agents/intake_agent.py`. Run by `POST /api/v1/requests/{id}/draft`
+(`project:write`, a `draft` request only), from the **Draft with the agent** button on a request.
+
+**What it reads.** One draft request's text (title, what was asked for, the problem, the outcome
+and known risks), its client's name and whether it uses AI. It never sees people's names or email
+addresses. All of it goes to the model inside one `<request>` data block that the prompt marks as
+data, not instructions; it is JSON-encoded and `<`, `>` and `&` in it are escaped so it can't
+close the block.
+
+**What it may write.** Only in `AGENT_MODE=enforce`: the request's value case (benefits with
+measures and targets, a cost range and how it was estimated, strategic fit) and, for a request
+that uses AI, its readiness check (a rating and note for problem, approach and data, and actions
+with no owner or date). Each is saved with `source = agent` and no confirmation, and replaces only
+a section the request doesn't have yet or one no person has confirmed; a confirmed section is
+left alone and named as skipped. In `shadow` it saves nothing.
+
+**What it never does.** Confirm a section; rate an area green; give an action an owner or a date;
+submit, withdraw or decide on a request; send anything outside the system; or run on a schedule.
+An agent's draft counts only once a person saves it, which confirms it; a person's save needs an
+owner and a due date on every action, and a request can't be submitted until then.
+
+**When it stops and asks.** A green rating is saved as yellow with a note that a person must rate
+it. An ethical, legal or reputational concern is named in that area's note (or the value case's
+strategic fit) with a note that a person must judge it; the agent is told never to turn one into
+a number or a cost.
+
+**Modes.** `off` refuses (409) and calls nothing. `shadow` calls Claude and returns the proposal
+without saving it. `enforce` saves it as above. `?dry_run=true` returns the exact request and a
+cost ceiling and calls nothing, in `shadow` or `enforce`.
+
+**Model.** `INTAKE_AGENT_MODEL`, default `claude-sonnet-5-5`. One call per run, with the JSON
+returned through structured outputs (a strict JSON schema); no sampling parameters are sent. The
+key comes only from `ANTHROPIC_API_KEY`.
+
+**Caps, enforced in code.**
+
+- At most 10 benefits and 10 actions per area; the rest are dropped.
+- `INTAKE_AGENT_MAX_TOKENS` output tokens (default 4096).
+- Money: a decimal string of at least 0 with at most 2 places that fits the column, saved with 2
+  places; the low end not above the high end, and both or neither. Otherwise the cost range is
+  dropped and a person fills it in.
+- Dropped: anything outside the schema (an unknown key, a benefit without a description, an area
+  with a rating, note or concern outside the vocabulary, text over its length limit), and a
+  readiness check for a request that doesn't use AI.
+- Cost ceiling for a dry run: one input token per byte of the serialized request, plus
+  `max_tokens` of output, at `INTAKE_AGENT_INPUT_USD_PER_MTOK` and
+  `INTAKE_AGENT_OUTPUT_USD_PER_MTOK` (defaults $2 and $10 per million tokens), rounded up to the
+  cent.
+
+**Record.** Every run that calls Claude writes one `pmo_audit` row, agent `intake_agent`, subject
+the request, success or failure: the data it read, model, prompt version, tokens, cost, the
+proposal, what code dropped and why, what it changed (green saved as yellow, concerns left to a
+person) and which sections it saved or skipped. The row shows in the request's history. A failed
+run (an API error, output that isn't valid JSON or stopped early) is a 502, saves nothing and
+records the error. A dry run or a refused run calls nothing and records nothing.

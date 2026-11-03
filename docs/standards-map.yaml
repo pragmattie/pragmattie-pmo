@@ -106,6 +106,10 @@ features:
     title: Gates and the approval gate
     rules: [R1, R3, R5, R11, R12]
     notes: Criteria and deciders come from policy; only a listed person, never the requester, decides; red readiness blocks a pass; each decision and refusal audited.
+  - id: P4-intake-agent
+    title: Intake agent
+    rules: [R1, R2, R4, R5, R9, R11]
+    notes: Drafts an unconfirmed value case and readiness check; never rates green; concerns left to a person; AGENT_MODE can stop it; each run audited.
   # --- P5 Planning, proposals and the go-ahead gate
   - id: P5-client-proposals
     title: Client proposal workflow
