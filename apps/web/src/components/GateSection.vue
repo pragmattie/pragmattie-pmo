@@ -15,7 +15,7 @@ import {
   readyToPass,
 } from '../lib/gates'
 import type { ProjectRequest } from '../lib/intake'
-import { ApiError } from '../lib/risks'
+import { ApiError, type Person } from '../lib/risks'
 import { useAuthStore } from '../stores/auth'
 
 // The approval gate: each criterion with a tick or a cross, the person criteria as tick boxes
@@ -36,12 +36,18 @@ const outcome = ref<GateOutcome | null>(null)
 const reason = ref('')
 const busy = ref(false)
 const formError = ref('')
+// Passing creates the project, so the sponsor names its project manager.
+const projectManagers = ref<Person[]>([])
+const projectManagerId = ref<number | null>(null)
 
 const mayDecide = computed(
   () => !!gate.value && canDecideGate(gate.value, auth.user, auth.can('gate:decide')),
 )
 const passReady = computed(() => !!gate.value && readyToPass(gate.value, ticks.value))
 const reasonValid = computed(() => reason.value.trim().length >= MIN_GATE_REASON)
+const sendReady = computed(
+  () => reasonValid.value && (outcome.value !== 'pass' || projectManagerId.value !== null),
+)
 const decision = computed(() => gate.value?.latest_decision ?? null)
 const chosen = computed(() => OUTCOMES.find((o) => o.value === outcome.value) ?? null)
 
@@ -75,16 +81,23 @@ function tick(id: string): PersonTick {
   return ticks.value.find((t) => t.id === id) ?? { id, met: false, note: '' }
 }
 
-function ask(value: GateOutcome) {
+async function ask(value: GateOutcome) {
   outcome.value = value
   reason.value = ''
   formError.value = ''
+  projectManagerId.value = null
+  if (value !== 'pass') return
+  try {
+    projectManagers.value = (await gateApi.projectManagers()).items
+  } catch (error) {
+    formError.value = (error as Error).message
+  }
 }
 
 async function send() {
   const current = gate.value
   const choice = chosen.value
-  if (!current || !choice || !reasonValid.value) return
+  if (!current || !choice || !sendReady.value) return
   busy.value = true
   formError.value = ''
   try {
@@ -98,6 +111,9 @@ async function send() {
       outcome: choice.value,
       reason: reason.value.trim(),
       criteria,
+      ...(choice.value === 'pass' && projectManagerId.value !== null
+        ? { project_manager_id: projectManagerId.value }
+        : {}),
     })
     outcome.value = null
     ticks.value = []
@@ -214,6 +230,21 @@ async function send() {
           <p v-if="outcome === 'return'" class="text-body-2 mb-2">
             The request goes back to draft so its project manager can work on it.
           </p>
+          <template v-if="outcome === 'pass'">
+            <p class="text-body-2 mb-2">
+              Passing creates the project, its brief, stakeholders and first risks. Name its
+              project manager.
+            </p>
+            <v-select
+              v-model="projectManagerId"
+              :items="projectManagers"
+              item-title="display_name"
+              item-value="id"
+              label="Project manager"
+              class="mb-2"
+              data-test="gate-project-manager"
+            />
+          </template>
           <v-textarea
             v-model="reason"
             label="Reason"
@@ -232,7 +263,7 @@ async function send() {
           <v-btn
             :color="chosen.color"
             variant="flat"
-            :disabled="!reasonValid"
+            :disabled="!sendReady"
             :loading="busy"
             data-test="gate-confirm"
             @click="send"

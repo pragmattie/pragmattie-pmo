@@ -9,11 +9,16 @@ import HomeView from '../views/HomeView.vue'
 import IntakeView from '../views/IntakeView.vue'
 import LoginView from '../views/LoginView.vue'
 import PlaceholderView from '../views/PlaceholderView.vue'
+import ProjectView from '../views/ProjectView.vue'
 import RequestView from '../views/RequestView.vue'
 import RisksView from '../views/RisksView.vue'
 
 // Menu pages that have a real view; the rest show a placeholder.
-const VIEWS: Record<string, Component> = { intake: IntakeView, risks: RisksView }
+const VIEWS: Record<string, Component> = {
+  projects: ProjectView,
+  intake: IntakeView,
+  risks: RisksView,
+}
 
 export function makeRouter(memory = false) {
   const router = createRouter({
@@ -33,6 +38,13 @@ export function makeRouter(memory = false) {
         path: '/intake/:id(\\d+)',
         name: 'request',
         component: RequestView,
+        meta: { action: 'project:read' },
+      },
+      // One project: its brief, stakeholders, assumptions and a link to its risks.
+      {
+        path: '/projects/:id(\\d+)',
+        name: 'project',
+        component: ProjectView,
         meta: { action: 'project:read' },
       },
     ],

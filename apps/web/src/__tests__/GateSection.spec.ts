@@ -114,6 +114,9 @@ function fakeApi(role: string, options: FakeOptions = {}) {
     const method = init.method ?? 'GET'
     if (path === '/api/v1/auth/me') return json({ ...user, actions: ACTIONS[role] })
     if (path === '/api/v1/clients') return json({ items: [], total: 0, limit: 100, offset: 0 })
+    if (path === '/api/v1/users') {
+      return json({ items: [{ id: 21, display_name: 'Jo Manager' }], total: 1, limit: 100, offset: 0 })
+    }
     if (path === '/api/v1/requests/1/history') {
       return json({ items: [], total: 0, limit: 50, offset: 0 })
     }
@@ -203,6 +206,19 @@ async function type(element: Element | null, value: string) {
   const input = element?.querySelector('input, textarea') as HTMLInputElement
   input.value = value
   input.dispatchEvent(new Event('input'))
+  await flushPromises()
+}
+
+// Name the new project's project manager in the Pass dialog.
+async function choosePm() {
+  const field = find('gate-project-manager')?.querySelector('.v-field') as HTMLElement
+  field.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+  field.click()
+  await flushPromises()
+  const option = Array.from(document.body.querySelectorAll('.v-list-item')).find((item) =>
+    item.textContent?.includes('Jo Manager'),
+  ) as HTMLElement
+  option.click()
   await flushPromises()
 }
 
@@ -310,6 +326,10 @@ describe('the Gate section', () => {
     await type(find('gate-reason'), 'Too short')
     expect((find('gate-confirm') as HTMLButtonElement).disabled).toBe(true)
     await type(find('gate-reason'), REASON)
+    // Pass also needs the project manager of the project it creates.
+    expect((find('gate-confirm') as HTMLButtonElement).disabled).toBe(true)
+    await choosePm()
+    expect((find('gate-confirm') as HTMLButtonElement).disabled).toBe(false)
     await click('gate-confirm')
     expect(decisions(fetchMock)).toEqual([
       {
@@ -320,9 +340,10 @@ describe('the Gate section', () => {
           { id: 'value_justifies_cost', met: true, note: 'Checked with the team' },
           { id: 'people_available', met: true, note: 'Checked with the team' },
         ],
+        project_manager_id: 21,
       },
     ])
-    expect(find('message')?.textContent).toContain('Request approved at the gate.')
+    expect(find('message')?.textContent).toContain('Request approved at the gate')
     expect(find('gate-decision')?.textContent).toContain('Passed by Test User')
     expect(find('gate-actions')).toBeNull()
   })
@@ -330,10 +351,14 @@ describe('the Gate section', () => {
   it('returns a request without the ticks', async () => {
     const { fetchMock } = await mountAt('sponsor')
     await click('gate-return')
+    // Only a pass creates a project, so only a pass names its project manager.
+    expect(find('gate-dialog')).not.toBeNull()
+    expect(find('gate-project-manager')).toBeNull()
     await type(find('gate-reason'), 'The data question needs an answer first')
     await click('gate-confirm')
     const [sent] = decisions(fetchMock)
     expect(sent.outcome).toBe('return')
+    expect(sent).not.toHaveProperty('project_manager_id')
     expect(sent.criteria.every((c: { met: boolean }) => !c.met)).toBe(true)
     expect(find('message')?.textContent).toContain('Request returned to draft.')
   })
@@ -353,6 +378,7 @@ describe('the Gate section', () => {
     await tickAll()
     await click('gate-pass')
     await type(find('gate-reason'), REASON)
+    await choosePm()
     await click('gate-confirm')
     expect(find('message')?.textContent).toContain('until every criterion is met')
     expect(find('missing')?.textContent).toContain('No area is rated red: rated red: data')

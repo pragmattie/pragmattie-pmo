@@ -2,7 +2,7 @@
 // criteria and who decides it come from the API (the gates policy); the web only shows them and
 // hides the decision buttons from roles that can't use them. The API checks everything again.
 
-import { call } from './risks'
+import { call, type Page, type Person } from './risks'
 
 export type GateOutcome = 'pass' | 'return' | 'decline'
 
@@ -44,6 +44,8 @@ export interface Gate {
   request_version: number
   request_status: string
   requested_by: number
+  // The project a pass made.
+  project_id?: number | null
   criteria: GateCriterion[]
   checks_met: boolean
   policy_version: string
@@ -61,6 +63,8 @@ export interface GateDecisionInput {
   outcome: GateOutcome
   reason: string
   criteria: PersonTick[]
+  // Only a pass names the new project's project manager; the API refuses one on the others.
+  project_manager_id?: number
 }
 
 // The API's limits (app/models/gate.py).
@@ -69,7 +73,12 @@ export const MAX_GATE_REASON = 2000
 export const MAX_GATE_NOTE = 500
 
 export const OUTCOMES: { value: GateOutcome; title: string; color: string; done: string }[] = [
-  { value: 'pass', title: 'Pass', color: 'primary', done: 'Request approved at the gate.' },
+  {
+    value: 'pass',
+    title: 'Pass',
+    color: 'primary',
+    done: 'Request approved at the gate, and its project created.',
+  },
   { value: 'return', title: 'Return', color: 'secondary', done: 'Request returned to draft.' },
   { value: 'decline', title: 'Decline', color: 'error', done: 'Request declined.' },
 ]
@@ -111,6 +120,8 @@ export function readyToPass(gate: Pick<Gate, 'criteria'>, ticks: PersonTick[]): 
 const base = '/api/v1/requests'
 
 export const gateApi = {
+  // The people a sponsor may name as the new project's project manager.
+  projectManagers: () => call<Page<Person>>('/api/v1/users?role=project_manager&limit=100'),
   get: (id: number) => call<Gate>(`${base}/${id}/gate`),
   decide: (id: number, body: GateDecisionInput) =>
     call<Gate>(`${base}/${id}/gate`, { method: 'POST', body: JSON.stringify(body) }),

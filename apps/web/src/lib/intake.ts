@@ -24,6 +24,8 @@ export interface ProjectRequest {
   requested_by_name: string | null
   status: RequestStatus
   submitted_at: string | null
+  // The project it became when it passed the approval gate.
+  project_id?: number | null
   version: number
   created_at: string
   updated_at: string
