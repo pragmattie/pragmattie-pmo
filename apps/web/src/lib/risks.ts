@@ -339,7 +339,7 @@ async function errorMessage(response: Response): Promise<string> {
   return `The request failed (${response.status}).`
 }
 
-async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await apiFetch(path, init)
   if (!response.ok) throw new ApiError(response.status, await errorMessage(response))
   return (await response.json()) as T

@@ -6,12 +6,14 @@ import { NAV_ITEMS } from '../lib/nav'
 import { safeRedirect } from '../lib/redirect'
 import { useAuthStore } from '../stores/auth'
 import HomeView from '../views/HomeView.vue'
+import IntakeView from '../views/IntakeView.vue'
 import LoginView from '../views/LoginView.vue'
 import PlaceholderView from '../views/PlaceholderView.vue'
+import RequestView from '../views/RequestView.vue'
 import RisksView from '../views/RisksView.vue'
 
 // Menu pages that have a real view; the rest show a placeholder.
-const VIEWS: Record<string, Component> = { risks: RisksView }
+const VIEWS: Record<string, Component> = { intake: IntakeView, risks: RisksView }
 
 export function makeRouter(memory = false) {
   const router = createRouter({
@@ -26,6 +28,13 @@ export function makeRouter(memory = false) {
         props: VIEWS[item.name] ? {} : { title: item.title },
         meta: { action: item.action },
       })),
+      // One project request: its fields, history and the buttons its status allows.
+      {
+        path: '/intake/:id(\\d+)',
+        name: 'request',
+        component: RequestView,
+        meta: { action: 'project:read' },
+      },
     ],
   })
 

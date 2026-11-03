@@ -12,6 +12,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { name: 'projects', path: '/projects', title: 'Projects', action: 'project:read' },
+  { name: 'intake', path: '/intake', title: 'Intake', action: 'project:read' },
   { name: 'risks', path: '/risks', title: 'Risks', action: 'project:read' },
   { name: 'audit', path: '/audit', title: 'Audit', action: 'audit:read' },
   { name: 'standards', path: '/standards', title: 'Standards', action: 'standards:read' },
