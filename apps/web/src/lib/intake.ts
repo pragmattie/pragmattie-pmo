@@ -113,7 +113,7 @@ export const MAX_TITLE = 200
 export const MAX_TEXT = 2000
 export const MAX_MEASURE = 500
 export const MAX_TARGET = 200
-export const MAX_BENEFITS = 20
+export const MAX_BENEFITS = 10
 
 export const REQUEST_CONFLICT =
   'Someone changed this request after you opened it. The latest version is shown below; ' +

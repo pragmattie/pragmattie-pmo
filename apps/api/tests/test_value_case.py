@@ -18,7 +18,7 @@ from app.api.intake import (
 from app.db import engine
 from app.main import app
 from app.models import Base, User, ValueCase
-from app.models.intake import BENEFITS_MAX, LONG_TEXT_MAX
+from app.models.intake import BENEFITS_MAX, LONG_TEXT_MAX, MEASURE_MAX, TARGET_MAX
 
 BENEFIT = {
     "description": "Fewer stock-outs",
@@ -124,8 +124,19 @@ def test_a_put_replaces_the_benefits_and_clears_optional_fields(web, db, pm, rid
 
 
 def test_text_and_benefit_count_at_the_limits_are_accepted(web, rid):
-    benefits = [{**BENEFIT, "description": "d" * LONG_TEXT_MAX}] * BENEFITS_MAX
-    response = _put(web, rid, 1, benefits=benefits, strategic_fit="s" * LONG_TEXT_MAX)
+    # Every field at its longest still fits in the API's body limit.
+    longest = {
+        **BENEFIT,
+        "description": "d" * LONG_TEXT_MAX,
+        "measure": "m" * MEASURE_MAX,
+        "current_value": "c" * TARGET_MAX,
+        "target": "t" * TARGET_MAX,
+    }
+    text = {
+        name: name[0] * LONG_TEXT_MAX
+        for name in ("cost_method", "strategic_fit", "cost_of_not_doing")
+    }
+    response = _put(web, rid, 1, benefits=[longest] * BENEFITS_MAX, **text)
     assert response.status_code == 200, response.text
     assert len(response.json()["benefits"]) == BENEFITS_MAX
 

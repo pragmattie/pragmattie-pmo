@@ -110,6 +110,31 @@ and on a request's page, Edit and Submit (while it is a draft) and Withdraw (dra
 - The title is at most 200 characters; what is asked for, the problem, the outcome and known risks
   at most 2,000 each. Budgets are 2-decimal strings, and the low end can't be above the high end.
 
+### The value case
+
+Each request has one value case: why it is worth doing, how we will know, and what it will cost.
+It shows on the request's page; a role with `project:write` can add or edit it while the request
+is a draft.
+
+- **Benefits** (1 to 10): a description, how it is measured, the current value, the target and the
+  date the target should be met by. Only the description is needed to save one.
+- **Estimated cost**: low and high (2-decimal strings, low no more than high) and how it was
+  estimated. This is our estimate; the request's **Budget available** is what the client has in
+  mind. The two are not linked or checked against each other.
+- **Strategic fit** (the client or practice goal it serves) and the **cost of not doing it**
+  (optional).
+- `GET /api/v1/requests/{id}/value-case` needs `project:read` (404 until there is one);
+  `PUT .../{id}/value-case` needs `project:write` and replaces the whole value case. It carries the
+  request's `version`, bumps it, and is a 409 if the version is stale or the request isn't a draft.
+- Saving a value case as a person confirms it (`confirmed_by`, `confirmed_at`). One an agent
+  drafted keeps `source` "agent" and must be saved by a person, changed or not, before the request
+  can be submitted. Each change is one audit row (action `value_case`) in the request's history,
+  with the values before and after; a save that changes nothing on a value case a person has
+  already confirmed writes nothing.
+- A request can be submitted only when its value case has at least one benefit with a measure and
+  a target, a full cost estimate, and a person's confirmation. Otherwise submitting is a 409 whose
+  `detail` is `{message, missing: [...]}`, and the page lists what is missing.
+
 ## Demo users for a rehearsal
 
 `python -m app.seed users` creates one demo user per role, each on a `.example` address, with a

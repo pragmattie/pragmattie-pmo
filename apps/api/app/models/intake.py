@@ -93,8 +93,9 @@ BENEFITS_TABLE = table_name("value_case_benefits")
 VALUE_CASE_SOURCES = ("person", "agent")
 MEASURE_MAX = 500
 TARGET_MAX = 200
-# A value case lists a handful of benefits; this keeps one request's rows bounded.
-BENEFITS_MAX = 20
+# A value case lists a handful of benefits. At 10, a value case with every field at its longest
+# still fits in the API's 64 KiB body limit.
+BENEFITS_MAX = 10
 
 
 class ValueCase(Base):
