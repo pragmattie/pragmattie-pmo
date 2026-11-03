@@ -16,6 +16,8 @@ from app.models import (
     Base,
     Client,
     ProjectRequest,
+    ReadinessAction,
+    ReadinessCheck,
     User,
     ValueCase,
     ValueCaseBenefit,
@@ -102,6 +104,32 @@ def add_value_case(request_id: int, confirmed_by: int | None, **changes) -> None
         value_case = ValueCase(request_id=request_id, **fields)
         value_case.benefits.append(ValueCaseBenefit(position=0, **benefit))
         session.add(value_case)
+        session.commit()
+
+
+def add_readiness(request_id: int, confirmed_by: int | None, owner_id: int, **changes) -> None:
+    """A complete readiness check (problem green, approach yellow with an action, data green),
+    straight into the database so the request's version is unchanged. `confirmed_by=None` leaves
+    it as an unconfirmed agent draft."""
+    fields = {
+        "problem_rating": "green",
+        "problem_note": "Stock-outs cost sales every quarter",
+        "approach_rating": "yellow",
+        "approach_note": "A simple reorder rule may do as well",
+        "data_rating": "green",
+        "data_note": "Three years of sales history",
+        "source": "person" if confirmed_by else "agent",
+        "confirmed_by": confirmed_by,
+        "confirmed_at": datetime(2026, 11, 1) if confirmed_by else None,
+        **changes,
+    }
+    action = {"description": "Compare with a reorder rule", "due_date": date(2026, 12, 1)}
+    with Session(engine) as session:
+        check = ReadinessCheck(request_id=request_id, **fields)
+        check.actions.append(
+            ReadinessAction(area="approach", position=0, owner_id=owner_id, **action)
+        )
+        session.add(check)
         session.commit()
 
 
@@ -368,6 +396,8 @@ def test_no_route_can_approve_decline_or_return_to_draft(web, db, pm):
         ("POST", "/api/v1/requests/{request_id}/withdraw"),
         ("GET", "/api/v1/requests/{request_id}/value-case"),
         ("PUT", "/api/v1/requests/{request_id}/value-case"),
+        ("GET", "/api/v1/requests/{request_id}/readiness"),
+        ("PUT", "/api/v1/requests/{request_id}/readiness"),
     }
     rid = _ready(web, pm)
     _move(web, rid, "submit", 1)

@@ -11,7 +11,15 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from app.models.intake import BENEFITS_MAX, LONG_TEXT_MAX, MEASURE_MAX, TARGET_MAX, TITLE_MAX
+from app.models.intake import (
+    ACTION_MAX,
+    ACTIONS_MAX,
+    BENEFITS_MAX,
+    LONG_TEXT_MAX,
+    MEASURE_MAX,
+    TARGET_MAX,
+    TITLE_MAX,
+)
 from app.schemas.common import MoneyStr
 
 RequestStatus = Literal["draft", "submitted", "approved", "declined", "withdrawn"]
@@ -26,6 +34,10 @@ Measure = Annotated[
 ShortText = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=TARGET_MAX)
 ]
+ActionText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=ACTION_MAX)
+]
+Rating = Literal["green", "yellow", "red"]
 
 
 class RequestFields(BaseModel):
@@ -177,6 +189,77 @@ class ValueCaseOut(BaseModel):
     cost_method: str | None
     strategic_fit: str
     cost_of_not_doing: str | None
+    source: Literal["person", "agent"]
+    confirmed_by: int | None
+    confirmed_by_name: str | None = None
+    confirmed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReadinessActionIn(BaseModel):
+    """One thing to do before an area is ready. The owner must be an active user (else 422); a
+    due date in the past is allowed, so an older action never blocks a later save."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: ActionText
+    owner_id: int
+    due_date: date
+
+
+class ReadinessAreaIn(BaseModel):
+    """One area's rating and note. Any area may have actions; a yellow one needs at least one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rating: Rating
+    note: LongText
+    actions: list[ReadinessActionIn] = Field(max_length=ACTIONS_MAX)
+
+    @model_validator(mode="after")
+    def _yellow_has_an_action(self) -> Self:
+        if self.rating == "yellow" and not self.actions:
+            raise ValueError("a yellow area needs at least one action with an owner and a date")
+        return self
+
+
+class ReadinessIn(BaseModel):
+    """The whole readiness check, replacing what is stored. Every area and field is required.
+    `version` is the request's version the client read; a stale one is a 409. `source` and
+    confirmation are the server's to set."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(ge=1)
+    problem: ReadinessAreaIn
+    approach: ReadinessAreaIn
+    data: ReadinessAreaIn
+
+
+class ReadinessActionOut(BaseModel):
+    description: str
+    owner_id: int
+    owner_name: str | None
+    due_date: date
+
+
+class ReadinessAreaOut(BaseModel):
+    # Empty only on an agent's draft that left the area unrated.
+    rating: Rating | None
+    note: str | None
+    actions: list[ReadinessActionOut]
+
+
+class ReadinessOut(BaseModel):
+    request_id: int
+    # The request's version after this check was last saved; send it with the next change.
+    request_version: int
+    problem: ReadinessAreaOut
+    approach: ReadinessAreaOut
+    data: ReadinessAreaOut
+    # The worst area; `unrated` until a person has confirmed it and every area is rated.
+    overall: Literal["green", "yellow", "red", "unrated"]
     source: Literal["person", "agent"]
     confirmed_by: int | None
     confirmed_by_name: str | None = None

@@ -17,6 +17,12 @@ edit, submit or withdraw any request (work gets handed over); the audit row reco
   the request's history. Saving it as a person confirms it; a PUT that changes nothing on a value
   case a person has already confirmed writes nothing. A draft is submitted only once its value case
   is complete and confirmed; otherwise the 409 lists what is missing.
+- `GET` and `PUT /requests/{id}/readiness` read and replace the readiness check of a request that
+  uses AI (item 4.3, R11); both are a 404 for a request that doesn't. It follows the value case's
+  rules (draft only, the request's `version`, audit action `readiness`, a person's save confirms
+  it). Every yellow area needs an action with an owner (an active user) and a due date. A request
+  that uses AI is submitted only once its check is complete and confirmed; a red result does not
+  stop submission (the approval gate deals with it).
 
 No route here sets `approved`, `declined` or returns a request to `draft`: that is the approval
 gate's job, and a person's decision there. Every change carries the `version` the client read; a
@@ -44,14 +50,18 @@ from app.models import (
     AuditDecision,
     Client,
     ProjectRequest,
+    ReadinessAction,
+    ReadinessCheck,
     User,
     ValueCase,
     ValueCaseBenefit,
     utcnow,
 )
-from app.models.intake import FINAL_STATUSES
+from app.models.intake import FINAL_STATUSES, READINESS_AREAS
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
 from app.schemas.intake import (
+    ReadinessIn,
+    ReadinessOut,
     RequestCreate,
     RequestFields,
     RequestHistoryEntry,
@@ -77,16 +87,28 @@ NOT_DRAFT_SUBMIT = "only a draft can be submitted"
 NOT_WITHDRAWABLE = "only a draft or submitted request can be withdrawn"
 NO_VALUE_CASE = "this request has no value case yet"
 NOT_DRAFT_VALUE_CASE = "the value case can be changed only while its request is a draft"
-INCOMPLETE = "this request can't be submitted until its value case is complete and confirmed"
+INCOMPLETE = (
+    "this request can't be submitted until its value case, and its readiness check if it uses AI,"
+    " are complete and confirmed"
+)
 MISSING_VALUE_CASE = "a value case"
 MISSING_BENEFIT = "a benefit with a measure and a target"
 MISSING_COST = "a cost estimate: low, high and how it was estimated"
 MISSING_CONFIRMATION = "a person's confirmation of the value case an agent drafted"
+NOT_AI = "this request doesn't use AI, so it has no readiness check"
+NO_READINESS = "this request has no readiness check yet"
+NOT_DRAFT_READINESS = "the readiness check can be changed only while its request is a draft"
+BAD_OWNER = "every action's owner must be an active user"
+MISSING_READINESS = "a readiness check"
+MISSING_RATING = "a rating and a note for each readiness area: problem, approach and data"
+MISSING_ACTION = "an action with an owner and a due date for each yellow readiness area"
+MISSING_READINESS_CONFIRMATION = "a person's confirmation of the readiness check an agent drafted"
 
 SNAPSHOT_FIELDS = (*RequestFields.model_fields, "requested_by", "status", "submitted_at", "version")
 VALUE_CASE_FIELDS = ("cost_low", "cost_high", "cost_method", "strategic_fit", "cost_of_not_doing")
 BENEFIT_FIELDS = ("description", "measure", "current_value", "target", "target_date")
 CONFIRMATION_FIELDS = ("source", "confirmed_by", "confirmed_at")
+ACTION_FIELDS = ("description", "owner_id", "due_date")
 
 Sort = Literal["submitted_at", "-submitted_at", "wanted_by", "-wanted_by"]
 
@@ -158,7 +180,10 @@ def _request(db: Session, request_id: int, *, for_update: bool = False) -> Proje
 def _locked(db: Session, request_id: int, version: int) -> ProjectRequest:
     """The request, locked until commit on MySQL so a parallel change waits and then sees the
     new version; a stale version or a final status is a 409."""
-    request = _request(db, request_id, for_update=True)
+    return _check_version(_request(db, request_id, for_update=True), version)
+
+
+def _check_version(request: ProjectRequest, version: int) -> ProjectRequest:
     if version != request.version:
         raise HTTPException(status.HTTP_409_CONFLICT, STALE)
     if request.status in FINAL_STATUSES:
@@ -348,6 +373,9 @@ def submit_request(
     if request.status != "draft":
         raise HTTPException(status.HTTP_409_CONFLICT, NOT_DRAFT_SUBMIT)
     missing = _value_case_gaps(_value_case(db, request.id))
+    if request.uses_ai:
+        # Without `uses_ai` no check is needed, whatever rows a past setting left behind.
+        missing += _readiness_gaps(_readiness(db, request.id))
     if missing:
         raise HTTPException(status.HTTP_409_CONFLICT, {"message": INCOMPLETE, "missing": missing})
     return _move(db, request, to="submitted", action="submit", user=user)
@@ -463,3 +491,182 @@ def put_value_case(
     )
     _commit(db)
     return _value_case_out(db, request, value_case)
+
+
+# --- The readiness check (item 4.3)
+
+
+def _readiness(db: Session, request_id: int) -> ReadinessCheck | None:
+    return db.scalar(select(ReadinessCheck).where(ReadinessCheck.request_id == request_id))
+
+
+def _needs_ai(request: ProjectRequest) -> ProjectRequest:
+    """A request without `uses_ai` has no readiness check. A row left from when it did is kept,
+    hidden, and shows again if `uses_ai` is turned back on."""
+    if not request.uses_ai:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_AI)
+    return request
+
+
+def _readiness_gaps(check: ReadinessCheck | None) -> list[str]:
+    """What a request that uses AI still needs from its check; empty when nothing is missing.
+    A red result is not a gap: the approval gate deals with it."""
+    if check is None:
+        return [MISSING_READINESS]
+    missing = []
+    if any(
+        getattr(check, f"{area}_rating") is None or not getattr(check, f"{area}_note")
+        for area in READINESS_AREAS
+    ):
+        missing.append(MISSING_RATING)
+    if any(
+        rating == "yellow" and not check.area_actions(area)
+        for area, rating in check.ratings().items()
+    ):
+        missing.append(MISSING_ACTION)
+    if check.confirmed_by is None:
+        missing.append(MISSING_READINESS_CONFIRMATION)
+    return missing
+
+
+def _readiness_content(areas: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """What a person writes in a readiness check, as an audit row records it."""
+    return {
+        area: {
+            "rating": areas[area]["rating"],
+            "note": areas[area]["note"],
+            "actions": [
+                {name: _json_value(a[name]) for name in ACTION_FIELDS}
+                for a in areas[area]["actions"]
+            ],
+        }
+        for area in READINESS_AREAS
+    }
+
+
+def readiness_snapshot(check: ReadinessCheck) -> dict[str, Any]:
+    """The check's content, its overall result and who confirmed it, as an audit row records it."""
+    areas = {
+        area: {
+            "rating": getattr(check, f"{area}_rating"),
+            "note": getattr(check, f"{area}_note"),
+            "actions": [
+                {name: getattr(a, name) for name in ACTION_FIELDS} for a in check.area_actions(area)
+            ],
+        }
+        for area in READINESS_AREAS
+    }
+    confirmation = {name: _json_value(getattr(check, name)) for name in CONFIRMATION_FIELDS}
+    return {**_readiness_content(areas), "overall": check.overall, **confirmation}
+
+
+def _readiness_out(db: Session, request: ProjectRequest, check: ReadinessCheck) -> ReadinessOut:
+    ids = {a.owner_id for a in check.actions} | ({check.confirmed_by} - {None})
+    names = _names(db, User, ids, User.display_name)
+    areas = {
+        area: {
+            "rating": getattr(check, f"{area}_rating"),
+            "note": getattr(check, f"{area}_note"),
+            "actions": [
+                {
+                    "description": a.description,
+                    "owner_id": a.owner_id,
+                    "owner_name": names.get(a.owner_id),
+                    "due_date": a.due_date,
+                }
+                for a in check.area_actions(area)
+            ],
+        }
+        for area in READINESS_AREAS
+    }
+    return ReadinessOut(
+        request_id=request.id,
+        request_version=request.version,
+        **areas,
+        overall=check.overall,
+        source=check.source,
+        confirmed_by=check.confirmed_by,
+        confirmed_by_name=names.get(check.confirmed_by) if check.confirmed_by else None,
+        confirmed_at=check.confirmed_at,
+        created_at=check.created_at,
+        updated_at=check.updated_at,
+    )
+
+
+def _check_owners(db: Session, areas: dict[str, dict[str, Any]]) -> None:
+    owners = {a["owner_id"] for area in areas.values() for a in area["actions"]}
+    if not owners:
+        return
+    stmt = select(User.id).where(User.id.in_(owners), User.is_active.is_(True))
+    if set(db.scalars(stmt).all()) != owners:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, BAD_OWNER)
+
+
+@router.get("/{request_id}/readiness", response_model=ReadinessOut)
+def get_readiness(
+    request_id: int,
+    _user: Annotated[User, Depends(require(Action.PROJECT_READ))],
+    db: Annotated[Session, Depends(get_db)],
+) -> ReadinessOut:
+    request = _needs_ai(_request(db, request_id))
+    check = _readiness(db, request.id)
+    if check is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NO_READINESS)
+    return _readiness_out(db, request, check)
+
+
+@router.put("/{request_id}/readiness", response_model=ReadinessOut)
+def put_readiness(
+    request_id: int,
+    body: ReadinessIn,
+    user: Annotated[User, Depends(require(Action.PROJECT_WRITE))],
+    db: Annotated[Session, Depends(get_db)],
+) -> ReadinessOut:
+    request = _check_version(_needs_ai(_request(db, request_id, for_update=True)), body.version)
+    if request.status != "draft":
+        raise HTTPException(status.HTTP_409_CONFLICT, NOT_DRAFT_READINESS)
+    areas = body.model_dump(exclude={"version"})
+    _check_owners(db, areas)
+    check = _readiness(db, request.id)
+    before = None if check is None else readiness_snapshot(check)
+    if (
+        check is not None
+        and check.confirmed_by is not None
+        and _readiness_content(areas) == _readiness_content(before)
+    ):
+        # Nothing changes and a person has already confirmed it: no new version, no audit row.
+        return _readiness_out(db, request, check)
+
+    if check is None:
+        check = ReadinessCheck(request_id=request.id, source="person")
+        db.add(check)
+    # Update actions in place by (area, position), so that key never clashes on flush.
+    stored = {(a.area, a.position): a for a in check.actions}
+    for area, fields in areas.items():
+        setattr(check, f"{area}_rating", fields["rating"])
+        setattr(check, f"{area}_note", fields["note"])
+        for position, action in enumerate(fields["actions"]):
+            row = stored.pop((area, position), None)
+            if row is None:
+                check.actions.append(ReadinessAction(area=area, position=position, **action))
+            else:
+                for name, value in action.items():
+                    setattr(row, name, value)
+    for row in stored.values():
+        check.actions.remove(row)
+    # A person saving it confirms it, whoever drafted it (R1, R11).
+    check.confirmed_by = user.id
+    check.confirmed_at = utcnow()
+    # The check is part of the request: touching the request bumps its version.
+    request.updated_at = utcnow()
+    _save(db)
+    _record_change(
+        db,
+        request,
+        action="readiness",
+        before=before,
+        after=readiness_snapshot(check),
+        user=user,
+    )
+    _commit(db)
+    return _readiness_out(db, request, check)
