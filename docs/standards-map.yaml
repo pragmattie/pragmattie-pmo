@@ -77,8 +77,8 @@ features:
     title: Escalation and acceptance
     rules: [R1, R3, R7, R9]
     notes: >-
-      Bands name their owner in policy; only a person at or above it accepts, with a reason and
-      review date; judgement risks need a person's score first; every decision is audited.
+      Bands name their owner in policy; only a person at or above it accepts (reason, review
+      date), closes or lowers an escalated risk; rejected risks are final; all audited.
   - id: P3-risk-agent
     title: Risk agent
     rules: [R1, R2, R4, R5, R9]

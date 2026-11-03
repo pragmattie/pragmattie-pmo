@@ -16,7 +16,8 @@ none), it is escalated to the new owner: `escalated_to` and `escalated_band` are
 audit row (action `escalate`) names the band, the owner role and the risk. The escalation stays
 through edits that keep the owner, and clears when the risk leaves `open` (accepted, rejected or
 closed) or loses its score. Re-scoring an accepted risk into a higher band reopens it, which
-escalates it again.
+escalates it again. Who may close an escalated risk or lower its band is the PATCH route's
+escalation hold (`app.api.risks`).
 
 An audit row is unique per risk version and `attempt`, so the rows for one version count up: the
 change is attempt 1, and an escalation or a refused acceptance at the same version takes the next
