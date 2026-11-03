@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import RequestForm from '../components/RequestForm.vue'
+import ValueCaseSection from '../components/ValueCaseSection.vue'
 import {
   budgetText,
   canEditRequest,
@@ -28,6 +29,8 @@ const historyTotal = ref(0)
 const clients = ref<Client[]>([])
 const message = ref('')
 const messageType = ref<'error' | 'warning' | 'success'>('success')
+// What a request still needs before it can be submitted, when the API lists it.
+const missing = ref<string[]>([])
 const busy = ref(false)
 
 const formOpen = ref(false)
@@ -54,7 +57,7 @@ const fields = computed<[string, string][]>(() => {
     ['What is asked for', r.asked_for],
     ['The problem it solves', r.problem],
     ['The outcome wanted', r.outcome],
-    ['Budget', budgetText(r)],
+    ['Budget available', budgetText(r)],
     ['Wanted by', r.wanted_by ?? 'Not given'],
     ['Uses AI', r.uses_ai ? 'Yes' : 'No'],
     ['Risks already seen', r.known_risks ?? 'None given'],
@@ -63,9 +66,10 @@ const fields = computed<[string, string][]>(() => {
   ]
 })
 
-function show(text: string, type: 'error' | 'warning' | 'success') {
+function show(text: string, type: 'error' | 'warning' | 'success', items: string[] = []) {
   message.value = text
   messageType.value = type
+  missing.value = items
 }
 
 async function loadHistory(offset = 0) {
@@ -106,11 +110,14 @@ async function act(work: () => Promise<ProjectRequest>, done: string) {
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) {
       await load()
-      show(error.message.includes('changed') ? REQUEST_CONFLICT : error.message, 'warning')
+      show(
+        error.message.includes('changed') ? REQUEST_CONFLICT : error.message,
+        'warning',
+        error.missing,
+      )
     } else {
       show((error as Error).message, 'error')
     }
-
   } finally {
     busy.value = false
   }
@@ -151,6 +158,17 @@ async function withdraw() {
   if (current) await act(() => intakeApi.withdraw(current.id, current.version), 'Request withdrawn.')
 }
 
+// The value case was saved: the request has a new version, so reload it and its history.
+async function valueCaseSaved() {
+  await load()
+  show('Value case saved.', 'success')
+}
+
+async function valueCaseConflict(text: string) {
+  await load()
+  show(text.includes('changed') ? REQUEST_CONFLICT : text, 'warning')
+}
+
 function describe(entry: HistoryEntry): string {
   const changed = changedFields(entry)
   return changed.length ? `Changed: ${changed.map(label).join(', ')}` : ''
@@ -172,6 +190,9 @@ function describe(entry: HistoryEntry): string {
       @click:close="message = ''"
     >
       {{ message }}
+      <ul v-if="missing.length" class="mt-2 pl-4" data-test="missing">
+        <li v-for="item in missing" :key="item">{{ item }}</li>
+      </ul>
     </v-alert>
 
     <template v-if="request">
@@ -202,6 +223,13 @@ function describe(entry: HistoryEntry): string {
           <dd class="text-body-2 mb-2" :data-test="`field-${name}`">{{ value }}</dd>
         </template>
       </dl>
+
+      <ValueCaseSection
+        :request="request"
+        :can-write="canWrite"
+        @saved="valueCaseSaved"
+        @conflict="valueCaseConflict"
+      />
 
       <h2 class="text-subtitle-1 mt-4 mb-2">History</h2>
       <p v-if="!history.length" class="text-body-2">No recorded changes.</p>
