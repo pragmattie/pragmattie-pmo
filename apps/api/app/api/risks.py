@@ -279,7 +279,10 @@ def heatmap(
     return RiskHeatmap(
         kind=kind,
         cells=cells,
-        bands=[BandTotal(band=name, count=count) for name, count in band_counts.items()],
+        bands=[
+            BandTotal(band=b.name, count=band_counts[b.name], owner_role=b.escalation_owner)
+            for b in policy.priority_bands
+        ],
         unscored=counts.get((None, None), 0),
     )
 

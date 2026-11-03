@@ -195,8 +195,11 @@ class HeatCell(BaseModel):
 
 
 class BandTotal(BaseModel):
+    """Open risks in one band, and the role the band escalates to (who may accept it)."""
+
     band: str
     count: int
+    owner_role: str
 
 
 class RiskHeatmap(BaseModel):

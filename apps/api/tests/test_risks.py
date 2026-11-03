@@ -474,9 +474,9 @@ def test_the_heatmap_counts_open_risks_by_cell_and_band(web, db, pm, project):
     assert _cell(heatmap, 5, 4)["count"] == 1
     assert _cell(heatmap, 1, 2)["count"] == 0  # closed
     assert heatmap["bands"] == [
-        {"band": "Low", "count": 0},
-        {"band": "Medium", "count": 3},
-        {"band": "High", "count": 1},
+        {"band": "Low", "count": 0, "owner_role": "project_manager"},
+        {"band": "Medium", "count": 3, "owner_role": "sponsor"},
+        {"band": "High", "count": 1, "owner_role": "sponsor"},
     ]
     assert heatmap["unscored"] == 1
     assert sum(c["count"] for c in heatmap["cells"]) == 4
