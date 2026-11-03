@@ -80,6 +80,54 @@ export interface ValueCaseInput {
   cost_of_not_doing: string | null
 }
 
+export type Rating = 'green' | 'yellow' | 'red'
+export type ReadinessAreaName = 'problem' | 'approach' | 'data'
+
+export interface ReadinessAction {
+  description: string
+  owner_id: number
+  owner_name: string | null
+  due_date: string
+}
+
+export interface ReadinessArea {
+  // Empty only on an agent's draft that left the area unrated.
+  rating: Rating | null
+  note: string | null
+  actions: ReadinessAction[]
+}
+
+// Whether a request that uses AI is ready: three areas rated green, yellow or red. Part of its
+// request like the value case. `overall` is the worst area, or "unrated" until a person confirms.
+export interface Readiness {
+  request_id: number
+  request_version: number
+  problem: ReadinessArea
+  approach: ReadinessArea
+  data: ReadinessArea
+  overall: Rating | 'unrated'
+  source: 'person' | 'agent'
+  confirmed_by: number | null
+  confirmed_by_name: string | null
+  confirmed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ReadinessActionInput {
+  description: string
+  owner_id: number | null
+  due_date: string
+}
+
+export interface ReadinessAreaInput {
+  rating: Rating | null
+  note: string
+  actions: ReadinessActionInput[]
+}
+
+export type ReadinessInput = Record<ReadinessAreaName, ReadinessAreaInput>
+
 export interface Client {
   id: number
   name: string
@@ -114,6 +162,25 @@ export const MAX_TEXT = 2000
 export const MAX_MEASURE = 500
 export const MAX_TARGET = 200
 export const MAX_BENEFITS = 10
+export const MAX_ACTION = 500
+// Actions per readiness area.
+export const MAX_ACTIONS = 10
+
+export const READINESS_AREAS: { key: ReadinessAreaName; title: string; question: string }[] = [
+  { key: 'problem', title: 'Problem', question: 'The problem is real and worth solving.' },
+  {
+    key: 'approach',
+    title: 'Approach',
+    question: 'AI is the right tool, rather than simpler rules or software.',
+  },
+  {
+    key: 'data',
+    title: 'Data',
+    question: 'The data the work needs exists, can be used, and is good enough.',
+  },
+]
+
+export const RATINGS: Rating[] = ['green', 'yellow', 'red']
 
 export const REQUEST_CONFLICT =
   'Someone changed this request after you opened it. The latest version is shown below; ' +
@@ -155,6 +222,35 @@ export function confirmationText(
   const when = valueCase.confirmed_at ? ` on ${new Date(valueCase.confirmed_at).toLocaleString()}` : ''
   const drafted = valueCase.source === 'agent' ? ' (drafted by an agent)' : ''
   return `Confirmed by ${who}${when}${drafted}`
+}
+
+// The readiness check changes with its request: only while the request is a draft.
+export function canEditReadiness(request: Pick<ProjectRequest, 'status'>, canWrite: boolean) {
+  return canWrite && request.status === 'draft'
+}
+
+// The Vuetify colour of a rating chip.
+export function ratingColor(rating: Rating | 'unrated' | null): string {
+  if (rating === 'green') return 'success'
+  if (rating === 'yellow') return 'warning'
+  if (rating === 'red') return 'error'
+  return 'grey'
+}
+
+export function ratingText(rating: Rating | 'unrated' | null): string {
+  if (rating === null || rating === 'unrated') return 'Unrated'
+  return rating[0].toUpperCase() + rating.slice(1)
+}
+
+// Today as YYYY-MM-DD in the browser's own time zone.
+export function localDate(now: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
+// An action whose due date has passed. Past dates are allowed, so they are flagged, not refused.
+export function isOverdue(action: Pick<ReadinessAction, 'due_date'>, now: Date = new Date()) {
+  return action.due_date < localDate(now)
 }
 
 // A draft or submitted request may be withdrawn; declined and withdrawn are final.
@@ -219,6 +315,17 @@ export const intakeApi = {
   },
   saveValueCase: (id: number, body: ValueCaseInput & { version: number }) =>
     call<ValueCase>(`${base}/${id}/value-case`, { method: 'PUT', body: JSON.stringify(body) }),
+  // Resolves to null when the request has no readiness check yet.
+  readiness: async (id: number): Promise<Readiness | null> => {
+    try {
+      return await call<Readiness>(`${base}/${id}/readiness`)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null
+      throw error
+    }
+  },
+  saveReadiness: (id: number, body: ReadinessInput & { version: number }) =>
+    call<Readiness>(`${base}/${id}/readiness`, { method: 'PUT', body: JSON.stringify(body) }),
   submit: (id: number, version: number) =>
     call<ProjectRequest>(`${base}/${id}/submit`, {
       method: 'POST',
