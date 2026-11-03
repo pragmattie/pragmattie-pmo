@@ -56,6 +56,7 @@ def create_app() -> FastAPI:
     api.include_router(portfolio.router)
     api.include_router(risk_library.router)
     api.include_router(risks.router)
+    api.include_router(risks.escalations_router)
     api.include_router(standards.router)
     api.include_router(users.router)
     app.include_router(api)

@@ -72,10 +72,14 @@ def _create(web: TestClient, project_id: int, **changes):
     return web.post(_url(project_id), json={**BODY, **changes})
 
 
-def _audit(db: Session) -> list[AuditDecision]:
+def _audit(db: Session, *, escalations: bool = False) -> list[AuditDecision]:
+    """The risk audit rows, oldest first; escalation rows only when asked for."""
     db.expire_all()
     stmt = select(AuditDecision).where(AuditDecision.subject_type == "risk")
-    return list(db.scalars(stmt.order_by(AuditDecision.id)))
+    rows = list(db.scalars(stmt.order_by(AuditDecision.id)))
+    if escalations:
+        return rows
+    return [row for row in rows if row.action_taken.get("action") != "escalate"]
 
 
 # --- Scoring follows the policy file
@@ -518,11 +522,12 @@ def test_history_lists_the_risks_audit_rows_newest_first_with_names(web, db, pm,
     response = web.get(_url(project.id, risk["id"]) + "/history")
     assert response.status_code == 200, response.text
     page = response.json()
-    assert page["total"] == 3
-    assert [e["action"] for e in page["items"]] == ["close", "update", "create"]
-    assert [e["version"] for e in page["items"]] == [3, 2, 1]
+    # A new Medium risk is escalated to the sponsor as it is created.
+    assert page["total"] == 4
+    assert [e["action"] for e in page["items"]] == ["close", "update", "escalate", "create"]
+    assert [e["version"] for e in page["items"]] == [3, 2, 1, 1]
     assert {e["actor_name"] for e in page["items"]} == {pm.display_name}
-    create, update = page["items"][2], page["items"][1]
+    create, update = page["items"][3], page["items"][1]
     assert create["before"] is None and create["after"]["title"] == BODY["title"]
     assert (update["before"]["title"], update["after"]["title"]) == (BODY["title"], "Renamed")
 
@@ -534,7 +539,7 @@ def test_history_pages_and_needs_the_risk_in_the_project(web, db, pm, project):
     second = web.get(
         _url(project.id, risk["id"]) + "/history", params={"limit": 1, "offset": 1}
     ).json()
-    assert [first["items"][0]["action"], second["items"][0]["action"]] == ["update", "create"]
+    assert [first["items"][0]["action"], second["items"][0]["action"]] == ["update", "escalate"]
     other = _project(db, "Other")
     assert web.get(_url(other.id, risk["id"]) + "/history").status_code == 404
 
@@ -545,7 +550,8 @@ def test_every_reader_sees_history_without_audit_read(web, db, sign_in, project)
     risk = _create(pm_client, project.id).json()
     sign_in(web, db, "sponsor")
     assert web.get("/api/v1/audit").status_code == 403
-    assert web.get(_url(project.id, risk["id"]) + "/history").json()["total"] == 1
+    # The create and its escalation.
+    assert web.get(_url(project.id, risk["id"]) + "/history").json()["total"] == 2
 
 
 def test_people_lists_active_users_by_name_without_emails(web, db, sign_in):
