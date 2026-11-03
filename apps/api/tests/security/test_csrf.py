@@ -6,7 +6,7 @@ Each request carries a valid admin session, so only the CSRF token is wrong.
 
 import pytest
 from fastapi.routing import APIRoute, iter_route_contexts
-from test_authz import GUARDED, SAMPLES
+from test_authz import GUARDED, REFUSED, SAMPLES
 
 from app.api.auth import LOGIN_PATH, LOGOUT_PATH, SAFE_METHODS
 from app.authz import PERMISSIONS, Role
@@ -94,4 +94,6 @@ def test_a_matching_token_is_accepted(web, db, sign_in, target, method, path):
     guard = {(m, p): g for m, p, g in GUARDED}.get((method, path))
     sign_in(web, db, next(r for r in (Role.ADMIN, *Role) if guard in (None, *PERMISSIONS[r])))
     response = _send(web, method, path, target.id, {CSRF_HEADER: CSRF_VALUE})
-    assert response.status_code in (200, 201, 204), response.text
+    # A refused route (the risk agent is off in tests) answers 409 once past the CSRF check.
+    allowed = (409,) if (method, path) in REFUSED else (200, 201, 204)
+    assert response.status_code in allowed, response.text

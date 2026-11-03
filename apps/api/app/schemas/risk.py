@@ -12,6 +12,8 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.models.risk import RESPONSES_BY_KIND
+from app.schemas.audit import CostStr
+from app.schemas.common import MoneyStr
 
 Kind = Literal["threat", "opportunity"]
 Category = Literal["ai", "project"]
@@ -224,3 +226,62 @@ class RiskHistoryEntry(BaseModel):
     before: dict[str, Any] | None
     after: dict[str, Any] | None
     created_at: datetime
+
+
+class RiskProposalOut(BaseModel):
+    """One risk the risk agent suggests. An ethical or reputational one has no probability or
+    impact and `needs_judgement` set: a person scores it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    kind: str
+    category: str
+    title: str
+    cause: str
+    effect: str
+    objectives: list[str]
+    probability: int | None
+    impact: int | None
+    response: str
+    judgement: str
+    needs_judgement: bool
+    reason: str
+
+
+class DroppedProposal(BaseModel):
+    """A suggestion code dropped: its place in the model's list, its title if any, and why."""
+
+    index: int
+    title: str | None
+    reason: str
+
+
+class AdjustedProposal(BaseModel):
+    """A change code made to a kept suggestion, such as a clamped probability."""
+
+    index: int
+    change: str
+
+
+class RiskSuggestion(BaseModel):
+    """The answer of `POST .../risks/suggest`.
+
+    A dry run has `request` (the exact request that would be sent) and `cost_ceiling_usd` (the
+    most it can cost, rounded up to the cent), and nothing else is called or saved. A real run has
+    the proposals, what code dropped or adjusted, its tokens and cost, and its audit row; `saved`
+    holds the proposed risks when the mode is `enforce` and is empty in `shadow`."""
+
+    mode: Literal["shadow", "enforce"]
+    dry_run: bool
+    model: str
+    prompt_version: str
+    request: dict[str, Any] | None = None
+    cost_ceiling_usd: MoneyStr | None = None
+    proposals: list[RiskProposalOut] = []
+    dropped: list[DroppedProposal] = []
+    adjusted: list[AdjustedProposal] = []
+    saved: list[RiskOut] = []
+    audit_id: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: CostStr | None = None

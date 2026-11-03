@@ -7,6 +7,7 @@ replaced by a random secret made at runtime, so no secret is ever committed.
 """
 
 import secrets
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
@@ -86,6 +87,14 @@ class Settings(BaseSettings):
     max_body_bytes: int = Field(default=64 * 1024, ge=1)
 
     anthropic_api_key: str | None = Field(default=None, repr=False)
+
+    # The risk agent (app/agents/risk_agent.py): its model, its output cap per call, and the
+    # model's prices in US dollars per million tokens, used for the cost of a run and the dry
+    # run's cost ceiling.
+    risk_agent_model: str = Field(default="claude-sonnet-5-5", min_length=1)
+    risk_agent_max_tokens: int = Field(default=4096, ge=256, le=32000)
+    risk_agent_input_usd_per_mtok: Decimal = Field(default=Decimal("2"), ge=0)
+    risk_agent_output_usd_per_mtok: Decimal = Field(default=Decimal("10"), ge=0)
 
     # Read only by tests/security/test_mysql_races.py: a throwaway MySQL database those tests
     # empty and fill. Never point it at a database whose data matters.

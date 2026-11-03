@@ -17,6 +17,12 @@ decisions have their own routes, each one audit row with the person's id:
 These routes need a signed-in person: no agent can accept, reject or open a risk. Escalations are
 kept by `app.risks`; `GET /api/v1/risks/escalations` lists the open ones for the caller's role.
 
+`POST .../risks/suggest` (`project:write`) runs the risk agent (`app.agents.risk_agent`), gated by
+`AGENT_MODE`: `off` refuses (409) and calls nothing; `shadow` returns its proposals and saves
+nothing; `enforce` saves them as `proposed`, unscored risks with `source = agent`. With
+`?dry_run=true` it returns the exact request and a cost ceiling and calls nothing (any mode but
+`off`). A failed run is audited and answered with a 502; it saves no risk.
+
 `POST .../risks/from-library` adds starter templates (`app.api.risk_library`) as `proposed`
 risks from a person, unscored, one audit row each; an unknown template id adds nothing (422).
 
@@ -31,6 +37,7 @@ client read: a different stored version, or a parallel write that lands first, i
 """
 
 import logging
+from decimal import ROUND_UP, Decimal
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -41,9 +48,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
+from app.agents import risk_agent
 from app.api.risk_library import library
 from app.audit import ORDER_BY, decisions_query, record_decision
 from app.authz import Action, may_accept_band, require
+from app.config import get_settings
 from app.db import get_db
 from app.models import AuditDecision, Project, Risk, User
 from app.policy import SCALE_LEVELS, PolicyError, RiskPolicy, score_risk
@@ -77,7 +86,9 @@ from app.schemas.risk import (
     RiskHeatmap,
     RiskHistoryEntry,
     RiskOut,
+    RiskProposalOut,
     RiskReject,
+    RiskSuggestion,
     RiskUpdate,
 )
 
@@ -101,6 +112,9 @@ ACCEPTED_LOCKED = (
 
 # The status moves a PATCH may make; anything else goes through the decision routes.
 PATCH_MOVES = frozenset({("open", "closed"), ("closed", "open"), ("accepted", "closed")})
+
+AGENT_OFF = "the risk agent is off (AGENT_MODE=off); a person can add risks by hand"
+AGENT_FAILED = "the risk agent could not finish; the failed run is recorded in the audit trail"
 
 ListStatus = Literal["proposed", "open", "accepted", "closed", "rejected"]
 
@@ -253,6 +267,70 @@ def add_from_library(
         added.append(risk)
     _commit(db)
     return [RiskOut.model_validate(risk) for risk in added]
+
+
+def get_claude_client() -> risk_agent.ClaudeClient:
+    """The risk agent's Claude client; tests replace it through `dependency_overrides`."""
+    return risk_agent.AnthropicClient(get_settings())
+
+
+@router.post("/suggest", response_model=RiskSuggestion)
+def suggest_risks(
+    project_id: int,
+    user: Annotated[User, Depends(require(Action.PROJECT_WRITE))],
+    db: Annotated[Session, Depends(get_db)],
+    claude: Annotated[risk_agent.ClaudeClient, Depends(get_claude_client)],
+    dry_run: bool = False,
+) -> RiskSuggestion:
+    settings = get_settings()
+    if settings.agent_mode == "off":
+        raise HTTPException(status.HTTP_409_CONFLICT, AGENT_OFF)
+    policy = _policy()
+    templates = library()
+    project = _project(db, project_id)
+    common = {
+        "mode": settings.agent_mode,
+        "dry_run": dry_run,
+        "model": settings.risk_agent_model,
+        "prompt_version": risk_agent.PROMPT_VERSION,
+    }
+    if dry_run:
+        data = risk_agent.project_data(db, project, templates, policy)
+        request = risk_agent.build_request(data, settings)
+        ceiling = risk_agent.cost_ceiling(request, settings)
+        return RiskSuggestion(
+            **common,
+            request=request,
+            cost_ceiling_usd=ceiling.quantize(Decimal("0.01"), rounding=ROUND_UP),
+        )
+    try:
+        result = risk_agent.run(
+            db,
+            claude,
+            project,
+            library=templates,
+            policy=policy,
+            settings=settings,
+            save=settings.agent_mode == "enforce",
+            actor_user_id=user.id,
+        )
+    except risk_agent.AgentError:
+        logger.exception("risk agent run failed for project %s", project_id)
+        _commit(db)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, AGENT_FAILED) from None
+    _commit(db)
+    checked = result.checked
+    return RiskSuggestion(
+        **common,
+        proposals=[RiskProposalOut.model_validate(p) for p in checked.proposals],
+        dropped=checked.dropped,
+        adjusted=checked.adjusted,
+        saved=[RiskOut.model_validate(risk) for risk in result.saved],
+        audit_id=result.audit_id,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cost_usd=result.cost_usd,
+    )
 
 
 @router.get("/heatmap", response_model=RiskHeatmap)

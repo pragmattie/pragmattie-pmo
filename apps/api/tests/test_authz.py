@@ -292,6 +292,10 @@ SAMPLES = {
         "url": "/api/v1/projects/{}/risks/{}/reject".format(*_project_with_risk(status="proposed")),
         "json": {"version": 1, "reason": "Already covered by another risk"},
     },
+    # AGENT_MODE is off in tests, so an allowed caller gets the refusal (409), never a call.
+    ("POST", "/api/v1/projects/{project_id}/risks/suggest"): lambda _target: {
+        "url": f"/api/v1/projects/{_project_with_risk()[0]}/risks/suggest?dry_run=true",
+    },
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -317,9 +321,15 @@ CREATED = {
 }
 
 
+# Allowed requests refused for another reason: the risk agent is off in tests.
+REFUSED = {("POST", "/api/v1/projects/{project_id}/risks/suggest")}
+
+
 def _expected(guard, role: Role, method: str = "GET", path: str = "") -> int:
     if guard != "signed_in" and guard not in PERMISSIONS[role]:
         return 403
+    if (method, path) in REFUSED:
+        return 409
     return 201 if (method, path) in CREATED else 200
 
 
@@ -346,6 +356,7 @@ def test_matrix_covers_the_existing_routes():
         ("POST", "/api/v1/projects/{project_id}/risks/{risk_id}/open"),
         ("POST", "/api/v1/projects/{project_id}/risks/{risk_id}/reject"),
         ("GET", "/api/v1/risks/escalations"),
+        ("POST", "/api/v1/projects/{project_id}/risks/suggest"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -370,6 +381,7 @@ def test_matrix_covers_the_existing_routes():
     assert by_method[("POST", f"{risk}/open")] == Action.PROJECT_WRITE
     assert by_method[("POST", f"{risk}/reject")] == Action.PROJECT_WRITE
     assert by_method[("GET", "/api/v1/risks/escalations")] == Action.PROJECT_READ
+    assert by_method[("POST", f"{risks}/suggest")] == Action.PROJECT_WRITE
 
 
 @pytest.mark.parametrize("role", list(Role))
