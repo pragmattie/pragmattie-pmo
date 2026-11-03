@@ -624,6 +624,35 @@ describe('decision buttons', () => {
     expect(wrapper.get('[data-test="field-Status"]').text()).toBe('Accepted')
   })
 
+  it("takes the earliest review date from the browser's local day, not UTC", async () => {
+    const tz = process.env.TZ
+    process.env.TZ = 'America/Los_Angeles'
+    // 23:30 local on 3 November 2026 is already 4 November in UTC.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-03T23:30:00-08:00'))
+    try {
+      expect(new Date().toISOString().slice(0, 10)).toBe('2026-11-04')
+      const { wrapper } = await mountRisks('sponsor')
+      await openRow(wrapper, 2)
+      await wrapper.get('[data-test="accept-risk"]').trigger('click')
+      await flushPromises()
+      const reason = document.querySelector('[data-test="accept-reason"] textarea')!
+      ;(reason as HTMLTextAreaElement).value = 'Cheaper to watch than to treat'
+      reason.dispatchEvent(new Event('input'))
+      const date = document.querySelector('[data-test="accept-review-date"] input')!
+      expect(date.getAttribute('min')).toBe('2026-11-03')
+      ;(date as HTMLInputElement).value = '2026-11-03'
+      date.dispatchEvent(new Event('input'))
+      await flushPromises()
+      const yes = document.querySelector('[data-test="accept-yes"]') as HTMLButtonElement
+      expect(yes.disabled).toBe(false)
+    } finally {
+      vi.useRealTimers()
+      if (tz === undefined) delete process.env.TZ
+      else process.env.TZ = tz
+    }
+  })
+
   it('opens a proposed risk', async () => {
     const { wrapper, fetchMock } = await mountRisks('project_manager')
     await openRow(wrapper, 6)

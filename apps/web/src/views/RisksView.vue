@@ -95,7 +95,12 @@ const acceptReason = ref('')
 const reviewDate = ref('')
 const rejectOpen = ref(false)
 const rejectReason = ref('')
-const today = () => new Date().toISOString().slice(0, 10)
+// The browser's local date as YYYY-MM-DD; toISOString would give the UTC day.
+const today = () => {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
 const acceptReady = computed(
   () => acceptReason.value.trim().length >= MIN_ACCEPT_REASON && reviewDate.value >= today(),
 )
