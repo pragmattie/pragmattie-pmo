@@ -58,6 +58,26 @@ and `GET /api/v1/users` (active people's ids and names, to show and pick an owne
 list also takes `probability` and `impact` filters, for a heat map cell. Band colours are
 `band-low`, `band-medium` and `band-high` in the `pragmattiePmo` theme.
 
+## Escalation and acceptance
+
+Each priority band in `policies/risk.yaml` names its escalation owner (Low: project manager;
+Medium and High: sponsor). When an open risk enters a band whose owner differs from before, it is
+escalated to that role, with one audit row naming the band, the role and the risk. It stays
+escalated until it leaves `open` or a re-score moves it to another owner.
+`GET /api/v1/risks/escalations` lists the open escalations for the caller's role, across projects.
+
+- `POST /api/v1/projects/{id}/risks/{risk_id}/accept` (`risk:accept`) accepts an open, scored
+  risk. The caller's role must be at or above the band's owner (a sponsor accepts any band, a
+  project manager only Low), with a reason of at least 20 characters and a review date. A refusal
+  is a 403 and is audited too. Re-scoring an accepted risk into a higher band reopens it.
+- `POST .../{risk_id}/open` and `POST .../{risk_id}/reject` (`project:write`) decide on a
+  proposed risk; rejecting needs a reason.
+- The general `PATCH` only closes an open or accepted risk, or reopens a closed one.
+
+These routes need a signed-in person, and each decision is an audit row naming them. On the Risks
+page, Accept, Open and Reject show only to roles that may use them, and a panel lists what is
+escalated to the signed-in role.
+
 ## Demo users for a rehearsal
 
 `python -m app.seed users` creates one demo user per role, each on a `.example` address, with a

@@ -5,11 +5,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from '../App.vue'
 import {
   bandColor,
+  canAcceptRisk,
+  canCloseRisk,
   changedFields,
   CONFLICT_MESSAGE,
   type HeatCell,
   heatGrid,
   listQuery,
+  mayAcceptBand,
   NEEDS_JUDGEMENT,
   NO_FILTERS,
   type Risk,
@@ -54,6 +57,9 @@ function risk(id: number, changes: Partial<Risk> = {}): Risk {
     status: 'open',
     needs_judgement: false,
     source: 'person',
+    escalated_to: 'sponsor',
+    escalated_band: 'Medium',
+    review_date: null,
     version: 1,
     created_at: '2026-10-01T09:00:00',
     updated_at: '2026-10-01T09:00:00',
@@ -81,12 +87,32 @@ const RISKS = [
   risk(1, { probability: 5, impact: 4, score: 20, band: 'High', category: 'ai' }),
   risk(2),
   risk(3, { probability: 2, impact: 4 }),
+  risk(5, {
+    probability: 1,
+    impact: 2,
+    score: 2,
+    band: 'Low',
+    escalated_to: 'project_manager',
+    escalated_band: 'Low',
+  }),
+  risk(6, {
+    probability: null,
+    impact: null,
+    score: null,
+    band: null,
+    status: 'proposed',
+    escalated_to: null,
+    escalated_band: null,
+    title: 'From the library',
+  }),
   risk(4, {
     probability: null,
     impact: null,
     score: null,
     band: null,
     needs_judgement: true,
+    escalated_to: null,
+    escalated_band: null,
     title: 'Reputational harm',
   }),
 ]
@@ -95,9 +121,9 @@ const HEATMAP = {
   kind: null,
   cells: cells({ '5:4': 1, '2:4': 2 }),
   bands: [
-    { band: 'Low', count: 0 },
-    { band: 'Medium', count: 2 },
-    { band: 'High', count: 1 },
+    { band: 'Low', count: 0, owner_role: 'project_manager' },
+    { band: 'Medium', count: 2, owner_role: 'sponsor' },
+    { band: 'High', count: 1, owner_role: 'sponsor' },
   ],
   unscored: 1,
 }
@@ -137,6 +163,22 @@ function fakeApi(role: string, options: FakeOptions = {}) {
         return json({ ...HEATMAP, kind, cells: cells({ '4:2': 1 }), unscored: 0 })
       }
       return json({ ...HEATMAP, kind })
+    }
+    if (path === '/api/v1/risks/escalations') {
+      const mine = RISKS.filter((r) => r.escalated_to === role)
+      return json(page(mine.map((r) => ({ ...r, project_name: 'Harbour Analytics' }))))
+    }
+    const decision = path.match(/^\/api\/v1\/projects\/3\/risks\/(\d+)\/(accept|open|reject)$/)
+    if (decision && method === 'POST') {
+      const status = { accept: 'accepted', open: 'open', reject: 'rejected' }[decision[2]]
+      return json(
+        risk(Number(decision[1]), {
+          status: status as Risk['status'],
+          version: 2,
+          escalated_to: null,
+          escalated_band: null,
+        }),
+      )
     }
     if (path === '/api/v1/projects/3/risks' && method === 'GET') {
       return json({ items: RISKS, total: RISKS.length, limit: 25, offset: 0 })
@@ -278,6 +320,35 @@ describe('risk register helpers', () => {
     }
     expect(changedFields(entry)).toEqual(['title'])
     expect(changedFields({ ...entry, before: null })).toEqual([])
+  })
+})
+
+describe('accept, open and close rules', () => {
+  const bands = HEATMAP.bands
+
+  it("lets a role accept only a band at or below it, from the bands' owners", () => {
+    expect(mayAcceptBand('project_manager', 'Low', bands)).toBe(true)
+    expect(mayAcceptBand('project_manager', 'Medium', bands)).toBe(false)
+    expect(mayAcceptBand('sponsor', 'High', bands)).toBe(true)
+    expect(mayAcceptBand('auditor', 'Low', bands)).toBe(false)
+    expect(mayAcceptBand('sponsor', null, bands)).toBe(false)
+    expect(mayAcceptBand('sponsor', 'Medium', [])).toBe(false)
+  })
+
+  it('offers Accept only on an open, scored risk to a role holding risk:accept', () => {
+    const open = { status: 'open' as const, score: 9, band: 'Medium' }
+    expect(canAcceptRisk(open, 'sponsor', true, bands)).toBe(true)
+    expect(canAcceptRisk(open, 'sponsor', false, bands)).toBe(false)
+    expect(canAcceptRisk({ ...open, status: 'proposed' }, 'sponsor', true, bands)).toBe(false)
+    expect(canAcceptRisk({ ...open, score: null, band: null }, 'sponsor', true, bands)).toBe(false)
+  })
+
+  it('closes only open and accepted risks', () => {
+    expect(canCloseRisk({ status: 'open' })).toBe(true)
+    expect(canCloseRisk({ status: 'accepted' })).toBe(true)
+    for (const status of ['proposed', 'closed', 'rejected'] as const) {
+      expect(canCloseRisk({ status })).toBe(false)
+    }
   })
 })
 
@@ -468,5 +539,174 @@ describe('version conflicts', () => {
       ([input, init]) => input === '/api/v1/projects/3/risks/2' && (init?.method ?? 'GET') === 'GET',
     )
     expect(reloads.length).toBeGreaterThan(0)
+  })
+})
+
+async function openRow(wrapper: Wrapper, id: number) {
+  await wrapper.get(`[data-test="risk-row-${id}"]`).trigger('click')
+  await flushPromises()
+}
+
+const has = (wrapper: Wrapper, test: string) => wrapper.find(`[data-test="${test}"]`).exists()
+
+describe('decision buttons', () => {
+  it('shows a sponsor Accept on a Medium risk, but no Open, Reject or Edit', async () => {
+    const { wrapper } = await mountRisks('sponsor')
+    await openRow(wrapper, 2)
+    expect(has(wrapper, 'accept-risk')).toBe(true)
+    expect(has(wrapper, 'open-risk')).toBe(false)
+    expect(has(wrapper, 'reject-risk')).toBe(false)
+    expect(has(wrapper, 'edit-risk')).toBe(false)
+    expect(wrapper.get('[data-test="escalated"]').text()).toContain('sponsor (Medium band)')
+  })
+
+  it('hides Accept from a sponsor on a proposed or unscored risk', async () => {
+    const { wrapper } = await mountRisks('sponsor')
+    await openRow(wrapper, 6)
+    expect(has(wrapper, 'accept-risk')).toBe(false)
+    await openRow(wrapper, 4)
+    expect(has(wrapper, 'accept-risk')).toBe(false)
+  })
+
+  it('shows a project manager Accept on a Low risk only', async () => {
+    const { wrapper } = await mountRisks('project_manager')
+    await openRow(wrapper, 2)
+    expect(has(wrapper, 'accept-risk')).toBe(false)
+    await openRow(wrapper, 5)
+    expect(has(wrapper, 'accept-risk')).toBe(true)
+  })
+
+  it('shows a project manager Open and Reject on a proposed risk, without Close', async () => {
+    const { wrapper } = await mountRisks('project_manager')
+    await openRow(wrapper, 6)
+    expect(has(wrapper, 'open-risk')).toBe(true)
+    expect(has(wrapper, 'reject-risk')).toBe(true)
+    expect(has(wrapper, 'close-risk')).toBe(false)
+    await openRow(wrapper, 2)
+    expect(has(wrapper, 'open-risk')).toBe(false)
+    expect(has(wrapper, 'reject-risk')).toBe(false)
+  })
+
+  it('shows an auditor no decision buttons', async () => {
+    const { wrapper } = await mountRisks('auditor')
+    for (const id of [2, 5, 6]) {
+      await openRow(wrapper, id)
+      for (const test of ['accept-risk', 'open-risk', 'reject-risk', 'close-risk']) {
+        expect(has(wrapper, test), `${test} on risk ${id}`).toBe(false)
+      }
+    }
+  })
+
+  it('accepts with a reason and a review date', async () => {
+    const { wrapper, fetchMock } = await mountRisks('sponsor')
+    await openRow(wrapper, 2)
+    await wrapper.get('[data-test="accept-risk"]').trigger('click')
+    await flushPromises()
+    const yes = document.querySelector('[data-test="accept-yes"]') as HTMLButtonElement
+    expect(yes.disabled).toBe(true)
+    const reason = document.querySelector('[data-test="accept-reason"] textarea')!
+    ;(reason as HTMLTextAreaElement).value = 'Cheaper to watch than to treat'
+    reason.dispatchEvent(new Event('input'))
+    const date = document.querySelector('[data-test="accept-review-date"] input')!
+    ;(date as HTMLInputElement).value = '2999-01-01'
+    date.dispatchEvent(new Event('input'))
+    await flushPromises()
+    expect(yes.disabled).toBe(false)
+    yes.click()
+    await flushPromises()
+    const post = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/accept'))!
+    expect(JSON.parse(String(post[1]!.body))).toEqual({
+      version: 1,
+      reason: 'Cheaper to watch than to treat',
+      review_date: '2999-01-01',
+    })
+    expect(wrapper.get('[data-test="drawer-message"]').text()).toBe('Risk accepted.')
+    expect(wrapper.get('[data-test="field-Status"]').text()).toBe('Accepted')
+  })
+
+  it("takes the earliest review date from the browser's local day, not UTC", async () => {
+    const tz = process.env.TZ
+    process.env.TZ = 'America/Los_Angeles'
+    // 23:30 local on 3 November 2026 is already 4 November in UTC.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-03T23:30:00-08:00'))
+    try {
+      expect(new Date().toISOString().slice(0, 10)).toBe('2026-11-04')
+      const { wrapper } = await mountRisks('sponsor')
+      await openRow(wrapper, 2)
+      await wrapper.get('[data-test="accept-risk"]').trigger('click')
+      await flushPromises()
+      const reason = document.querySelector('[data-test="accept-reason"] textarea')!
+      ;(reason as HTMLTextAreaElement).value = 'Cheaper to watch than to treat'
+      reason.dispatchEvent(new Event('input'))
+      const date = document.querySelector('[data-test="accept-review-date"] input')!
+      expect(date.getAttribute('min')).toBe('2026-11-03')
+      ;(date as HTMLInputElement).value = '2026-11-03'
+      date.dispatchEvent(new Event('input'))
+      await flushPromises()
+      const yes = document.querySelector('[data-test="accept-yes"]') as HTMLButtonElement
+      expect(yes.disabled).toBe(false)
+    } finally {
+      vi.useRealTimers()
+      if (tz === undefined) delete process.env.TZ
+      else process.env.TZ = tz
+    }
+  })
+
+  it('opens a proposed risk', async () => {
+    const { wrapper, fetchMock } = await mountRisks('project_manager')
+    await openRow(wrapper, 6)
+    await wrapper.get('[data-test="open-risk"]').trigger('click')
+    await flushPromises()
+    const post = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/6/open'))!
+    expect(JSON.parse(String(post[1]!.body))).toEqual({ version: 1 })
+    expect(wrapper.get('[data-test="drawer-message"]').text()).toBe('Risk opened.')
+  })
+
+  it('rejects a proposed risk only with a reason', async () => {
+    const { wrapper, fetchMock } = await mountRisks('project_manager')
+    await openRow(wrapper, 6)
+    await wrapper.get('[data-test="reject-risk"]').trigger('click')
+    await flushPromises()
+    const yes = document.querySelector('[data-test="reject-yes"]') as HTMLButtonElement
+    expect(yes.disabled).toBe(true)
+    const reason = document.querySelector('[data-test="reject-reason"] textarea')!
+    ;(reason as HTMLTextAreaElement).value = 'Already covered by the vendor risk'
+    reason.dispatchEvent(new Event('input'))
+    await flushPromises()
+    expect(yes.disabled).toBe(false)
+    yes.click()
+    await flushPromises()
+    const post = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/6/reject'))!
+    expect(JSON.parse(String(post[1]!.body))).toEqual({
+      version: 1,
+      reason: 'Already covered by the vendor risk',
+    })
+    expect(wrapper.get('[data-test="drawer-message"]').text()).toBe('Risk rejected.')
+    expect(wrapper.get('[data-test="field-Status"]').text()).toBe('Rejected')
+  })
+})
+
+describe('escalations list', () => {
+  it.each([
+    ['sponsor', [2, 3, 1]],
+    ['project_manager', [5]],
+  ])('lists what is escalated to a %s', async (role, ids) => {
+    const { wrapper } = await mountRisks(role)
+    const panel = wrapper.get('[data-test="escalations"]')
+    for (const id of ids) expect(panel.find(`[data-test="escalation-${id}"]`).exists()).toBe(true)
+    expect(panel.findAll('[data-test^="escalation-"]')).toHaveLength(ids.length)
+  })
+
+  it('says when nothing is escalated to the role', async () => {
+    const { wrapper } = await mountRisks('auditor')
+    expect(wrapper.get('[data-test="no-escalations"]').text()).toContain('Nothing is escalated')
+  })
+
+  it('opens an escalated risk from the list', async () => {
+    const { wrapper } = await mountRisks('project_manager')
+    await wrapper.get('[data-test="escalation-5"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="drawer-title"]').text()).toBe('Risk 5')
   })
 })

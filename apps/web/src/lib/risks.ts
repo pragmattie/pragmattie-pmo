@@ -27,9 +27,20 @@ export interface Risk {
   status: Status
   needs_judgement: boolean
   source: string
+  // The role an open risk is escalated to and the band that sent it there; empty once it is
+  // accepted, rejected or closed.
+  escalated_to: string | null
+  escalated_band: string | null
+  // When an accepted risk is next looked at.
+  review_date: string | null
   version: number
   created_at: string
   updated_at: string
+}
+
+// A risk in the signed-in role's escalations list, from any project.
+export interface EscalatedRisk extends Risk {
+  project_name: string
 }
 
 export interface Page<T> {
@@ -49,7 +60,8 @@ export interface HeatCell {
 export interface Heatmap {
   kind: Kind | null
   cells: HeatCell[]
-  bands: { band: string; count: number }[]
+  // Each band's open count and the role it escalates to (from the risk policy).
+  bands: { band: string; count: number; owner_role: string }[]
   unscored: number
 }
 
@@ -138,6 +150,44 @@ const LABELS: Record<string, string> = {
   project: 'Project',
   threat: 'Threat',
   opportunity: 'Opportunity',
+}
+
+// Accepting a risk needs a reason at least this long (the API checks it too).
+export const MIN_ACCEPT_REASON = 20
+
+// How senior a role is when accepting a risk, as in the API (app/authz.py): a role may accept a
+// band whose owner ranks at or below it. The web only uses this to hide buttons.
+const ROLE_RANK: Record<string, number> = { project_manager: 1, sponsor: 2 }
+
+// Whether a role may accept a risk in `band`, given each band's owner from the heat map.
+export function mayAcceptBand(
+  role: string | undefined,
+  band: string | null,
+  bands: Heatmap['bands'],
+): boolean {
+  const owner = bands.find((b) => b.band === band)?.owner_role
+  if (!role || !owner || !(owner in ROLE_RANK)) return false
+  return (ROLE_RANK[role] ?? 0) >= ROLE_RANK[owner]
+}
+
+// The Accept button: an open, scored risk, a role holding risk:accept, at or above the band's owner.
+export function canAcceptRisk(
+  risk: Pick<Risk, 'status' | 'score' | 'band'>,
+  role: string | undefined,
+  holdsAccept: boolean,
+  bands: Heatmap['bands'],
+): boolean {
+  return (
+    holdsAccept &&
+    risk.status === 'open' &&
+    risk.score !== null &&
+    mayAcceptBand(role, risk.band, bands)
+  )
+}
+
+// A PATCH may close an open or accepted risk; other moves have their own routes.
+export function canCloseRisk(risk: Pick<Risk, 'status'>): boolean {
+  return risk.status === 'open' || risk.status === 'accepted'
 }
 
 export function label(value: string): string {
@@ -253,6 +303,27 @@ export const riskApi = {
     }),
   update: (projectId: number, riskId: number, body: Partial<RiskInput> & { version: number }) =>
     call<Risk>(`${base(projectId)}/${riskId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  accept: (
+    projectId: number,
+    riskId: number,
+    body: { version: number; reason: string; review_date: string },
+  ) =>
+    call<Risk>(`${base(projectId)}/${riskId}/accept`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  open: (projectId: number, riskId: number, version: number) =>
+    call<Risk>(`${base(projectId)}/${riskId}/open`, {
+      method: 'POST',
+      body: JSON.stringify({ version }),
+    }),
+  reject: (projectId: number, riskId: number, body: { version: number; reason: string }) =>
+    call<Risk>(`${base(projectId)}/${riskId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  escalations: (offset = 0) =>
+    call<Page<EscalatedRisk>>(`/api/v1/risks/escalations?limit=50&offset=${offset}`),
   close: (projectId: number, riskId: number, version: number) =>
     call<Risk>(`${base(projectId)}/${riskId}`, {
       method: 'PATCH',

@@ -4,7 +4,7 @@ The matrix is built from the app's own route list, so a new route is covered as 
 added, and a route without a guard fails `test_every_route_has_a_guard`.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
@@ -232,13 +232,14 @@ RISK_BODY = {
 }
 
 
-def _project_with_risk() -> tuple[int, int]:
+def _project_with_risk(**changes) -> tuple[int, int]:
     """A project holding one risk, for the risk routes' samples."""
     with Session(engine) as session:
         project = Project(name="Matrix", stage="delivery", sponsor="S", pm="P", status="on_track")
         session.add(project)
         session.flush()
-        risk = Risk(project_id=project.id, status="open", source="person", **RISK_BODY)
+        values = {"status": "open", "source": "person", **RISK_BODY, **changes}
+        risk = Risk(project_id=project.id, **values)
         session.add(risk)
         session.commit()
         return project.id, risk.id
@@ -271,6 +272,25 @@ SAMPLES = {
     ("POST", "/api/v1/projects/{project_id}/risks/from-library"): lambda _target: {
         "url": f"/api/v1/projects/{_project_with_risk()[0]}/risks/from-library",
         "json": {"template_ids": ["ai-model-drift", "project-scope-creep"]},
+    },
+    # A Low risk, so every role holding risk:accept may accept it.
+    ("POST", "/api/v1/projects/{project_id}/risks/{risk_id}/accept"): lambda _target: {
+        "url": "/api/v1/projects/{}/risks/{}/accept".format(
+            *_project_with_risk(probability=1, impact=2, score=2, band="Low")
+        ),
+        "json": {
+            "version": 1,
+            "reason": "Small and well understood; we will watch it",
+            "review_date": date.today().isoformat(),
+        },
+    },
+    ("POST", "/api/v1/projects/{project_id}/risks/{risk_id}/open"): lambda _target: {
+        "url": "/api/v1/projects/{}/risks/{}/open".format(*_project_with_risk(status="proposed")),
+        "json": {"version": 1},
+    },
+    ("POST", "/api/v1/projects/{project_id}/risks/{risk_id}/reject"): lambda _target: {
+        "url": "/api/v1/projects/{}/risks/{}/reject".format(*_project_with_risk(status="proposed")),
+        "json": {"version": 1, "reason": "Already covered by another risk"},
     },
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
@@ -322,6 +342,10 @@ def test_matrix_covers_the_existing_routes():
         ("GET", "/api/v1/projects/{project_id}/risks/heatmap"),
         ("GET", "/api/v1/projects/{project_id}/risks/{risk_id}/history"),
         ("GET", "/api/v1/users"),
+        ("POST", "/api/v1/projects/{project_id}/risks/{risk_id}/accept"),
+        ("POST", "/api/v1/projects/{project_id}/risks/{risk_id}/open"),
+        ("POST", "/api/v1/projects/{project_id}/risks/{risk_id}/reject"),
+        ("GET", "/api/v1/risks/escalations"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -342,6 +366,10 @@ def test_matrix_covers_the_existing_routes():
     assert by_method[("GET", f"{risks}/heatmap")] == Action.PROJECT_READ
     assert by_method[("GET", f"{risk}/history")] == Action.PROJECT_READ
     assert by_method[("GET", "/api/v1/users")] == Action.PROJECT_READ
+    assert by_method[("POST", f"{risk}/accept")] == Action.RISK_ACCEPT
+    assert by_method[("POST", f"{risk}/open")] == Action.PROJECT_WRITE
+    assert by_method[("POST", f"{risk}/reject")] == Action.PROJECT_WRITE
+    assert by_method[("GET", "/api/v1/risks/escalations")] == Action.PROJECT_READ
 
 
 @pytest.mark.parametrize("role", list(Role))

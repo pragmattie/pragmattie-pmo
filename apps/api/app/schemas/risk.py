@@ -6,7 +6,7 @@ create, or anything else the server owns, gets a 422 rather than having it silen
 stored risk and validating the result as `RiskFields`.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -20,9 +20,14 @@ Response = Literal["avoid", "reduce", "share", "accept", "pursue", "increase"]
 Level = Annotated[int, Field(ge=1, le=5, strict=True)]
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 LongText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
-# On these routes a person may only open or close a risk; proposing, accepting and rejecting
-# arrive with item 3.4.
+# A PATCH may only move a risk between open and closed (or close an accepted one). Opening a
+# proposed risk, rejecting it and accepting a risk have their own routes.
 EditableStatus = Literal["open", "closed"]
+# Accepting a risk needs a written reason of at least this many characters.
+MIN_ACCEPT_REASON = 20
+AcceptReason = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=MIN_ACCEPT_REASON, max_length=4000)
+]
 
 
 class RiskFields(BaseModel):
@@ -83,6 +88,33 @@ class RiskUpdate(BaseModel):
     status: EditableStatus | None = None
 
 
+class RiskDecision(BaseModel):
+    """Opening a proposed risk. `version` is the one the client read; a stale one is a 409."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(ge=1)
+
+
+class RiskReject(RiskDecision):
+    """Rejecting a proposed risk, with the reason why."""
+
+    reason: LongText
+
+
+class RiskAccept(RiskDecision):
+    """Accepting a risk: why, and when it will next be looked at (today or later)."""
+
+    reason: AcceptReason
+    review_date: date
+
+    @model_validator(mode="after")
+    def _not_past(self) -> Self:
+        if self.review_date < date.today():
+            raise ValueError("review_date must be today or later")
+        return self
+
+
 class RiskOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -104,9 +136,18 @@ class RiskOut(BaseModel):
     status: str
     needs_judgement: bool
     source: str
+    escalated_to: str | None
+    escalated_band: str | None
+    review_date: date | None
     version: int
     created_at: datetime
     updated_at: datetime
+
+
+class RiskEscalationOut(RiskOut):
+    """An escalated risk in the caller's list, with its project's name."""
+
+    project_name: str = ""
 
 
 TemplateId = Annotated[str, StringConstraints(min_length=1, max_length=64)]
@@ -154,8 +195,11 @@ class HeatCell(BaseModel):
 
 
 class BandTotal(BaseModel):
+    """Open risks in one band, and the role the band escalates to (who may accept it)."""
+
     band: str
     count: int
+    owner_role: str
 
 
 class RiskHeatmap(BaseModel):

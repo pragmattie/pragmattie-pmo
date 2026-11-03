@@ -1,8 +1,21 @@
 """A project's risk register: list, create, read and change risks.
 
 Reading needs `project:read`; creating and changing need `project:write`. There is no DELETE: a
-risk is closed with a PATCH that sets `status` to `closed`. On these routes a person may only open
-or close a risk; proposing, accepting and rejecting come with item 3.4.
+risk is closed with a PATCH that sets `status` to `closed`. A PATCH moves status only from open to
+closed, from closed back to open, or from accepted to closed; it never opens a proposed, accepted
+or rejected risk. On an accepted risk it may not change `response` or `needs_judgement` or clear
+the score (409); probability and impact may still change, and a higher band reopens it. The
+decisions have their own routes, each one audit row with the person's id:
+
+- `POST .../{id}/accept` (`risk:accept`) accepts an open, scored risk. The caller's role must rank
+  at or above the band's escalation owner in the risk policy (`authz.may_accept_band`); a refusal
+  is a 403 that is audited too (`status: rejected`). It needs a reason of at least 20 characters
+  and a review date, and sets the response to `accept` and the status to `accepted`.
+- `POST .../{id}/open` and `.../{id}/reject` (`project:write`) decide on a proposed risk;
+  rejecting needs a reason.
+
+These routes need a signed-in person: no agent can accept, reject or open a risk. Escalations are
+kept by `app.risks`; `GET /api/v1/risks/escalations` lists the open ones for the caller's role.
 
 `POST .../risks/from-library` adds starter templates (`app.api.risk_library`) as `proposed`
 risks from a person, unscored, one audit row each; an unknown template id adds nothing (422).
@@ -29,8 +42,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.api.risk_library import library
-from app.audit import ORDER_BY, decisions_query
-from app.authz import Action, require
+from app.audit import ORDER_BY, decisions_query, record_decision
+from app.authz import Action, may_accept_band, require
 from app.db import get_db
 from app.models import AuditDecision, Project, Risk, User
 from app.policy import SCALE_LEVELS, PolicyError, RiskPolicy, score_risk
@@ -38,9 +51,14 @@ from app.risks import (
     AUDIT_AGENT,
     AUDIT_SUBJECT,
     apply_score,
+    band_owner,
+    next_attempt,
+    record_escalation,
     record_risk_change,
+    rescore_decisions,
     risk_from_template,
     risk_policy,
+    settle_escalation,
     snapshot,
 )
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
@@ -51,21 +69,38 @@ from app.schemas.risk import (
     FromLibrary,
     HeatCell,
     Kind,
+    RiskAccept,
     RiskCreate,
+    RiskDecision,
+    RiskEscalationOut,
     RiskFields,
     RiskHeatmap,
     RiskHistoryEntry,
     RiskOut,
+    RiskReject,
     RiskUpdate,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects/{project_id}/risks", tags=["risks"])
+escalations_router = APIRouter(prefix="/risks", tags=["risks"])
 
 POLICY_UNAVAILABLE = "the risk policy could not be loaded, so risks cannot be saved; try later"
 STALE = "this risk has changed since you read it; reload it and try again"
 BAD_OWNER = "owner_user_id must be an existing, active user"
+
+NOT_OPEN = "only an open risk can be accepted"
+NOT_PROPOSED = "only a proposed risk can be opened or rejected"
+UNSCORED = "this risk has no score yet; a person must score it before it can be accepted"
+BAD_MOVE = "a change here may only close an open or accepted risk, or reopen a closed one"
+ACCEPTED_LOCKED = (
+    "an accepted risk keeps its response, needs_judgement and score; "
+    "you may re-score it or close it"
+)
+
+# The status moves a PATCH may make; anything else goes through the decision routes.
+PATCH_MOVES = frozenset({("open", "closed"), ("closed", "open"), ("accepted", "closed")})
 
 ListStatus = Literal["proposed", "open", "accepted", "closed", "rejected"]
 
@@ -100,6 +135,20 @@ def _check_owner(db: Session, owner_user_id: int | None) -> None:
     owner = db.get(User, owner_user_id)
     if owner is None or not owner.is_active:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, BAD_OWNER)
+
+
+def _check_version(version: int, risk: Risk) -> None:
+    if version != risk.version:
+        raise HTTPException(status.HTTP_409_CONFLICT, STALE)
+
+
+def _flush(db: Session) -> None:
+    try:
+        db.flush()
+    except StaleDataError:
+        # Another write changed the row between our read and this update.
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, STALE) from None
 
 
 def _commit(db: Session) -> None:
@@ -163,9 +212,12 @@ def create_risk(
     _check_owner(db, body.owner_user_id)
     risk = Risk(project_id=project_id, status="open", source="person", **body.model_dump())
     apply_score(risk, policy)
+    escalated = settle_escalation(risk, policy, before=None)
     db.add(risk)
     db.flush()
     record_risk_change(db, risk, action="create", before=None, actor_user_id=user.id)
+    if escalated:
+        record_escalation(db, risk, actor_user_id=user.id)
     _commit(db)
     return RiskOut.model_validate(risk)
 
@@ -233,7 +285,10 @@ def heatmap(
     return RiskHeatmap(
         kind=kind,
         cells=cells,
-        bands=[BandTotal(band=name, count=count) for name, count in band_counts.items()],
+        bands=[
+            BandTotal(band=b.name, count=band_counts[b.name], owner_role=b.escalation_owner)
+            for b in policy.priority_bands
+        ],
         unscored=counts.get((None, None), 0),
     )
 
@@ -285,6 +340,18 @@ def get_risk(
     return RiskOut.model_validate(_risk(db, project_id, risk_id))
 
 
+def _breaks_acceptance(current: dict, changes: dict) -> bool:
+    """Whether a PATCH would undo what accepting a risk settled: its response, needs_judgement or
+    score. Changing probability or impact is still allowed, and may reopen it."""
+    merged = {**current, **changes}
+    return (
+        merged["response"] != current["response"]
+        or merged["needs_judgement"] != current["needs_judgement"]
+        or merged["probability"] is None
+        or merged["impact"] is None
+    )
+
+
 @router.patch("/{risk_id}", response_model=RiskOut)
 def update_risk(
     project_id: int,
@@ -296,14 +363,17 @@ def update_risk(
     policy = _policy()
     # Locked until commit on MySQL, so a parallel edit waits and then sees the new version.
     risk = _risk(db, project_id, risk_id, for_update=True)
-    if body.version != risk.version:
-        raise HTTPException(status.HTTP_409_CONFLICT, STALE)
+    _check_version(body.version, risk)
 
     changes = body.model_dump(exclude_unset=True, exclude={"version"})
     new_status: EditableStatus | None = changes.pop("status", risk.status)
     if new_status is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "status must be open or closed")
+    if new_status != risk.status and (risk.status, new_status) not in PATCH_MOVES:
+        raise HTTPException(status.HTTP_409_CONFLICT, BAD_MOVE)
     current = {name: getattr(risk, name) for name in RiskFields.model_fields}
+    if risk.status == "accepted" and _breaks_acceptance(current, changes):
+        raise HTTPException(status.HTTP_409_CONFLICT, ACCEPTED_LOCKED)
     try:
         fields = RiskFields.model_validate({**current, **changes})
     except ValidationError as exc:
@@ -316,18 +386,166 @@ def update_risk(
         if getattr(risk, name) != value:
             setattr(risk, name, value)
     apply_score(risk, policy)
+    escalated = rescore_decisions(risk, policy, before)
     if snapshot(risk) == before:
         return RiskOut.model_validate(risk)
 
-    try:
-        db.flush()
-    except StaleDataError:
-        # Another write changed the row between our read and this update.
-        db.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, STALE) from None
+    _flush(db)
     closing = before["status"] != "closed" and risk.status == "closed"
+    reopened = before["status"] == "accepted" and risk.status == "open"
     record_risk_change(
-        db, risk, action="close" if closing else "update", before=before, actor_user_id=user.id
+        db,
+        risk,
+        action="close" if closing else "update",
+        before=before,
+        actor_user_id=user.id,
+        details={"reopened": True} if reopened else None,
+    )
+    if escalated:
+        record_escalation(db, risk, actor_user_id=user.id)
+    _commit(db)
+    return RiskOut.model_validate(risk)
+
+
+@router.post("/{risk_id}/accept", response_model=RiskOut)
+def accept_risk(
+    project_id: int,
+    risk_id: int,
+    body: RiskAccept,
+    user: Annotated[User, Depends(require(Action.RISK_ACCEPT))],
+    db: Annotated[Session, Depends(get_db)],
+) -> RiskOut:
+    policy = _policy()
+    risk = _risk(db, project_id, risk_id, for_update=True)
+    _check_version(body.version, risk)
+    if risk.status != "open":
+        raise HTTPException(status.HTTP_409_CONFLICT, NOT_OPEN)
+    if risk.score is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, UNSCORED)
+    owner = band_owner(policy, risk.band)
+    if not may_accept_band(user.role, risk.band, policy):
+        # The refusal is a decision too: recorded, then the 403. The reason is not kept, since
+        # nothing was accepted.
+        record_decision(
+            db,
+            agent=AUDIT_AGENT,
+            trigger="human",
+            subject_type=AUDIT_SUBJECT,
+            subject_id=str(risk.id),
+            version=risk.version,
+            attempt=next_attempt(db, risk),
+            status="rejected",
+            actor_user_id=user.id,
+            output=snapshot(risk),
+            action_taken={
+                "action": "accept",
+                "band": risk.band,
+                "owner_role": owner,
+                "actor_role": user.role,
+            },
+        )
+        _commit(db)
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"a {risk.band} risk can be accepted only by its owner role ({owner}) or above",
+        )
+
+    before = snapshot(risk)
+    risk.response = "accept"
+    risk.status = "accepted"
+    risk.review_date = body.review_date
+    settle_escalation(risk, policy, before=before)
+    _flush(db)
+    record_risk_change(
+        db,
+        risk,
+        action="accept",
+        before=before,
+        actor_user_id=user.id,
+        details={
+            "reason": body.reason,
+            "review_date": body.review_date.isoformat(),
+            "band": risk.band,
+            "owner_role": owner,
+        },
     )
     _commit(db)
     return RiskOut.model_validate(risk)
+
+
+def _decide_proposed(
+    db: Session, policy: RiskPolicy, risk: Risk, *, new_status: str, user: User, reason: str | None
+) -> RiskOut:
+    if risk.status != "proposed":
+        raise HTTPException(status.HTTP_409_CONFLICT, NOT_PROPOSED)
+    before = snapshot(risk)
+    risk.status = new_status
+    escalated = settle_escalation(risk, policy, before=before)
+    _flush(db)
+    record_risk_change(
+        db,
+        risk,
+        action="open" if new_status == "open" else "reject",
+        before=before,
+        actor_user_id=user.id,
+        details={"reason": reason} if reason is not None else None,
+    )
+    if escalated:
+        record_escalation(db, risk, actor_user_id=user.id)
+    _commit(db)
+    return RiskOut.model_validate(risk)
+
+
+@router.post("/{risk_id}/open", response_model=RiskOut)
+def open_risk(
+    project_id: int,
+    risk_id: int,
+    body: RiskDecision,
+    user: Annotated[User, Depends(require(Action.PROJECT_WRITE))],
+    db: Annotated[Session, Depends(get_db)],
+) -> RiskOut:
+    policy = _policy()
+    risk = _risk(db, project_id, risk_id, for_update=True)
+    _check_version(body.version, risk)
+    return _decide_proposed(db, policy, risk, new_status="open", user=user, reason=None)
+
+
+@router.post("/{risk_id}/reject", response_model=RiskOut)
+def reject_risk(
+    project_id: int,
+    risk_id: int,
+    body: RiskReject,
+    user: Annotated[User, Depends(require(Action.PROJECT_WRITE))],
+    db: Annotated[Session, Depends(get_db)],
+) -> RiskOut:
+    policy = _policy()
+    risk = _risk(db, project_id, risk_id, for_update=True)
+    _check_version(body.version, risk)
+    return _decide_proposed(db, policy, risk, new_status="rejected", user=user, reason=body.reason)
+
+
+@escalations_router.get("/escalations", response_model=Page[RiskEscalationOut])
+def list_escalations(
+    user: Annotated[User, Depends(require(Action.PROJECT_READ))],
+    db: Annotated[Session, Depends(get_db)],
+    limit: Limit = DEFAULT_LIMIT,
+    offset: Offset = 0,
+) -> Page[RiskEscalationOut]:
+    """Open risks escalated to the caller's role, across projects, highest score first."""
+    stmt = select(Risk).where(Risk.escalated_to == user.role, Risk.status == "open")
+    rows, total = paginate(
+        db, stmt, order_by=(Risk.score.desc(), Risk.id), limit=limit, offset=offset
+    )
+    project_ids = {row.project_id for row in rows}
+    names = (
+        dict(db.execute(select(Project.id, Project.name).where(Project.id.in_(project_ids))).all())
+        if project_ids
+        else {}
+    )
+    items = [
+        RiskEscalationOut.model_validate(row).model_copy(
+            update={"project_name": names.get(row.project_id, "")}
+        )
+        for row in rows
+    ]
+    return Page[RiskEscalationOut](items=items, total=total, limit=limit, offset=offset)
