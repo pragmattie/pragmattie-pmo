@@ -45,6 +45,27 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
                 "SELECT sql FROM sqlite_master WHERE name = 'risks'"
             ).scalar_one()
         assert "AUTOINCREMENT" in risks_sql
+        request_fks = {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("project_requests")
+        }
+        assert request_fks == {
+            "fk_project_requests_client": "clients",
+            "fk_project_requests_requested_by": "users",
+        }
+        request_indexes = {ix["name"] for ix in inspector.get_indexes("project_requests")}
+        assert {
+            "ix_project_requests_status",
+            "ix_project_requests_submitted_at",
+            "ix_project_requests_wanted_by",
+        } <= request_indexes
+        request_checks = {ck["name"] for ck in inspector.get_check_constraints("project_requests")}
+        assert {"ck_project_requests_status", "ck_project_requests_budget"} <= request_checks
+        with create_engine(get_settings().database_url).connect() as conn:
+            requests_sql = conn.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE name = 'project_requests'"
+            ).scalar_one()
+        assert "AUTOINCREMENT" in requests_sql
         # Fails if the models and the migrations disagree.
         command.check(config)
         command.downgrade(config, "base")

@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 
 from app import __version__
-from app.api import audit, auth, health, portfolio, risk_library, risks, standards, users
+from app.api import audit, auth, health, intake, portfolio, risk_library, risks, standards, users
 from app.config import get_settings
 from app.db import is_lock_conflict
 from app.headers import BodyLimitMiddleware, SecurityHeadersMiddleware
@@ -53,6 +53,7 @@ def create_app() -> FastAPI:
     api.include_router(health.router)
     api.include_router(auth.router)
     api.include_router(audit.router)
+    api.include_router(intake.router)
     api.include_router(portfolio.router)
     api.include_router(risk_library.router)
     api.include_router(risks.router)

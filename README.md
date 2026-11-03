@@ -92,6 +92,24 @@ for the project; the **Suggest risks** button on the Risks page runs it. `AGENT_
 `?dry_run=true` returns the exact request and a cost ceiling without calling anything. Each run is
 one audit row. Its limits, model and caps are in [docs/agents.md](docs/agents.md).
 
+## Project requests and the Intake queue
+
+**Intake** in the menu (any role with `project:read`) shows the queue of project requests: a paged
+table (title, client, status, AI, wanted by, submitted) with filters for status, client and AI,
+sorted by submitted date or wanted-by date (requests without that date come last either way).
+A request with no client is internal work. Only a role with `project:write` sees **New request**,
+and on a request's page, Edit and Submit (while it is a draft) and Withdraw (draft or submitted).
+
+- `GET /api/v1/requests`, `GET /api/v1/requests/{id}` and `GET .../{id}/history` (the request's
+  own audit rows, newest first, with the actor's display name) need `project:read`.
+- `POST /api/v1/requests`, `PATCH .../{id}`, `POST .../{id}/submit` and `POST .../{id}/withdraw`
+  need `project:write`. Any project manager may act on any request; the audit row names who did.
+  `requested_by` is the signed-in person and can't be sent. Only a draft can be edited.
+- Every change sends the `version` it read; a stale one is a 409. `declined` and `withdrawn` are
+  final. No route here approves, declines or returns a request to draft: the approval gate does.
+- The title is at most 200 characters; what is asked for, the problem, the outcome and known risks
+  at most 2,000 each. Budgets are 2-decimal strings, and the low end can't be above the high end.
+
 ## Demo users for a rehearsal
 
 `python -m app.seed users` creates one demo user per role, each on a `.example` address, with a
