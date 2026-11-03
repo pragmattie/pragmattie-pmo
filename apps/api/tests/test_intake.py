@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.intake import FINAL, NOT_DRAFT_EDIT, NOT_DRAFT_SUBMIT, NOT_WITHDRAWABLE, STALE
 from app.db import engine
 from app.main import app
 from app.models import AuditDecision, Base, Client, ProjectRequest, User
@@ -64,11 +65,19 @@ def _move(web: TestClient, request_id: int, action: str, version: int):
     return web.post(f"{URL}/{request_id}/{action}", json={"version": version})
 
 
-def _set_status(db: Session, request_id: int, status: str) -> None:
-    """What the approval gate (a later item) will do; no route here can."""
+def _set_status(db: Session, request_id: int, status: str) -> int:
+    """What the approval gate (a later item) will do; no route here can. Returns the new
+    version, so a test can send the current one and reach the status rule."""
     with Session(engine) as session:
-        session.get(ProjectRequest, request_id).status = status
+        row = session.get(ProjectRequest, request_id)
+        row.status = status
         session.commit()
+        return row.version
+
+
+def _refused(response, detail: str) -> None:
+    assert response.status_code == 409
+    assert response.json()["detail"] == detail
 
 
 # --- Create, edit, submit, withdraw
@@ -250,42 +259,43 @@ def test_another_project_manager_may_act_and_the_audit_row_names_them(web, db, p
 def test_editing_a_submitted_request_is_409(web, db, pm):
     rid = _create(web).json()["id"]
     _move(web, rid, "submit", 1)
-    response = web.patch(f"{URL}/{rid}", json={"version": 2, "title": "Late change"})
-    assert response.status_code == 409
-    assert "draft" in response.json()["detail"]
+    _refused(web.patch(f"{URL}/{rid}", json={"version": 2, "title": "Late change"}), NOT_DRAFT_EDIT)
     assert len(_audit(db)) == 2
 
 
 def test_submitting_twice_is_409(web, db, pm):
     rid = _create(web).json()["id"]
     _move(web, rid, "submit", 1)
-    assert _move(web, rid, "submit", 2).status_code == 409
+    _refused(_move(web, rid, "submit", 2), NOT_DRAFT_SUBMIT)
 
 
 @pytest.mark.parametrize("final", ["declined", "withdrawn"])
 def test_a_final_request_refuses_every_change(web, db, pm, final):
     rid = _create(web).json()["id"]
-    _set_status(db, rid, final)
-    assert web.patch(f"{URL}/{rid}", json={"version": 1, "title": "Again"}).status_code == 409
-    assert _move(web, rid, "submit", 1).status_code == 409
-    assert _move(web, rid, "withdraw", 1).status_code == 409
+    version = _set_status(db, rid, final)
+    assert web.get(f"{URL}/{rid}").json()["version"] == version
+    _refused(web.patch(f"{URL}/{rid}", json={"version": version, "title": "Again"}), FINAL)
+    _refused(_move(web, rid, "submit", version), FINAL)
+    _refused(_move(web, rid, "withdraw", version), FINAL)
     assert len(_audit(db)) == 1
 
 
 def test_an_approved_request_cannot_be_edited_submitted_or_withdrawn(web, db, pm):
     rid = _create(web).json()["id"]
-    _set_status(db, rid, "approved")
-    assert web.patch(f"{URL}/{rid}", json={"version": 1, "title": "Again"}).status_code == 409
-    assert _move(web, rid, "submit", 1).status_code == 409
-    assert _move(web, rid, "withdraw", 1).status_code == 409
+    version = _set_status(db, rid, "approved")
+    assert web.get(f"{URL}/{rid}").json()["version"] == version
+    _refused(web.patch(f"{URL}/{rid}", json={"version": version, "title": "Again"}), NOT_DRAFT_EDIT)
+    _refused(_move(web, rid, "submit", version), NOT_DRAFT_SUBMIT)
+    _refused(_move(web, rid, "withdraw", version), NOT_WITHDRAWABLE)
+    assert len(_audit(db)) == 1
 
 
 def test_a_stale_version_is_409_and_changes_nothing(web, db, pm):
     rid = _create(web).json()["id"]
     web.patch(f"{URL}/{rid}", json={"version": 1, "title": "First"})
-    assert web.patch(f"{URL}/{rid}", json={"version": 1, "title": "Second"}).status_code == 409
-    assert _move(web, rid, "submit", 1).status_code == 409
-    assert _move(web, rid, "withdraw", 1).status_code == 409
+    _refused(web.patch(f"{URL}/{rid}", json={"version": 1, "title": "Second"}), STALE)
+    _refused(_move(web, rid, "submit", 1), STALE)
+    _refused(_move(web, rid, "withdraw", 1), STALE)
     assert web.get(f"{URL}/{rid}").json()["title"] == "First"
     assert len(_audit(db)) == 2
 
