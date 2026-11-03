@@ -192,6 +192,31 @@ file is an empty placeholder and both gate routes answer 503 with a plain messag
   on someone else's submitted request, tick boxes with notes and Pass, Return and Decline buttons,
   each asking for the reason.
 
+### From approval to project
+
+A `pass` names the project manager (`project_manager_id`, an active user with the
+`project_manager` role; otherwise a 422; `return` and `decline` refuse one). In the same
+transaction as the decision it creates:
+
+- **the project**, in stage `planning` with status `on_track`, named after the request, with its
+  client, the deciding sponsor and the named project manager; the request records it
+  (`project_id`), and a request that is already a project is a 409;
+- **the brief**: purpose and objectives from the request and value case, scope in (what was asked
+  for), scope out (left for the project manager), the wanted-by date, the value case's cost range,
+  and who decides what for each role in `policies/approvers.yaml`;
+- **the stakeholder list**: the sponsor, the project manager and the client's contact if it has
+  one (a name with no user); the **assumptions list** starts empty;
+- **the first risks**, all `proposed` and unscored with source `person` (they come from the
+  sponsor's decision and the confirmed readiness check): one AI risk for each readiness area rated
+  yellow or red, marked `needs_judgement` when its note names an ethical, legal or reputational
+  concern, and one project risk for the request's own risks text. A person scores and opens them.
+
+The decision's audit row lists the ids of everything created. If anything fails, nothing is
+created and the decision is not recorded. `/api/v1/projects/{id}` and its `brief`,
+`stakeholders` and `assumptions` routes read (`project:read`) and edit (`project:write`) them, each
+change one audit row (agent `project`). The project page shows the brief, stakeholders,
+assumptions and a link to the project's risks; the request page links to its project.
+
 ## Demo users for a rehearsal
 
 `python -m app.seed users` creates one demo user per role, each on a `.example` address, with a
