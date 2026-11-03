@@ -78,6 +78,15 @@ These routes need a signed-in person, and each decision is an audit row naming t
 page, Accept, Open and Reject show only to roles that may use them, and a panel lists what is
 escalated to the signed-in role.
 
+## The risk agent
+
+`POST /api/v1/projects/{id}/risks/suggest` (`project:write`) asks Claude for up to five new risks
+for the project; the **Suggest risks** button on the Risks page runs it. `AGENT_MODE` gates it:
+`off` refuses, `shadow` returns the proposals and saves nothing, `enforce` saves them as
+`proposed`, unscored risks marked **Agent proposal**, for a person to open or reject.
+`?dry_run=true` returns the exact request and a cost ceiling without calling anything. Each run is
+one audit row. Its limits, model and caps are in [docs/agents.md](docs/agents.md).
+
 ## Demo users for a rehearsal
 
 `python -m app.seed users` creates one demo user per role, each on a `.example` address, with a
