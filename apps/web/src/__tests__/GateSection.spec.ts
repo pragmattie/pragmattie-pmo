@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
 import { canDecideGate, type Gate, type GateCriterion, readyToPass } from '../lib/gates'
-import type { ProjectRequest } from '../lib/intake'
+import type { ProjectRequest, RequestStatus } from '../lib/intake'
 import { makeVuetify } from '../plugins/vuetify'
 import { makeRouter } from '../router'
 
@@ -121,9 +121,12 @@ function fakeApi(role: string, options: FakeOptions = {}) {
     if (path === '/api/v1/requests/1/gate' && method === 'POST') {
       if (options.decideError) return json({ detail: options.decideError.detail }, options.decideError.status)
       const body = JSON.parse(String(init.body))
-      const status = { pass: 'approved', return: 'draft', decline: 'declined' }[
-        body.outcome as 'pass' | 'return' | 'decline'
-      ]
+      const outcomes: Record<string, RequestStatus> = {
+        pass: 'approved',
+        return: 'draft',
+        decline: 'declined',
+      }
+      const status = outcomes[body.outcome]
       stored = { ...stored, status, version: stored.version + 1 }
       current = {
         ...current,
