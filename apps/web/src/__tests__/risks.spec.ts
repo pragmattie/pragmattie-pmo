@@ -8,12 +8,15 @@ import {
   bandColor,
   canAcceptRisk,
   canCloseRisk,
+  canEditRisk,
   changedFields,
   CONFLICT_MESSAGE,
+  escalationLine,
   type HeatCell,
   heatGrid,
   listQuery,
   mayAcceptBand,
+  mayClearEscalation,
   NEEDS_JUDGEMENT,
   NO_FILTERS,
   type Risk,
@@ -109,6 +112,12 @@ const RISKS = [
     title: 'Proposed by the agent',
     source: 'agent',
   }),
+  risk(7, {
+    status: 'rejected',
+    escalated_to: null,
+    escalated_band: null,
+    title: 'Rejected as a duplicate',
+  }),
   risk(4, {
     probability: null,
     impact: null,
@@ -161,6 +170,10 @@ const SUGGESTION: RiskSuggestion = {
   dropped: [],
   saved: [risk(6, { status: 'proposed', source: 'agent' })],
 }
+
+const HELD =
+  "this risk is escalated to the sponsor: it can't be moved to a lower band until the sponsor " +
+  'or above accepts it'
 
 interface FakeOptions {
   suggestStatus?: number
@@ -239,6 +252,7 @@ function fakeApi(role: string, options: FakeOptions = {}) {
       if (options.patchStatus === 409) {
         return json({ detail: 'this risk has changed since you read it' }, 409)
       }
+      if (options.patchStatus === 403) return json({ detail: HELD }, 403)
       return json(risk(Number(one[1]), { status: 'closed', version: 2 }))
     }
     if (one) return json(options.stored ?? risk(Number(one[1])))
@@ -374,6 +388,25 @@ describe('accept, open and close rules', () => {
     expect(canAcceptRisk({ ...open, score: null, band: null }, 'sponsor', true, bands)).toBe(false)
   })
 
+  it('lets only a role at or above the escalation owner clear an escalation', () => {
+    const high = { escalated_to: 'sponsor', escalated_band: 'High' }
+    const low = { escalated_to: 'project_manager', escalated_band: 'Low' }
+    expect(mayClearEscalation(high, 'project_manager', true, bands)).toBe(false)
+    expect(mayClearEscalation(high, 'sponsor', true, bands)).toBe(true)
+    expect(mayClearEscalation(low, 'project_manager', true, bands)).toBe(true)
+    expect(mayClearEscalation(low, 'project_manager', false, bands)).toBe(false)
+    const none = { escalated_to: null, escalated_band: null }
+    expect(mayClearEscalation(none, 'project_manager', false, bands)).toBe(true)
+    expect(escalationLine(high)).toBe(
+      'Escalated to the sponsor: only the sponsor can accept or close it',
+    )
+  })
+
+  it('edits any risk but a rejected one', () => {
+    expect(canEditRisk({ status: 'open' })).toBe(true)
+    expect(canEditRisk({ status: 'rejected' })).toBe(false)
+  })
+
   it('closes only open and accepted risks', () => {
     expect(canCloseRisk({ status: 'open' })).toBe(true)
     expect(canCloseRisk({ status: 'accepted' })).toBe(true)
@@ -494,7 +527,8 @@ describe('role-based buttons', () => {
     expect(wrapper.find('[data-test="add-risk"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="add-from-library"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="suggest-risks"]').exists()).toBe(true)
-    await wrapper.get('[data-test="risk-row-2"]').trigger('click')
+    // Risk 5 is Low, so its escalation is the project manager's own.
+    await wrapper.get('[data-test="risk-row-5"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="edit-risk"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="close-risk"]').exists()).toBe(true)
@@ -514,7 +548,7 @@ describe('role-based buttons', () => {
 
   it('hides the close button on a closed risk', async () => {
     const { wrapper } = await mountRisks('project_manager')
-    await wrapper.get('[data-test="risk-row-2"]').trigger('click')
+    await wrapper.get('[data-test="risk-row-5"]').trigger('click')
     await flushPromises()
     await wrapper.get('[data-test="close-risk"]').trigger('click')
     await flushPromises()
@@ -527,12 +561,12 @@ describe('role-based buttons', () => {
 
 describe('version conflicts', () => {
   it('shows a clear message and reloads the risk on a 409', async () => {
-    const stored = risk(2, { title: 'Changed by someone else', version: 5 })
+    const stored = risk(5, { title: 'Changed by someone else', version: 5 })
     const { wrapper, fetchMock } = await mountRisks('project_manager', {
       patchStatus: 409,
       stored,
     })
-    await wrapper.get('[data-test="risk-row-2"]').trigger('click')
+    await wrapper.get('[data-test="risk-row-5"]').trigger('click')
     await flushPromises()
     await wrapper.get('[data-test="close-risk"]').trigger('click')
     await flushPromises()
@@ -545,7 +579,7 @@ describe('version conflicts', () => {
     expect(wrapper.get('[data-test="drawer-title"]').text()).toBe('Changed by someone else')
     expect(wrapper.get('[data-test="field-Version"]').text()).toBe('5')
     const reloads = fetchMock.mock.calls.filter(
-      ([input, init]) => input === '/api/v1/projects/3/risks/2' && init?.method === 'GET',
+      ([input, init]) => input === '/api/v1/projects/3/risks/5' && init?.method === 'GET',
     )
     expect(reloads.length).toBeGreaterThan(0)
   })
@@ -783,5 +817,46 @@ describe('risk agent', () => {
       'The risk agent suggested 1 risk (shadow mode, so nothing was saved): Model answers drift.',
     )
     expect(suggestionMessage(SUGGESTION)).toContain(`"${AGENT_PROPOSAL}"`)
+  })
+})
+
+describe('escalation hold and final rejections', () => {
+  it('hides Close risk on a risk escalated above the project manager, with the line', async () => {
+    const { wrapper } = await mountRisks('project_manager')
+    await openRow(wrapper, 2)
+    expect(has(wrapper, 'edit-risk')).toBe(true)
+    expect(has(wrapper, 'close-risk')).toBe(false)
+    expect(wrapper.get('[data-test="escalation-hold"]').text()).toBe(
+      'Escalated to the sponsor: only the sponsor can accept or close it.',
+    )
+    await openRow(wrapper, 5)
+    expect(has(wrapper, 'close-risk')).toBe(true)
+    expect(has(wrapper, 'escalation-hold')).toBe(false)
+  })
+
+  it('shows no escalation line to the escalation owner', async () => {
+    const { wrapper } = await mountRisks('sponsor')
+    await openRow(wrapper, 2)
+    expect(has(wrapper, 'escalated')).toBe(true)
+    expect(has(wrapper, 'escalation-hold')).toBe(false)
+  })
+
+  it('shows no Edit button on a rejected risk', async () => {
+    const { wrapper } = await mountRisks('project_manager')
+    await openRow(wrapper, 7)
+    expect(has(wrapper, 'risk-drawer')).toBe(true)
+    expect(has(wrapper, 'edit-risk')).toBe(false)
+    expect(has(wrapper, 'close-risk')).toBe(false)
+  })
+
+  it("shows the API's message in the drawer when a save is refused", async () => {
+    const { wrapper } = await mountRisks('project_manager', { patchStatus: 403 })
+    await openRow(wrapper, 2)
+    await wrapper.get('[data-test="edit-risk"]').trigger('click')
+    await flushPromises()
+    ;(document.querySelector('[data-test="form-save"]') as HTMLElement).click()
+    await flushPromises()
+    expect(wrapper.get('[data-test="drawer-message"]').text()).toBe(HELD)
+    expect(document.querySelector('[data-test="form-error"]')?.textContent?.trim()).toBe(HELD)
   })
 })

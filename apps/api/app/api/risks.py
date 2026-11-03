@@ -4,8 +4,17 @@ Reading needs `project:read`; creating and changing need `project:write`. There 
 risk is closed with a PATCH that sets `status` to `closed`. A PATCH moves status only from open to
 closed, from closed back to open, or from accepted to closed; it never opens a proposed, accepted
 or rejected risk. On an accepted risk it may not change `response` or `needs_judgement` or clear
-the score (409); probability and impact may still change, and a higher band reopens it. The
-decisions have their own routes, each one audit row with the person's id:
+the score (409); probability and impact may still change, and a higher band reopens it. A
+rejected risk is final: any PATCH to it is a 409.
+
+Escalation hold: while a risk is escalated (`escalated_to` set), a caller whose role does not rank
+at or above the escalation owner (`authz.may_accept_band` for `escalated_band`) may not close it
+or re-score it into a lower band (losing the score counts as lower). The whole PATCH is refused
+with a 403 before anything changes, and the refusal is one audit row (`status: rejected`) naming
+the caller, band, owner and what was attempted. Raising the score and other edits are allowed.
+The hold ends when the escalation does: the owner accepts the risk.
+
+The decisions have their own routes, each one audit row with the person's id:
 
 - `POST .../{id}/accept` (`risk:accept`) accepts an open, scored risk. The caller's role must rank
   at or above the band's escalation owner in the risk policy (`authz.may_accept_band`); a refusal
@@ -61,6 +70,7 @@ from app.risks import (
     AUDIT_SUBJECT,
     apply_score,
     band_owner,
+    band_rank,
     next_attempt,
     record_escalation,
     record_risk_change,
@@ -105,6 +115,7 @@ NOT_OPEN = "only an open risk can be accepted"
 NOT_PROPOSED = "only a proposed risk can be opened or rejected"
 UNSCORED = "this risk has no score yet; a person must score it before it can be accepted"
 BAD_MOVE = "a change here may only close an open or accepted risk, or reopen a closed one"
+REJECTED_FINAL = "a rejected risk can't be edited"
 ACCEPTED_LOCKED = (
     "an accepted risk keeps its response, needs_judgement and score; "
     "you may re-score it or close it"
@@ -418,6 +429,55 @@ def get_risk(
     return RiskOut.model_validate(_risk(db, project_id, risk_id))
 
 
+def _record_refusal(
+    db: Session,
+    risk: Risk,
+    user: User,
+    *,
+    action: str,
+    band: str | None,
+    owner_role: str | None,
+    attempted: dict | None = None,
+) -> None:
+    """The audit row for a refused decision (`status: rejected`): who tried what, on which band
+    and owner. Nothing about the risk changes, so `output` is the risk as it stays."""
+    record_decision(
+        db,
+        agent=AUDIT_AGENT,
+        trigger="human",
+        subject_type=AUDIT_SUBJECT,
+        subject_id=str(risk.id),
+        version=risk.version,
+        attempt=next_attempt(db, risk),
+        status="rejected",
+        actor_user_id=user.id,
+        output=snapshot(risk),
+        action_taken={
+            "action": action,
+            "band": band,
+            "owner_role": owner_role,
+            "actor_role": user.role,
+            **({"attempted": attempted} if attempted is not None else {}),
+        },
+    )
+
+
+def _escalation_hold(
+    policy: RiskPolicy, risk: Risk, user: User, new_status: str, new_band: str | None
+) -> str | None:
+    """Whether the escalation hold refuses this change: `close` or `rescore`, or none.
+
+    While a risk is escalated, only a role at or above the escalation owner may close it or move
+    it to a lower band; losing the score counts as lower. Anyone may raise it or edit its text."""
+    if risk.escalated_to is None or may_accept_band(user.role, risk.escalated_band, policy):
+        return None
+    if new_status == "closed" and risk.status != "closed":
+        return "close"
+    if band_rank(policy, new_band) < band_rank(policy, risk.band):
+        return "rescore"
+    return None
+
+
 def _breaks_acceptance(current: dict, changes: dict) -> bool:
     """Whether a PATCH would undo what accepting a risk settled: its response, needs_judgement or
     score. Changing probability or impact is still allowed, and may reopen it."""
@@ -442,7 +502,10 @@ def update_risk(
     # Locked until commit on MySQL, so a parallel edit waits and then sees the new version.
     risk = _risk(db, project_id, risk_id, for_update=True)
     _check_version(body.version, risk)
+    if risk.status == "rejected":
+        raise HTTPException(status.HTTP_409_CONFLICT, REJECTED_FINAL)
 
+    attempted = body.model_dump(mode="json", exclude_unset=True, exclude={"version"})
     changes = body.model_dump(exclude_unset=True, exclude={"version"})
     new_status: EditableStatus | None = changes.pop("status", risk.status)
     if new_status is None:
@@ -458,6 +521,29 @@ def update_risk(
         raise RequestValidationError(exc.errors(include_url=False, include_context=False)) from None
     if "owner_user_id" in changes:
         _check_owner(db, fields.owner_user_id)
+
+    # Decided before anything is set on the risk, so the commit that keeps the refusal's audit
+    # row can't carry part of the edit with it.
+    _, new_band = score_risk(policy, fields.probability, fields.impact)
+    held = _escalation_hold(policy, risk, user, new_status, new_band)
+    if held is not None:
+        _record_refusal(
+            db,
+            risk,
+            user,
+            action=held,
+            band=risk.escalated_band,
+            owner_role=risk.escalated_to,
+            attempted=attempted,
+        )
+        _commit(db)
+        owner = (risk.escalated_to or "owner").replace("_", " ")
+        move = "closed" if held == "close" else "moved to a lower band"
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"this risk is escalated to the {owner}: it can't be {move} until the {owner} "
+            "or above accepts it",
+        )
 
     before = snapshot(risk)
     for name, value in {**fields.model_dump(), "status": new_status}.items():
@@ -504,24 +590,7 @@ def accept_risk(
     if not may_accept_band(user.role, risk.band, policy):
         # The refusal is a decision too: recorded, then the 403. The reason is not kept, since
         # nothing was accepted.
-        record_decision(
-            db,
-            agent=AUDIT_AGENT,
-            trigger="human",
-            subject_type=AUDIT_SUBJECT,
-            subject_id=str(risk.id),
-            version=risk.version,
-            attempt=next_attempt(db, risk),
-            status="rejected",
-            actor_user_id=user.id,
-            output=snapshot(risk),
-            action_taken={
-                "action": "accept",
-                "band": risk.band,
-                "owner_role": owner,
-                "actor_role": user.role,
-            },
-        )
+        _record_refusal(db, risk, user, action="accept", band=risk.band, owner_role=owner)
         _commit(db)
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,

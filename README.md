@@ -63,7 +63,10 @@ list also takes `probability` and `impact` filters, for a heat map cell. Band co
 Each priority band in `policies/risk.yaml` names its escalation owner (Low: project manager;
 Medium and High: sponsor). When an open risk enters a band whose owner differs from before, it is
 escalated to that role, with one audit row naming the band, the role and the risk. It stays
-escalated until it leaves `open` or a re-score moves it to another owner.
+escalated until it leaves `open` or a re-score moves it to another owner. While it is escalated,
+only a role at or above the owner may close it or re-score it into a lower band (losing its score
+counts as lower); anyone else gets a 403, recorded as a refused decision, and nothing changes.
+Raising the score and other edits are still allowed. In practice the owner accepting ends it.
 `GET /api/v1/risks/escalations` lists the open escalations for the caller's role, across projects.
 
 - `POST /api/v1/projects/{id}/risks/{risk_id}/accept` (`risk:accept`) accepts an open, scored
@@ -72,11 +75,13 @@ escalated until it leaves `open` or a re-score moves it to another owner.
   is a 403 and is audited too. Re-scoring an accepted risk into a higher band reopens it.
 - `POST .../{risk_id}/open` and `POST .../{risk_id}/reject` (`project:write`) decide on a
   proposed risk; rejecting needs a reason.
-- The general `PATCH` only closes an open or accepted risk, or reopens a closed one.
+- The general `PATCH` only closes an open or accepted risk, or reopens a closed one. A rejected
+  risk is final: any `PATCH` to it is a 409.
 
 These routes need a signed-in person, and each decision is an audit row naming them. On the Risks
 page, Accept, Open and Reject show only to roles that may use them, and a panel lists what is
-escalated to the signed-in role.
+escalated to the signed-in role. Close risk is hidden from a person who can't clear a risk's
+escalation, who sees who can instead, and a rejected risk has no Edit button.
 
 ## The risk agent
 

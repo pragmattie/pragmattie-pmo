@@ -6,7 +6,8 @@ changes, `python -m app.risks rescore` brings every stored score and band up to 
 
 `status` moves only along agreed paths: a proposed risk is opened or rejected, an open one is
 accepted or closed, a closed one may reopen, and an accepted one may close or is reopened when a
-re-score moves it into a higher band (`app.api.risks`).
+re-score moves it into a higher band (`app.api.risks`). A rejected risk is final. While a risk is
+escalated, only a role at or above its escalation owner may close it or lower its band.
 
 `version` guards concurrent edits: a client sends the version it read, and SQLAlchemy also adds
 it to every UPDATE (`version_id_col`), so a write that lost a race fails instead of overwriting.

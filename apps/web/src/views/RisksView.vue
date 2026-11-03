@@ -23,6 +23,7 @@ import {
   KINDS,
   label,
   listQuery,
+  mayClearEscalation,
   MIN_ACCEPT_REASON,
   NEEDS_JUDGEMENT,
   NO_FILTERS,
@@ -52,6 +53,17 @@ const canAcceptSelected = computed(
   () =>
     !!selected.value &&
     canAcceptRisk(
+      selected.value,
+      auth.user?.role,
+      auth.can('risk:accept'),
+      heatmap.value?.bands ?? [],
+    ),
+)
+// The escalation hold: only a role at or above the escalation owner may close an escalated risk.
+const canClearSelected = computed(
+  () =>
+    !!selected.value &&
+    mayClearEscalation(
       selected.value,
       auth.user?.role,
       auth.can('risk:accept'),
@@ -319,6 +331,10 @@ async function save(input: RiskInput) {
       await afterConflict()
     } else {
       formError.value = failed(error)
+      // A refusal (such as the escalation hold on a lower band) shows in the drawer as well.
+      if (error instanceof ApiError && error.status === 403 && formRisk.value) {
+        showMessage(failed(error), 'error')
+      }
     }
   } finally {
     busy.value = false
@@ -719,6 +735,7 @@ async function addFromLibrary() {
         :owner-name="ownerName"
         :can-write="canWrite"
         :can-accept="canAcceptSelected"
+        :can-clear-escalation="canClearSelected"
         :busy="busy"
         :message="message"
         :message-type="messageType"
