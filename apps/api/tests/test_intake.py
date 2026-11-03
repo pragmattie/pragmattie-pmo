@@ -402,11 +402,14 @@ def test_no_route_can_approve_decline_or_return_to_draft(web, db, pm):
         ("PUT", "/api/v1/requests/{request_id}/readiness"),
         ("GET", "/api/v1/requests/{request_id}/gate"),
         ("POST", "/api/v1/requests/{request_id}/gate"),
+        # The intake agent drafts sections of a draft request; it never moves one (item 4.5).
+        ("POST", "/api/v1/requests/{request_id}/draft"),
     }
     rid = _ready(web, pm)
     _move(web, rid, "submit", 1)
-    for action in ("approve", "decline", "return", "draft"):
+    for action in ("approve", "decline", "return"):
         assert _move(web, rid, action, 2).status_code in (404, 405)
+    assert _move(web, rid, "draft", 2).status_code == 409
     assert web.patch(f"{URL}/{rid}", json={"version": 2, "status": "approved"}).status_code == 422
     assert web.get(f"{URL}/{rid}").json()["status"] == "submitted"
 

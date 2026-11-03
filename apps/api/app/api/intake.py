@@ -24,6 +24,14 @@ edit, submit or withdraw any request (work gets handed over); the audit row reco
   that uses AI is submitted only once its check is complete and confirmed; a red result does not
   stop submission (the approval gate deals with it).
 
+`POST /requests/{id}/draft` (item 4.5) runs the intake agent (`app.agents.intake_agent`) on a
+draft request, gated by `AGENT_MODE` like the risk agent: `off` refuses (409) and calls nothing;
+`shadow` returns the proposal and saves nothing; `enforce` saves the value case, and the
+readiness check for a request that uses AI, as unconfirmed `source = agent` drafts, replacing
+only a section no person has confirmed. With `?dry_run=true` it returns the exact request and a
+cost ceiling and calls nothing. A failed run is audited and answered with a 502; it saves nothing.
+An agent's draft never counts until a person saves it, which confirms it.
+
 No route here sets `approved`, `declined` or returns a request to `draft`: that is the approval
 gate's job, and a person's decision there. Every change carries the `version` the client read; a
 different stored version, or a parallel write that lands first, is a 409. Each create, edit,
@@ -31,8 +39,9 @@ submit and withdraw is one audit row (agent `intake`, subject `project_request`)
 before and after and the person's id.
 """
 
+import logging
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, ROUND_UP, Decimal
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -43,8 +52,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
+from app.agents import intake_agent, risk_agent
 from app.audit import ORDER_BY, decisions_query, record_decision
 from app.authz import Action, require
+from app.config import get_settings
 from app.db import get_db
 from app.models import (
     AuditDecision,
@@ -60,6 +71,7 @@ from app.models import (
 from app.models.intake import FINAL_STATUSES, READINESS_AREAS
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
 from app.schemas.intake import (
+    DraftResult,
     ReadinessIn,
     ReadinessOut,
     RequestCreate,
@@ -72,6 +84,8 @@ from app.schemas.intake import (
     ValueCaseIn,
     ValueCaseOut,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/requests", tags=["intake"])
 
@@ -101,7 +115,11 @@ NOT_DRAFT_READINESS = "the readiness check can be changed only while its request
 BAD_OWNER = "every action's owner must be an active user"
 MISSING_READINESS = "a readiness check"
 MISSING_RATING = "a rating and a note for each readiness area: problem, approach and data"
+NOT_DRAFT_AGENT = "the intake agent drafts only for a draft request"
+AGENT_OFF = "the intake agent is off (AGENT_MODE=off); a person can write the value case by hand"
+AGENT_FAILED = "the intake agent could not finish; the failed run is recorded in the audit trail"
 MISSING_ACTION = "an action with an owner and a due date for each yellow readiness area"
+MISSING_ACTION_DETAILS = "an owner and a due date for every readiness action"
 MISSING_READINESS_CONFIRMATION = "a person's confirmation of the readiness check an agent drafted"
 
 SNAPSHOT_FIELDS = (*RequestFields.model_fields, "requested_by", "status", "submitted_at", "version")
@@ -524,6 +542,9 @@ def readiness_gaps(check: ReadinessCheck | None) -> list[str]:
         for area, rating in check.ratings().items()
     ):
         missing.append(MISSING_ACTION)
+    if any(a.owner_id is None or a.due_date is None for a in check.actions):
+        # Only an agent's draft leaves these empty; a person's save sets both.
+        missing.append(MISSING_ACTION_DETAILS)
     if check.confirmed_by is None:
         missing.append(MISSING_READINESS_CONFIRMATION)
     return missing
@@ -561,7 +582,7 @@ def readiness_snapshot(check: ReadinessCheck) -> dict[str, Any]:
 
 
 def _readiness_out(db: Session, request: ProjectRequest, check: ReadinessCheck) -> ReadinessOut:
-    ids = {a.owner_id for a in check.actions} | ({check.confirmed_by} - {None})
+    ids = ({a.owner_id for a in check.actions} | {check.confirmed_by}) - {None}
     names = _names(db, User, ids, User.display_name)
     areas = {
         area: {
@@ -571,7 +592,7 @@ def _readiness_out(db: Session, request: ProjectRequest, check: ReadinessCheck) 
                 {
                     "description": a.description,
                     "owner_id": a.owner_id,
-                    "owner_name": names.get(a.owner_id),
+                    "owner_name": names.get(a.owner_id) if a.owner_id else None,
                     "due_date": a.due_date,
                 }
                 for a in check.area_actions(area)
@@ -670,3 +691,71 @@ def put_readiness(
     )
     _commit(db)
     return _readiness_out(db, request, check)
+
+
+# --- The intake agent (item 4.5)
+
+
+def get_claude_client() -> risk_agent.ClaudeClient:
+    """The intake agent's Claude client; tests replace it through `dependency_overrides`."""
+    return risk_agent.AnthropicClient(get_settings())
+
+
+@router.post("/{request_id}/draft", response_model=DraftResult)
+def draft_request(
+    request_id: int,
+    user: Annotated[User, Depends(require(Action.PROJECT_WRITE))],
+    db: Annotated[Session, Depends(get_db)],
+    claude: Annotated[risk_agent.ClaudeClient, Depends(get_claude_client)],
+    dry_run: bool = False,
+) -> DraftResult:
+    settings = get_settings()
+    if settings.agent_mode == "off":
+        raise HTTPException(status.HTTP_409_CONFLICT, AGENT_OFF)
+    request = _request(db, request_id)
+    if request.status != "draft":
+        raise HTTPException(status.HTTP_409_CONFLICT, NOT_DRAFT_AGENT)
+    common = {
+        "mode": settings.agent_mode,
+        "dry_run": dry_run,
+        "model": settings.intake_agent_model,
+        "prompt_version": intake_agent.PROMPT_VERSION,
+    }
+    if dry_run:
+        api_request = intake_agent.build_request(intake_agent.request_data(db, request), settings)
+        ceiling = intake_agent.cost_ceiling(api_request, settings)
+        return DraftResult(
+            **common,
+            request=api_request,
+            cost_ceiling_usd=ceiling.quantize(Decimal("0.01"), rounding=ROUND_UP),
+        )
+    try:
+        result = intake_agent.run(
+            db,
+            claude,
+            request,
+            settings=settings,
+            save_it=settings.agent_mode == "enforce",
+            actor_user_id=user.id,
+        )
+    except risk_agent.AgentError:
+        logger.exception("intake agent run failed for request %s", request_id)
+        _commit(db)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, AGENT_FAILED) from None
+    _commit(db)
+    checked = result.checked
+    proposal = intake_agent.proposal_json(checked)
+    return DraftResult(
+        **common,
+        value_case=proposal["value_case"],
+        readiness=proposal["readiness"],
+        dropped=checked.dropped,
+        adjusted=checked.adjusted,
+        saved=result.saved,
+        skipped=result.skipped,
+        request_version=request.version,
+        audit_id=result.audit_id,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cost_usd=result.cost_usd,
+    )

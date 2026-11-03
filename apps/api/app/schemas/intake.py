@@ -20,6 +20,7 @@ from app.models.intake import (
     TARGET_MAX,
     TITLE_MAX,
 )
+from app.schemas.audit import CostStr
 from app.schemas.common import MoneyStr
 
 RequestStatus = Literal["draft", "submitted", "approved", "declined", "withdrawn"]
@@ -238,10 +239,12 @@ class ReadinessIn(BaseModel):
 
 
 class ReadinessActionOut(BaseModel):
+    """An action. Owner and date are empty only on an agent's draft, until a person adds them."""
+
     description: str
-    owner_id: int
+    owner_id: int | None
     owner_name: str | None
-    due_date: date
+    due_date: date | None
 
 
 class ReadinessAreaOut(BaseModel):
@@ -266,3 +269,76 @@ class ReadinessOut(BaseModel):
     confirmed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+Concern = Literal["none", "ethical", "legal", "reputational"]
+
+
+class DraftValueCase(BaseModel):
+    """The value case the intake agent proposed, after code checked it."""
+
+    benefits: list[BenefitOut]
+    cost_low: MoneyStr | None
+    cost_high: MoneyStr | None
+    cost_method: str | None
+    strategic_fit: str
+    cost_of_not_doing: str | None
+    concern: Concern
+
+
+class DraftArea(BaseModel):
+    # Empty when code dropped the area. Never green: a person rates an area green.
+    rating: Literal["yellow", "red"] | None
+    note: str | None
+    concern: Concern
+    # What to do; a person adds each action's owner and date.
+    actions: list[str]
+
+
+class DraftReadiness(BaseModel):
+    problem: DraftArea
+    approach: DraftArea
+    data: DraftArea
+
+
+class DraftChange(BaseModel):
+    part: str
+    reason: str
+
+
+class DraftAdjustment(BaseModel):
+    part: str
+    change: str
+
+
+class DraftSkipped(BaseModel):
+    section: Literal["value_case", "readiness"]
+    reason: str
+
+
+class DraftResult(BaseModel):
+    """The answer of `POST /requests/{id}/draft`.
+
+    A dry run has `request` (the exact request that would be sent) and `cost_ceiling_usd` (the
+    most it can cost, rounded up to the cent), and nothing is called or saved. A real run has the
+    proposal, what code dropped or changed, its tokens and cost and its audit row. In `enforce`,
+    `saved` names the sections saved as unconfirmed agent drafts and `skipped` the ones a person
+    has confirmed, which the agent leaves alone; in `shadow` both are empty."""
+
+    mode: Literal["shadow", "enforce"]
+    dry_run: bool
+    model: str
+    prompt_version: str
+    request: dict[str, Any] | None = None
+    cost_ceiling_usd: MoneyStr | None = None
+    value_case: DraftValueCase | None = None
+    readiness: DraftReadiness | None = None
+    dropped: list[DraftChange] = []
+    adjusted: list[DraftAdjustment] = []
+    saved: list[Literal["value_case", "readiness"]] = []
+    skipped: list[DraftSkipped] = []
+    request_version: int | None = None
+    audit_id: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: CostStr | None = None
