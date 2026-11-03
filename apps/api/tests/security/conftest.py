@@ -23,7 +23,7 @@ def db():
 
 
 @pytest.fixture
-def web(db) -> TestClient:
+def web(db, gates_policy) -> TestClient:
     return TestClient(app, base_url="http://localhost")
 
 

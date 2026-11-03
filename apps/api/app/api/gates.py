@@ -1,6 +1,6 @@
 """The approval gate: a person's decision on a submitted project request (item 4.4).
 
-The gate, its criteria and who may decide it come from `policies/gates.yaml` (`app.policy`).
+The gate, its criteria and who may decide it come from the gates policy file (`app.policy`).
 Until a person applies a gates file that defines the `approval` gate, both routes answer 503.
 
 - `GET /requests/{id}/gate` (`project:read`) shows the gate, each criterion with its result now
@@ -61,8 +61,7 @@ SUBJECT_TYPE = "request"
 OUTCOME_STATUS = {"pass": "approved", "return": "draft", "decline": "declined"}
 
 GATES_UNAVAILABLE = (
-    "the approval gate isn't available yet: a person needs to apply the gates policy "
-    "(policies/gates.yaml)"
+    "the approval gate isn't available yet: a person needs to apply the gates policy file"
 )
 NOT_SUBMITTED = "only a submitted request can be decided at the approval gate"
 UNMET = "this request can't pass the approval gate until every criterion is met"

@@ -45,7 +45,7 @@ def db():
 
 
 @pytest.fixture
-def web(db) -> TestClient:
+def web(db, gates_policy) -> TestClient:
     return TestClient(app, base_url="http://localhost")
 
 
@@ -292,9 +292,12 @@ def _intake_sample(
     value_case: bool = False,
     uses_ai: bool = False,
     readiness: bool = False,
+    status: str = "draft",
 ):
     def sample(target: int) -> dict:
-        rid = _project_request(target, value_case=value_case, uses_ai=uses_ai, readiness=readiness)
+        rid = _project_request(
+            target, status, value_case=value_case, uses_ai=uses_ai, readiness=readiness
+        )
         url = f"/api/v1/requests/{rid}{suffix}"
         if callable(body):
             return {"url": url, "json": body(target)}
@@ -389,6 +392,22 @@ SAMPLES = {
     ("PUT", "/api/v1/requests/{request_id}/readiness"): _intake_sample(
         "/readiness", _readiness_body, uses_ai=True
     ),
+    ("GET", "/api/v1/requests/{request_id}/gate"): _intake_sample("/gate", value_case=True),
+    # Raised by the target project manager, so a sponsor deciding it is not deciding their own.
+    ("POST", "/api/v1/requests/{request_id}/gate"): _intake_sample(
+        "/gate",
+        {
+            "version": 1,
+            "outcome": "pass",
+            "reason": "Worth doing and we have the people for it",
+            "criteria": [
+                {"id": "value_justifies_cost", "met": True, "note": "Pays back in a year"},
+                {"id": "people_available", "met": True, "note": "Two analysts free"},
+            ],
+        },
+        value_case=True,
+        status="submitted",
+    ),
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -418,9 +437,14 @@ CREATED = {
 # Allowed requests refused for another reason: the risk agent is off in tests.
 REFUSED = {("POST", "/api/v1/projects/{project_id}/risks/suggest")}
 
+# Routes that also need a role the gates policy lists: other roles holding the action get 403.
+GATE_DECIDERS = {("POST", "/api/v1/requests/{request_id}/gate"): {Role.SPONSOR}}
+
 
 def _expected(guard, role: Role, method: str = "GET", path: str = "") -> int:
     if guard != "signed_in" and guard not in PERMISSIONS[role]:
+        return 403
+    if role not in GATE_DECIDERS.get((method, path), set(Role)):
         return 403
     if (method, path) in REFUSED:
         return 409
@@ -462,6 +486,8 @@ def test_matrix_covers_the_existing_routes():
         ("PUT", "/api/v1/requests/{request_id}/value-case"),
         ("GET", "/api/v1/requests/{request_id}/readiness"),
         ("PUT", "/api/v1/requests/{request_id}/readiness"),
+        ("GET", "/api/v1/requests/{request_id}/gate"),
+        ("POST", "/api/v1/requests/{request_id}/gate"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -494,8 +520,10 @@ def test_matrix_covers_the_existing_routes():
         f"{request}/history",
         f"{request}/value-case",
         f"{request}/readiness",
+        f"{request}/gate",
     ):
         assert by_method[("GET", path)] == Action.PROJECT_READ
+    assert by_method[("POST", f"{request}/gate")] == Action.GATE_DECIDE
     for method, path in (
         ("POST", requests),
         ("PATCH", request),
