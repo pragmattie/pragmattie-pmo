@@ -21,6 +21,7 @@ USERS_TABLE = table_name("users")
 OUTCOMES = ("pass", "return", "decline")
 SUBJECT_TYPES = ("request", "project")
 MIN_REASON = 20
+NOTE_MAX = 500
 
 
 class GateDecision(Base):

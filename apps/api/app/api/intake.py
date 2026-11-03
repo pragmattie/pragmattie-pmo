@@ -372,10 +372,10 @@ def submit_request(
     request = _locked(db, request_id, body.version)
     if request.status != "draft":
         raise HTTPException(status.HTTP_409_CONFLICT, NOT_DRAFT_SUBMIT)
-    missing = _value_case_gaps(_value_case(db, request.id))
+    missing = value_case_gaps(value_case_of(db, request.id))
     if request.uses_ai:
         # Without `uses_ai` no check is needed, whatever rows a past setting left behind.
-        missing += _readiness_gaps(_readiness(db, request.id))
+        missing += readiness_gaps(readiness_of(db, request.id))
     if missing:
         raise HTTPException(status.HTTP_409_CONFLICT, {"message": INCOMPLETE, "missing": missing})
     return _move(db, request, to="submitted", action="submit", user=user)
@@ -397,11 +397,11 @@ def withdraw_request(
 # --- The value case (item 4.2)
 
 
-def _value_case(db: Session, request_id: int) -> ValueCase | None:
+def value_case_of(db: Session, request_id: int) -> ValueCase | None:
     return db.scalar(select(ValueCase).where(ValueCase.request_id == request_id))
 
 
-def _value_case_gaps(value_case: ValueCase | None) -> list[str]:
+def value_case_gaps(value_case: ValueCase | None) -> list[str]:
     """What a request still needs before it can be submitted; empty when nothing is missing."""
     if value_case is None:
         return [MISSING_VALUE_CASE]
@@ -434,7 +434,7 @@ def get_value_case(
     db: Annotated[Session, Depends(get_db)],
 ) -> ValueCaseOut:
     request = _request(db, request_id)
-    value_case = _value_case(db, request.id)
+    value_case = value_case_of(db, request.id)
     if value_case is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, NO_VALUE_CASE)
     return _value_case_out(db, request, value_case)
@@ -452,7 +452,7 @@ def put_value_case(
         raise HTTPException(status.HTTP_409_CONFLICT, NOT_DRAFT_VALUE_CASE)
     fields = body.model_dump(exclude={"version"})
     benefits = fields.pop("benefits")
-    value_case = _value_case(db, request.id)
+    value_case = value_case_of(db, request.id)
     before = None if value_case is None else value_case_snapshot(value_case)
     if (
         value_case is not None
@@ -496,7 +496,7 @@ def put_value_case(
 # --- The readiness check (item 4.3)
 
 
-def _readiness(db: Session, request_id: int) -> ReadinessCheck | None:
+def readiness_of(db: Session, request_id: int) -> ReadinessCheck | None:
     return db.scalar(select(ReadinessCheck).where(ReadinessCheck.request_id == request_id))
 
 
@@ -508,7 +508,7 @@ def _needs_ai(request: ProjectRequest) -> ProjectRequest:
     return request
 
 
-def _readiness_gaps(check: ReadinessCheck | None) -> list[str]:
+def readiness_gaps(check: ReadinessCheck | None) -> list[str]:
     """What a request that uses AI still needs from its check; empty when nothing is missing.
     A red result is not a gap: the approval gate deals with it."""
     if check is None:
@@ -609,7 +609,7 @@ def get_readiness(
     db: Annotated[Session, Depends(get_db)],
 ) -> ReadinessOut:
     request = _needs_ai(_request(db, request_id))
-    check = _readiness(db, request.id)
+    check = readiness_of(db, request.id)
     if check is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, NO_READINESS)
     return _readiness_out(db, request, check)
@@ -627,7 +627,7 @@ def put_readiness(
         raise HTTPException(status.HTTP_409_CONFLICT, NOT_DRAFT_READINESS)
     areas = body.model_dump(exclude={"version"})
     _check_owners(db, areas)
-    check = _readiness(db, request.id)
+    check = readiness_of(db, request.id)
     before = None if check is None else readiness_snapshot(check)
     if (
         check is not None

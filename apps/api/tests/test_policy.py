@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from conftest import gates_file, gates_policy_dir
+from policy_files import gates_file, gates_policy_dir
 
 from app.config import Settings, get_settings
 from app.policy import PolicyError, get_policies, load_policies

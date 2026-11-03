@@ -150,6 +150,31 @@ def require(action: Action) -> Callable[..., User]:
     return guard
 
 
+# Records a refused attempt: (session, the signed-in user, the route's path parameters).
+RefusalRecorder = Callable[[Session, User, dict[str, str]], None]
+
+
+def require_audited(action: Action, record_refusal: RefusalRecorder) -> Callable[..., User]:
+    """Like `require`, for decisions whose refusal is itself audited (a gate decision). When a
+    signed-in user's role lacks `action`, `record_refusal` adds the audit row, which is committed
+    before the 403. Nobody signed in is still a plain 401, with no row."""
+
+    def guard(
+        request: Request,
+        user: Annotated[User, Depends(current_user)],
+        db: Annotated[Session, Depends(get_db)],
+    ) -> User:
+        if not can(user.role, action):
+            record_refusal(db, user, dict(request.path_params))
+            db.commit()
+            raise HTTPException(status.HTTP_403_FORBIDDEN, FORBIDDEN)
+        return user
+
+    guard.pmo_guard = action  # type: ignore[attr-defined]
+    guard.__name__ = f"require_audited_{action.value.replace(':', '_')}"
+    return guard
+
+
 def signed_in(user: Annotated[User, Depends(current_user)]) -> User:
     """A guard for routes every signed-in user may use, whatever their role (`auth/me`)."""
     return user
@@ -161,7 +186,8 @@ signed_in.pmo_guard = "signed_in"  # type: ignore[attr-defined]
 def not_own_submission(actor_id: int, submitter_id: int | None) -> None:
     """Separation of duties: nobody approves or decides on their own submission (403).
 
-    The hook for later items (intake, gates, risks, proposals); no route calls it yet.
+    The approval gate calls it (a sponsor can't decide a request they raised); later items
+    (proposals) will too.
     """
     if submitter_id is not None and actor_id == submitter_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "you cannot decide on your own submission")
