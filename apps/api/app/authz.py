@@ -19,15 +19,8 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import RevokedToken, User
 from app.policy import RiskPolicy
+from app.roles import Role
 from app.security import SESSION_COOKIE, decode_token
-
-
-class Role(StrEnum):
-    ADMIN = "admin"
-    SPONSOR = "sponsor"
-    PROJECT_MANAGER = "project_manager"
-    ETHICS_REVIEWER = "ethics_reviewer"
-    AUDITOR = "auditor"
 
 
 class Action(StrEnum):

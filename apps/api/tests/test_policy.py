@@ -1,15 +1,18 @@
 import dataclasses
+import hashlib
 import re
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 import yaml
+from conftest import gates_file, gates_policy_dir
 
 from app.config import Settings, get_settings
 from app.policy import PolicyError, get_policies, load_policies
+from app.roles import Role
 
 API_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = API_DIR.parents[1]
@@ -56,7 +59,7 @@ def test_valid_set_loads_into_frozen_objects():
     assert risk.thresholds["schedule"].allowed_variation_pct == Decimal("10")
     assert risk.thresholds["cost"].allowed_variation_pct == Decimal("10")
     assert risk.thresholds["quality"].allowed_variation_pct is None
-    assert policies.gates.gates == ()
+    assert dict(policies.gates.gates) == {}
     assert all(a.contact.endswith(".example") for a in policies.approvers.roles.values())
 
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -321,13 +324,105 @@ def test_impact_floor_never_drops_as_impact_rises(tmp_path):
 # --- Gates and approvers
 
 
-def test_gates_stay_empty_until_p5(tmp_path):
-    assert_rejected(
-        tmp_path,
-        "gates.yaml",
-        lambda d: d.update(gates=["G1"]),
-        "empty list until stage gates arrive in P5",
-    )
+def test_live_gates_placeholder_still_loads():
+    gates = load_policies(REPO_ROOT / "policies").gates
+    assert isinstance(gates.gates, Mapping)
+    assert len(gates.digest) == 64
+
+
+def test_proposed_gates_file_loads(tmp_path):
+    """The real file from the repository, so the file a person applies is the file tested."""
+    gates = load_policies(gates_policy_dir(tmp_path)).gates
+    approval = gates.gates["approval"]
+    assert (approval.from_stage, approval.to_stage) == ("intake", "planning")
+    assert approval.applies_to == "request"
+    assert approval.deciders == ("sponsor",)
+    checks = [c.check for c in approval.criteria if not c.person]
+    assert checks == [
+        "value_case_confirmed",
+        "readiness_confirmed",
+        "readiness_not_red",
+        "yellow_actions_owned",
+    ]
+    assert [c.text for c in approval.criteria if c.person] == [
+        "The expected value justifies the cost",
+        "We have, or can get, the people to do it",
+    ]
+    assert gates.digest == hashlib.sha256(gates_file().read_bytes()).hexdigest()
+
+
+def test_gates_digest_changes_with_the_file(tmp_path):
+    first = load_policies(VALID).gates.digest
+    changed = policy_dir(tmp_path)
+    (changed / "gates.yaml").write_text("# a comment\n" + (VALID / "gates.yaml").read_text())
+    assert load_policies(changed).gates.digest != first
+
+
+def _with_gate(change: Callable[[dict], None]) -> Callable[[dict], None]:
+    """Put the proposed approval gate in the fixture's gates file, then apply `change` to it."""
+
+    def apply(data: dict) -> None:
+        gate = yaml.safe_load(gates_file().read_text())["gates"][0]
+        change(gate)
+        data["gates"] = [gate]
+
+    return apply
+
+
+def _set(key, value):
+    return lambda gate: gate.update({key: value})
+
+
+def _criterion(index, **changes):
+    return lambda gate: gate["criteria"][index].update(changes)
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        (_criterion(0, check="budget_is_small"), "unknown check 'budget_is_small'"),
+        (_set("deciders", ["sponsor", "chief"]), "unknown role 'chief'"),
+        (_set("deciders", ["approver"]), "unknown role 'approver'"),
+        (_set("from_stage", "initiation"), "unknown stage 'initiation'"),
+        (_set("to_stage", "done"), "unknown stage 'done'"),
+        (_set("to_stage", "intake"), "must lead to a different stage"),
+        (_set("applies_to", "programme"), "unknown subject 'programme'"),
+        (_set("deciders", []), "non-empty list of roles"),
+        (_set("deciders", ["sponsor", "sponsor"]), "roles must not repeat"),
+        (_set("criteria", []), "non-empty list of criteria"),
+        (_criterion(1, id="value_case_confirmed"), "duplicate criterion id 'value_case_confirmed'"),
+        (_criterion(4, check="readiness_not_red"), "exactly one of `check` or `person`"),
+        (lambda g: g["criteria"][0].pop("check"), "exactly one of `check` or `person`"),
+        (_criterion(4, person=False), "person: must be true"),
+        (_criterion(0, id="Value Case"), "lower-case words joined by underscores"),
+        (_set("id", "approval gate"), "lower-case words joined by underscores"),
+        (_criterion(0, text=""), "expected non-empty text"),
+        (_set("owner", "sponsor"), "unknown keys: owner"),
+        (lambda g: g.pop("deciders"), "missing keys: deciders"),
+    ],
+)
+def test_bad_gate_raises(tmp_path, change, match):
+    assert_rejected(tmp_path, "gates.yaml", _with_gate(change), match)
+
+
+def test_duplicate_gate_id_raises(tmp_path):
+    def change(data):
+        _with_gate(lambda gate: None)(data)
+        data["gates"].append(dict(data["gates"][0]))
+
+    assert_rejected(tmp_path, "gates.yaml", change, "duplicate gate id 'approval'")
+
+
+def test_gates_must_be_a_list(tmp_path):
+    assert_rejected(tmp_path, "gates.yaml", lambda d: d.update(gates={}), "expected a list")
+
+
+def test_every_known_role_may_decide_a_gate(tmp_path):
+    def change(gate):
+        gate["deciders"] = [role.value for role in Role]
+
+    gates = load_policies(policy_dir(tmp_path, "gates.yaml", _with_gate(change))).gates
+    assert set(gates.gates["approval"].deciders) == {role.value for role in Role}
 
 
 def test_approver_contact_must_be_example_domain(tmp_path):

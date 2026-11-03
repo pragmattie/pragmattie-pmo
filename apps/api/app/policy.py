@@ -5,6 +5,7 @@ This module is the only code that reads policy files. A missing or invalid file 
 first use (`get_policies`), not at startup, so the API starts before the real files are applied.
 """
 
+import hashlib
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from app.config import get_settings
 from app.models.risk import CATEGORIES as RISK_CATEGORIES
 from app.models.risk import KINDS as RISK_KINDS
 from app.models.risk import RESPONSES_BY_KIND
+from app.roles import Role
 
 SCHEMA_VERSION = 1
 TIERS = ("T0", "T1", "T2", "T3")
@@ -93,11 +95,52 @@ class RiskPolicy:
     minimum_band_by_impact: Mapping[int, str]  # e.g. impact 5 is at least "Medium"
 
 
+# Stage gates (item 4.4).
+STAGES = ("intake", "planning", "delivery", "closure", "closed")
+GATE_SUBJECTS = ("request", "project")
+# The automatic checks the code knows; `app.gates.CHECKS` implements each one.
+KNOWN_CHECKS = (
+    "value_case_confirmed",
+    "readiness_confirmed",
+    "readiness_not_red",
+    "yellow_actions_owned",
+)
+GATE_ID = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+MAX_GATE_ID = 64
+MAX_CRITERION_TEXT = 500
+
+
+@dataclass(frozen=True)
+class Criterion:
+    """One thing that must be true to pass a gate: an automatic `check`, or a `person` tick."""
+
+    id: str
+    text: str
+    check: str | None  # a name in KNOWN_CHECKS; None for a person criterion
+
+    @property
+    def person(self) -> bool:
+        return self.check is None
+
+
+@dataclass(frozen=True)
+class Gate:
+    id: str
+    name: str
+    from_stage: str
+    to_stage: str
+    applies_to: str
+    deciders: tuple[str, ...]  # roles that may decide it
+    criteria: tuple[Criterion, ...]
+
+
 @dataclass(frozen=True)
 class GatesPolicy:
-    """Placeholder until stage gates arrive in milestone P4."""
+    """The stage gates, by id in file order. `digest` is the SHA-256 of the file as loaded, so a
+    decision records exactly which rules applied. An empty `gates` is the placeholder."""
 
-    gates: tuple[str, ...]
+    gates: Mapping[str, Gate]
+    digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -157,6 +200,12 @@ def _tier_name(value: Any, where: str) -> str:
     return value
 
 
+def _choice(value: Any, where: str, allowed: tuple[str, ...], what: str) -> str:
+    if value not in allowed:
+        raise PolicyError(f"{where}: unknown {what} {value!r}; {what}s are {', '.join(allowed)}")
+    return value
+
+
 def _levels(data: Any, where: str) -> dict:
     data = _mapping(data, where)
     for level in data:
@@ -169,9 +218,15 @@ def _levels(data: Any, where: str) -> dict:
 
 
 def _read(directory: Path, name: str) -> dict:
+    return _read_with_digest(directory, name)[0]
+
+
+def _read_with_digest(directory: Path, name: str) -> tuple[dict, str]:
+    """The file's data and the SHA-256 of its bytes."""
     path = directory / name
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
     except FileNotFoundError:
         raise PolicyError(
             f"{name}: policy file not found at {path}. The real files are applied by a person "
@@ -188,7 +243,7 @@ def _read(directory: Path, name: str) -> dict:
     data = _mapping(data, name)
     if data.get("version") != SCHEMA_VERSION:
         raise PolicyError(f"{name}: version must be {SCHEMA_VERSION}")
-    return data
+    return data, hashlib.sha256(raw).hexdigest()
 
 
 # --- One parser per file.
@@ -384,21 +439,101 @@ def parse_risk(data: dict, roles: Mapping[str, Approver], where: str = "risk.yam
     )
 
 
-def parse_gates(data: dict, where: str = "gates.yaml") -> GatesPolicy:
+def _gate_id(value: Any, where: str) -> str:
+    value = _text(value, where)
+    if len(value) > MAX_GATE_ID or not GATE_ID.match(value):
+        raise PolicyError(
+            f"{where}: {value!r} must be lower-case words joined by underscores, "
+            f"at most {MAX_GATE_ID} characters"
+        )
+    return value
+
+
+def _parse_criterion(entry: Any, at: str) -> Criterion:
+    entry = _mapping(entry, at)
+    _keys(entry, at, ("id", "text"), ("check", "person"))
+    criterion_id = _gate_id(entry["id"], f"{at}.id")
+    at = f"{at} ({criterion_id})"
+    if ("check" in entry) == ("person" in entry):
+        raise PolicyError(f"{at}: give exactly one of `check` or `person`")
+    text = _text(entry["text"], f"{at}.text")
+    if len(text) > MAX_CRITERION_TEXT:
+        raise PolicyError(f"{at}.text: at most {MAX_CRITERION_TEXT} characters")
+    check = None
+    if "check" in entry:
+        check = _choice(entry["check"], f"{at}.check", KNOWN_CHECKS, "check")
+    elif entry["person"] is not True:
+        raise PolicyError(f"{at}.person: must be true (a person ticks it with a note)")
+    return Criterion(id=criterion_id, text=text, check=check)
+
+
+def parse_gates(data: dict, where: str = "gates.yaml", digest: str = "") -> GatesPolicy:
+    """The gates; an empty list is the placeholder (no gate can be decided yet)."""
+    roles = tuple(role.value for role in Role)
     _keys(data, where, ("version", "gates"))
-    if data["gates"] != []:
-        raise PolicyError(f"{where} gates: must be an empty list until stage gates arrive in P5")
-    return GatesPolicy(gates=())
+    raw = data["gates"]
+    if not isinstance(raw, list):
+        raise PolicyError(f"{where} gates: expected a list of gates")
+    gates: dict[str, Gate] = {}
+    for index, entry in enumerate(raw):
+        at = f"{where} gates[{index}]"
+        entry = _mapping(entry, at)
+        _keys(
+            entry,
+            at,
+            ("id", "name", "from_stage", "to_stage", "applies_to", "deciders", "criteria"),
+        )
+        gate_id = _gate_id(entry["id"], f"{at}.id")
+        if gate_id in gates:
+            raise PolicyError(f"{at}.id: duplicate gate id {gate_id!r}")
+        at = f"{where} gates.{gate_id}"
+        from_stage = _choice(entry["from_stage"], f"{at}.from_stage", STAGES, "stage")
+        to_stage = _choice(entry["to_stage"], f"{at}.to_stage", STAGES, "stage")
+        if from_stage == to_stage:
+            raise PolicyError(f"{at}: a gate must lead to a different stage")
+        applies_to = _choice(entry["applies_to"], f"{at}.applies_to", GATE_SUBJECTS, "subject")
+
+        deciders = entry["deciders"]
+        if not isinstance(deciders, list) or not deciders:
+            raise PolicyError(f"{at}.deciders: expected a non-empty list of roles")
+        for role in deciders:
+            _choice(role, f"{at}.deciders", roles, "role")
+        if len(set(deciders)) != len(deciders):
+            raise PolicyError(f"{at}.deciders: roles must not repeat")
+
+        raw_criteria = entry["criteria"]
+        if not isinstance(raw_criteria, list) or not raw_criteria:
+            raise PolicyError(f"{at}.criteria: expected a non-empty list of criteria")
+        criteria: list[Criterion] = []
+        for position, item in enumerate(raw_criteria):
+            criterion = _parse_criterion(item, f"{at}.criteria[{position}]")
+            if any(c.id == criterion.id for c in criteria):
+                raise PolicyError(
+                    f"{at}.criteria[{position}].id: duplicate criterion id {criterion.id!r}"
+                )
+            criteria.append(criterion)
+
+        gates[gate_id] = Gate(
+            id=gate_id,
+            name=_text(entry["name"], f"{at}.name"),
+            from_stage=from_stage,
+            to_stage=to_stage,
+            applies_to=applies_to,
+            deciders=tuple(deciders),
+            criteria=tuple(criteria),
+        )
+    return GatesPolicy(gates=MappingProxyType(gates), digest=digest)
 
 
 def load_policies(directory: Path | str) -> Policies:
     """Read and validate every policy file in `directory`; raise `PolicyError` on any problem."""
     directory = Path(directory)
     approvers = parse_approvers(_read(directory, "approvers.yaml"))
+    gates, digest = _read_with_digest(directory, "gates.yaml")
     return Policies(
         tiers=parse_tiers(_read(directory, "tiers.yaml")),
         risk=parse_risk(_read(directory, "risk.yaml"), approvers.roles),
-        gates=parse_gates(_read(directory, "gates.yaml")),
+        gates=parse_gates(gates, digest=digest),
         approvers=approvers,
     )
 
@@ -438,12 +573,6 @@ TEMPLATE_KEYS = (
 TEMPLATE_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MAX_TEMPLATE_ID = 64
 MAX_TEMPLATE_TITLE = 200
-
-
-def _choice(value: Any, where: str, allowed: tuple[str, ...], what: str) -> str:
-    if value not in allowed:
-        raise PolicyError(f"{where}: unknown {what} {value!r}; {what}s are {', '.join(allowed)}")
-    return value
 
 
 def parse_risk_library(data: dict, where: str = RISK_LIBRARY_FILE) -> RiskLibrary:

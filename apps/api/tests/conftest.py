@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 from functools import cache
 from pathlib import Path
@@ -130,3 +131,33 @@ def _risk_library(monkeypatch):
     from app import policy
 
     monkeypatch.setattr(policy, "get_risk_library", _test_risk_library)
+
+
+# The gates file is drafted in ci/proposed/policies/ and applied to policies/ by a person. Tests
+# load the real file from the repository (never a copy of its contents written into a test): the
+# draft while it is pending, the applied file once the draft is gone.
+def gates_file() -> Path:
+    draft = DRAFT_POLICIES / "gates.yaml"
+    return draft if draft.exists() else APPLIED_POLICIES / "gates.yaml"
+
+
+def gates_policy_dir(tmp_path: Path) -> Path:
+    """A policies directory: the applied files, with the gates file from `gates_file()`."""
+    target = tmp_path / "gates-policies"
+    target.mkdir()
+    for path in APPLIED_POLICIES.glob("*.yaml"):
+        shutil.copy(path, target)
+    shutil.copy(gates_file(), target / "gates.yaml")
+    return target
+
+
+@pytest.fixture
+def gates_policy(tmp_path, monkeypatch):
+    """Point the API at a policies directory holding the gates file, for the gate routes."""
+    from app.config import get_settings
+    from app.policy import get_policies
+
+    monkeypatch.setattr(get_settings(), "policies_dir", gates_policy_dir(tmp_path))
+    get_policies.cache_clear()
+    yield
+    get_policies.cache_clear()
