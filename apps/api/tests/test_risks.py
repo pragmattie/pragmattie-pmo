@@ -879,6 +879,39 @@ def test_an_accepted_risk_can_be_closed(web, db, pm, project):
     assert _audit(db)[-1].action_taken == {"action": "close"}
 
 
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"response": "reduce"},
+        {"needs_judgement": True},
+        {"needs_judgement": True, "probability": None, "impact": None},
+        {"probability": None, "impact": None},
+        {"status": "closed", "response": "reduce"},
+    ],
+)
+def test_a_patch_keeps_an_accepted_risks_decision(web, db, pm, project, changes):
+    accepted = _accept(web, project.id, _create(web, project.id, **LOW).json()).json()
+    rows = len(_audit(db, escalations=True))
+    response = web.patch(_url(project.id, accepted["id"]), json={"version": 2, **changes})
+    assert response.status_code == 409
+    assert "accepted risk" in response.json()["detail"]
+    body = web.get(_url(project.id, accepted["id"])).json()
+    assert (body["status"], body["response"], body["band"]) == ("accepted", "accept", "Low")
+    assert body["needs_judgement"] is False
+    assert len(_audit(db, escalations=True)) == rows
+
+
+def test_a_patch_may_still_rescore_an_accepted_risk(web, db, pm, project):
+    accepted = _accept(web, project.id, _create(web, project.id, **LOW).json()).json()
+    url = _url(project.id, accepted["id"])
+    same = web.patch(url, json={"version": 2, "probability": 2, "impact": 1})
+    assert same.status_code == 200, same.text
+    assert (same.json()["status"], same.json()["response"]) == ("accepted", "accept")
+    higher = web.patch(url, json={"version": 3, **MEDIUM, "response": "accept"})
+    assert higher.status_code == 200, higher.text
+    assert (higher.json()["status"], higher.json()["band"]) == ("open", "Medium")
+
+
 def test_opening_a_proposed_risk(web, db, pm, project, sponsor):
     risk = _proposed(web, project.id)
     url = _url(project.id, risk["id"]) + "/open"

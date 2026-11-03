@@ -3,7 +3,9 @@
 Reading needs `project:read`; creating and changing need `project:write`. There is no DELETE: a
 risk is closed with a PATCH that sets `status` to `closed`. A PATCH moves status only from open to
 closed, from closed back to open, or from accepted to closed; it never opens a proposed, accepted
-or rejected risk. The decisions have their own routes, each one audit row with the person's id:
+or rejected risk. On an accepted risk it may not change `response` or `needs_judgement` or clear
+the score (409); probability and impact may still change, and a higher band reopens it. The
+decisions have their own routes, each one audit row with the person's id:
 
 - `POST .../{id}/accept` (`risk:accept`) accepts an open, scored risk. The caller's role must rank
   at or above the band's escalation owner in the risk policy (`authz.may_accept_band`); a refusal
@@ -92,6 +94,10 @@ NOT_OPEN = "only an open risk can be accepted"
 NOT_PROPOSED = "only a proposed risk can be opened or rejected"
 UNSCORED = "this risk has no score yet; a person must score it before it can be accepted"
 BAD_MOVE = "a change here may only close an open or accepted risk, or reopen a closed one"
+ACCEPTED_LOCKED = (
+    "an accepted risk keeps its response, needs_judgement and score; "
+    "you may re-score it or close it"
+)
 
 # The status moves a PATCH may make; anything else goes through the decision routes.
 PATCH_MOVES = frozenset({("open", "closed"), ("closed", "open"), ("accepted", "closed")})
@@ -334,6 +340,18 @@ def get_risk(
     return RiskOut.model_validate(_risk(db, project_id, risk_id))
 
 
+def _breaks_acceptance(current: dict, changes: dict) -> bool:
+    """Whether a PATCH would undo what accepting a risk settled: its response, needs_judgement or
+    score. Changing probability or impact is still allowed, and may reopen it."""
+    merged = {**current, **changes}
+    return (
+        merged["response"] != current["response"]
+        or merged["needs_judgement"] != current["needs_judgement"]
+        or merged["probability"] is None
+        or merged["impact"] is None
+    )
+
+
 @router.patch("/{risk_id}", response_model=RiskOut)
 def update_risk(
     project_id: int,
@@ -354,6 +372,8 @@ def update_risk(
     if new_status != risk.status and (risk.status, new_status) not in PATCH_MOVES:
         raise HTTPException(status.HTTP_409_CONFLICT, BAD_MOVE)
     current = {name: getattr(risk, name) for name in RiskFields.model_fields}
+    if risk.status == "accepted" and _breaks_acceptance(current, changes):
+        raise HTTPException(status.HTTP_409_CONFLICT, ACCEPTED_LOCKED)
     try:
         fields = RiskFields.model_validate({**current, **changes})
     except ValidationError as exc:
