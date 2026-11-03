@@ -172,7 +172,7 @@ async function submit() {
             <v-col cols="6">
               <v-text-field
                 v-model="form.budget_low"
-                label="Budget, low (USD)"
+                label="Budget available, low (USD)"
                 inputmode="decimal"
                 :rules="[money, budgetOrder]"
                 data-test="field-budget-low"
@@ -181,7 +181,7 @@ async function submit() {
             <v-col cols="6">
               <v-text-field
                 v-model="form.budget_high"
-                label="Budget, high (USD)"
+                label="Budget available, high (USD)"
                 inputmode="decimal"
                 :rules="[money, budgetOrder]"
                 data-test="field-budget-high"

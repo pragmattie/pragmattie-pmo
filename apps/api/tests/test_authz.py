@@ -12,6 +12,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from test_intake import add_value_case
 
 import app.api.users as users_api
 from app.authz import (
@@ -262,18 +263,22 @@ REQUEST_BODY = {
 }
 
 
-def _project_request(requested_by: int, status: str = "draft") -> int:
-    """A project request, for the intake routes' samples."""
+def _project_request(requested_by: int, status: str = "draft", value_case: bool = False) -> int:
+    """A project request, for the intake routes' samples; with a complete, confirmed value case
+    if asked, so it can be submitted."""
     with Session(engine) as session:
         request = ProjectRequest(requested_by=requested_by, status=status, **REQUEST_BODY)
         session.add(request)
         session.commit()
-        return request.id
+        request_id = request.id
+    if value_case:
+        add_value_case(request_id, requested_by)
+    return request_id
 
 
-def _intake_sample(suffix: str = "", body: dict | None = None):
+def _intake_sample(suffix: str = "", body: dict | None = None, value_case: bool = False):
     def sample(target: int) -> dict:
-        url = f"/api/v1/requests/{_project_request(target)}{suffix}"
+        url = f"/api/v1/requests/{_project_request(target, value_case=value_case)}{suffix}"
         return {"url": url, "json": body} if body is not None else {"url": url}
 
     return sample
@@ -330,7 +335,23 @@ SAMPLES = {
     ("PATCH", "/api/v1/requests/{request_id}"): _intake_sample(
         "", {"version": 1, "title": "Renamed"}
     ),
-    ("POST", "/api/v1/requests/{request_id}/submit"): _intake_sample("/submit", {"version": 1}),
+    ("POST", "/api/v1/requests/{request_id}/submit"): _intake_sample(
+        "/submit", {"version": 1}, value_case=True
+    ),
+    ("GET", "/api/v1/requests/{request_id}/value-case"): _intake_sample(
+        "/value-case", value_case=True
+    ),
+    ("PUT", "/api/v1/requests/{request_id}/value-case"): _intake_sample(
+        "/value-case",
+        {
+            "version": 1,
+            "benefits": [{"description": "Fewer stock-outs", "measure": "Count", "target": "6"}],
+            "cost_low": "100.00",
+            "cost_high": "200.00",
+            "cost_method": "Estimate",
+            "strategic_fit": "Client goal",
+        },
+    ),
     ("POST", "/api/v1/requests/{request_id}/withdraw"): _intake_sample("/withdraw", {"version": 1}),
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
@@ -401,6 +422,8 @@ def test_matrix_covers_the_existing_routes():
         ("GET", "/api/v1/requests/{request_id}/history"),
         ("POST", "/api/v1/requests/{request_id}/submit"),
         ("POST", "/api/v1/requests/{request_id}/withdraw"),
+        ("GET", "/api/v1/requests/{request_id}/value-case"),
+        ("PUT", "/api/v1/requests/{request_id}/value-case"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -427,13 +450,14 @@ def test_matrix_covers_the_existing_routes():
     assert by_method[("GET", "/api/v1/risks/escalations")] == Action.PROJECT_READ
     assert by_method[("POST", f"{risks}/suggest")] == Action.PROJECT_WRITE
     requests, request = "/api/v1/requests", "/api/v1/requests/{request_id}"
-    for path in (requests, request, f"{request}/history"):
+    for path in (requests, request, f"{request}/history", f"{request}/value-case"):
         assert by_method[("GET", path)] == Action.PROJECT_READ
     for method, path in (
         ("POST", requests),
         ("PATCH", request),
         ("POST", f"{request}/submit"),
         ("POST", f"{request}/withdraw"),
+        ("PUT", f"{request}/value-case"),
     ):
         assert by_method[(method, path)] == Action.PROJECT_WRITE
 

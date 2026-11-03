@@ -11,6 +11,12 @@ edit, submit or withdraw any request (work gets handed over); the audit row reco
 - `POST /requests/{id}/submit` moves a draft to `submitted`; `POST /requests/{id}/withdraw` moves a
   draft or submitted request to `withdrawn`. `declined` and `withdrawn` are final.
 - `GET /requests/{id}/history` is the request's own audit rows, newest first.
+- `GET` and `PUT /requests/{id}/value-case` read and replace the request's value case (item 4.2).
+  It is part of the request: it changes only while the request is a draft, the PUT carries the
+  request's `version` and bumps it, and each change is an audit row with action `value_case` in
+  the request's history. Saving it as a person confirms it; a PUT that changes nothing on a value
+  case a person has already confirmed writes nothing. A draft is submitted only once its value case
+  is complete and confirmed; otherwise the 409 lists what is missing.
 
 No route here sets `approved`, `declined` or returns a request to `draft`: that is the approval
 gate's job, and a person's decision there. Every change carries the `version` the client read; a
@@ -34,7 +40,15 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.audit import ORDER_BY, decisions_query, record_decision
 from app.authz import Action, require
 from app.db import get_db
-from app.models import AuditDecision, Client, ProjectRequest, User, utcnow
+from app.models import (
+    AuditDecision,
+    Client,
+    ProjectRequest,
+    User,
+    ValueCase,
+    ValueCaseBenefit,
+    utcnow,
+)
 from app.models.intake import FINAL_STATUSES
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
 from app.schemas.intake import (
@@ -45,6 +59,8 @@ from app.schemas.intake import (
     RequestStatus,
     RequestTransition,
     RequestUpdate,
+    ValueCaseIn,
+    ValueCaseOut,
 )
 
 router = APIRouter(prefix="/requests", tags=["intake"])
@@ -59,8 +75,18 @@ FINAL = "a declined or withdrawn request is final and can't be changed"
 NOT_DRAFT_EDIT = "only a draft can be edited; this request must be returned to draft first"
 NOT_DRAFT_SUBMIT = "only a draft can be submitted"
 NOT_WITHDRAWABLE = "only a draft or submitted request can be withdrawn"
+NO_VALUE_CASE = "this request has no value case yet"
+NOT_DRAFT_VALUE_CASE = "the value case can be changed only while its request is a draft"
+INCOMPLETE = "this request can't be submitted until its value case is complete and confirmed"
+MISSING_VALUE_CASE = "a value case"
+MISSING_BENEFIT = "a benefit with a measure and a target"
+MISSING_COST = "a cost estimate: low, high and how it was estimated"
+MISSING_CONFIRMATION = "a person's confirmation of the value case an agent drafted"
 
 SNAPSHOT_FIELDS = (*RequestFields.model_fields, "requested_by", "status", "submitted_at", "version")
+VALUE_CASE_FIELDS = ("cost_low", "cost_high", "cost_method", "strategic_fit", "cost_of_not_doing")
+BENEFIT_FIELDS = ("description", "measure", "current_value", "target", "target_date")
+CONFIRMATION_FIELDS = ("source", "confirmed_by", "confirmed_at")
 
 Sort = Literal["submitted_at", "-submitted_at", "wanted_by", "-wanted_by"]
 
@@ -78,10 +104,33 @@ def snapshot(request: ProjectRequest) -> dict[str, Any]:
     return {name: _json_value(getattr(request, name)) for name in SNAPSHOT_FIELDS}
 
 
+def _value_case_content(fields: dict[str, Any], benefits: list[dict[str, Any]]) -> dict[str, Any]:
+    """What a person writes in a value case, as an audit row records it."""
+    return {
+        **{name: _json_value(fields[name]) for name in VALUE_CASE_FIELDS},
+        "benefits": [{name: _json_value(b[name]) for name in BENEFIT_FIELDS} for b in benefits],
+    }
+
+
+def value_case_snapshot(value_case: ValueCase) -> dict[str, Any]:
+    """The value case's content and who confirmed it, as an audit row records it."""
+    fields = {name: getattr(value_case, name) for name in VALUE_CASE_FIELDS}
+    benefits = [{name: getattr(b, name) for name in BENEFIT_FIELDS} for b in value_case.benefits]
+    confirmation = {name: _json_value(getattr(value_case, name)) for name in CONFIRMATION_FIELDS}
+    return {**_value_case_content(fields, benefits), **confirmation}
+
+
 def _record_change(
-    db: Session, request: ProjectRequest, *, action: str, before: dict | None, user: User
+    db: Session,
+    request: ProjectRequest,
+    *,
+    action: str,
+    before: dict | None,
+    user: User,
+    after: dict | None = None,
 ) -> None:
-    """One audit row for a change already flushed (so the version is the new one)."""
+    """One audit row for a change already flushed (so the version is the new one). `after`
+    defaults to the request's own snapshot."""
     record_decision(
         db,
         agent=AUDIT_AGENT,
@@ -93,7 +142,7 @@ def _record_change(
         status="ok",
         actor_user_id=user.id,
         signals=before,
-        output=snapshot(request),
+        output=snapshot(request) if after is None else after,
         action_taken={"action": action},
     )
 
@@ -298,6 +347,9 @@ def submit_request(
     request = _locked(db, request_id, body.version)
     if request.status != "draft":
         raise HTTPException(status.HTTP_409_CONFLICT, NOT_DRAFT_SUBMIT)
+    missing = _value_case_gaps(_value_case(db, request.id))
+    if missing:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"message": INCOMPLETE, "missing": missing})
     return _move(db, request, to="submitted", action="submit", user=user)
 
 
@@ -312,3 +364,102 @@ def withdraw_request(
     if request.status not in ("draft", "submitted"):
         raise HTTPException(status.HTTP_409_CONFLICT, NOT_WITHDRAWABLE)
     return _move(db, request, to="withdrawn", action="withdraw", user=user)
+
+
+# --- The value case (item 4.2)
+
+
+def _value_case(db: Session, request_id: int) -> ValueCase | None:
+    return db.scalar(select(ValueCase).where(ValueCase.request_id == request_id))
+
+
+def _value_case_gaps(value_case: ValueCase | None) -> list[str]:
+    """What a request still needs before it can be submitted; empty when nothing is missing."""
+    if value_case is None:
+        return [MISSING_VALUE_CASE]
+    missing = []
+    if not any(b.measure and b.target for b in value_case.benefits):
+        missing.append(MISSING_BENEFIT)
+    if value_case.cost_low is None or value_case.cost_high is None or not value_case.cost_method:
+        missing.append(MISSING_COST)
+    if value_case.confirmed_by is None:
+        missing.append(MISSING_CONFIRMATION)
+    return missing
+
+
+def _value_case_out(db: Session, request: ProjectRequest, value_case: ValueCase) -> ValueCaseOut:
+    names = _names(db, User, {value_case.confirmed_by} - {None}, User.display_name)
+    data = {
+        name: getattr(value_case, name)
+        for name in ValueCaseOut.model_fields
+        if name not in ("request_version", "confirmed_by_name")
+    }
+    data["request_version"] = request.version
+    data["confirmed_by_name"] = names.get(value_case.confirmed_by)
+    return ValueCaseOut.model_validate(data, from_attributes=True)
+
+
+@router.get("/{request_id}/value-case", response_model=ValueCaseOut)
+def get_value_case(
+    request_id: int,
+    _user: Annotated[User, Depends(require(Action.PROJECT_READ))],
+    db: Annotated[Session, Depends(get_db)],
+) -> ValueCaseOut:
+    request = _request(db, request_id)
+    value_case = _value_case(db, request.id)
+    if value_case is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NO_VALUE_CASE)
+    return _value_case_out(db, request, value_case)
+
+
+@router.put("/{request_id}/value-case", response_model=ValueCaseOut)
+def put_value_case(
+    request_id: int,
+    body: ValueCaseIn,
+    user: Annotated[User, Depends(require(Action.PROJECT_WRITE))],
+    db: Annotated[Session, Depends(get_db)],
+) -> ValueCaseOut:
+    request = _locked(db, request_id, body.version)
+    if request.status != "draft":
+        raise HTTPException(status.HTTP_409_CONFLICT, NOT_DRAFT_VALUE_CASE)
+    fields = body.model_dump(exclude={"version"})
+    benefits = fields.pop("benefits")
+    value_case = _value_case(db, request.id)
+    before = None if value_case is None else value_case_snapshot(value_case)
+    if (
+        value_case is not None
+        and value_case.confirmed_by is not None
+        and _value_case_content(fields, benefits) == _value_case_content(before, before["benefits"])
+    ):
+        # Nothing changes and a person has already confirmed it: no new version, no audit row.
+        return _value_case_out(db, request, value_case)
+
+    if value_case is None:
+        value_case = ValueCase(request_id=request.id, source="person")
+        db.add(value_case)
+    for name, value in fields.items():
+        setattr(value_case, name, value)
+    # Update benefits in place by position, so the (value case, position) key never clashes.
+    for position, benefit in enumerate(benefits):
+        if position < len(value_case.benefits):
+            for name, value in benefit.items():
+                setattr(value_case.benefits[position], name, value)
+        else:
+            value_case.benefits.append(ValueCaseBenefit(position=position, **benefit))
+    del value_case.benefits[len(benefits) :]
+    # A person saving it confirms it, whoever drafted it (R1).
+    value_case.confirmed_by = user.id
+    value_case.confirmed_at = utcnow()
+    # The value case is part of the request: touching the request bumps its version.
+    request.updated_at = utcnow()
+    _save(db)
+    _record_change(
+        db,
+        request,
+        action="value_case",
+        before=before,
+        after=value_case_snapshot(value_case),
+        user=user,
+    )
+    _commit(db)
+    return _value_case_out(db, request, value_case)

@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from app.models.intake import LONG_TEXT_MAX, TITLE_MAX
+from app.models.intake import BENEFITS_MAX, LONG_TEXT_MAX, MEASURE_MAX, TARGET_MAX, TITLE_MAX
 from app.schemas.common import MoneyStr
 
 RequestStatus = Literal["draft", "submitted", "approved", "declined", "withdrawn"]
@@ -20,6 +20,12 @@ LongText = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=LONG_TEXT_MAX)
 ]
 Budget = Annotated[MoneyStr, Field(ge=0)]
+Measure = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MEASURE_MAX)
+]
+ShortText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=TARGET_MAX)
+]
 
 
 class RequestFields(BaseModel):
@@ -112,3 +118,68 @@ class RequestHistoryEntry(BaseModel):
     before: dict[str, Any] | None
     after: dict[str, Any] | None
     created_at: datetime
+
+
+class BenefitIn(BaseModel):
+    """One benefit. Only the description is needed to save it; a request can't be submitted until
+    at least one benefit says how it is measured and what the target is."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: LongText
+    measure: Measure | None = None
+    current_value: ShortText | None = None
+    target: ShortText | None = None
+    target_date: date | None = None
+
+
+class BenefitOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    description: str
+    measure: str | None
+    current_value: str | None
+    target: str | None
+    target_date: date | None
+
+
+class ValueCaseIn(BaseModel):
+    """The whole value case, replacing what is stored. `version` is the request's version the
+    client read; a stale one is a 409. `source` and confirmation are the server's to set."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(ge=1)
+    benefits: list[BenefitIn] = Field(min_length=1, max_length=BENEFITS_MAX)
+    cost_low: Budget | None = None
+    cost_high: Budget | None = None
+    cost_method: LongText | None = None
+    strategic_fit: LongText
+    cost_of_not_doing: LongText | None = None
+
+    @model_validator(mode="after")
+    def _cost_in_order(self) -> Self:
+        low, high = self.cost_low, self.cost_high
+        if low is not None and high is not None and low > high:
+            raise ValueError("cost_low must not be above cost_high")
+        return self
+
+
+class ValueCaseOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    request_id: int
+    # The request's version after this value case was last saved; send it with the next change.
+    request_version: int
+    benefits: list[BenefitOut]
+    cost_low: MoneyStr | None
+    cost_high: MoneyStr | None
+    cost_method: str | None
+    strategic_fit: str
+    cost_of_not_doing: str | None
+    source: Literal["person", "agent"]
+    confirmed_by: int | None
+    confirmed_by_name: str | None = None
+    confirmed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime

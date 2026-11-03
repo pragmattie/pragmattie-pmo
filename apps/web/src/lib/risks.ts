@@ -321,27 +321,35 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    // What is still needed, when the API refuses a step and lists why (submitting a request).
+    readonly missing: string[] = [],
   ) {
     super(message)
   }
 }
 
-async function errorMessage(response: Response): Promise<string> {
+async function apiError(response: Response): Promise<ApiError> {
   try {
     const body = await response.json()
-    if (typeof body.detail === 'string') return body.detail
-    if (Array.isArray(body.detail)) {
-      return body.detail.map((item: { msg?: string }) => item.msg ?? '').join('; ')
+    const detail = body.detail
+    if (typeof detail === 'string') return new ApiError(response.status, detail)
+    if (Array.isArray(detail)) {
+      const text = detail.map((item: { msg?: string }) => item.msg ?? '').join('; ')
+      return new ApiError(response.status, text)
+    }
+    if (detail && typeof detail.message === 'string') {
+      const missing = Array.isArray(detail.missing) ? detail.missing.map(String) : []
+      return new ApiError(response.status, detail.message, missing)
     }
   } catch {
     // Not JSON: fall through to the status text.
   }
-  return `The request failed (${response.status}).`
+  return new ApiError(response.status, `The request failed (${response.status}).`)
 }
 
 export async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await apiFetch(path, init)
-  if (!response.ok) throw new ApiError(response.status, await errorMessage(response))
+  if (!response.ok) throw await apiError(response)
   return (await response.json()) as T
 }
 

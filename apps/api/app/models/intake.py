@@ -13,8 +13,18 @@ it to every UPDATE (`version_id_col`), so a write that lost a race fails instead
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, String, column, or_
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    column,
+    or_,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.migrations_filter import table_name
 from app.models.base import Base, Money, utcnow
@@ -75,3 +85,78 @@ class ProjectRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     __mapper_args__ = {"version_id_col": version}
+
+
+VALUE_CASES_TABLE = table_name("value_cases")
+BENEFITS_TABLE = table_name("value_case_benefits")
+
+VALUE_CASE_SOURCES = ("person", "agent")
+MEASURE_MAX = 500
+TARGET_MAX = 200
+# A value case lists a handful of benefits. At 10, a value case with every field at its longest
+# still fits in the API's 64 KiB body limit.
+BENEFITS_MAX = 10
+
+
+class ValueCase(Base):
+    """Why a request is worth doing, how we will know, and what it will cost (item 4.2).
+
+    One per request, edited with it: only while the request is `draft`, and every change bumps the
+    request's `version`. A value case an agent drafted (`source` "agent") counts only once a person
+    has confirmed it (`confirmed_by`); saving it as a person confirms it.
+    """
+
+    __tablename__ = VALUE_CASES_TABLE
+    __table_args__ = (
+        CheckConstraint(
+            or_(
+                column("cost_low").is_(None),
+                column("cost_high").is_(None),
+                column("cost_low") <= column("cost_high"),
+            ),
+            name="ck_value_cases_cost",
+        ),
+        CheckConstraint(column("source").in_(VALUE_CASE_SOURCES), name="ck_value_cases_source"),
+        UniqueConstraint("request_id", name="uq_value_cases_request"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    request_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{REQUESTS_TABLE}.id", name="fk_value_cases_request")
+    )
+    cost_low: Mapped[Decimal | None] = mapped_column(Money)
+    cost_high: Mapped[Decimal | None] = mapped_column(Money)
+    cost_method: Mapped[str | None] = mapped_column(String(LONG_TEXT_MAX))
+    strategic_fit: Mapped[str] = mapped_column(String(LONG_TEXT_MAX))
+    cost_of_not_doing: Mapped[str | None] = mapped_column(String(LONG_TEXT_MAX))
+    source: Mapped[str] = mapped_column(String(16), default="person")
+    confirmed_by: Mapped[int | None] = mapped_column(
+        ForeignKey(f"{USERS_TABLE}.id", name="fk_value_cases_confirmed_by"), index=True
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    benefits: Mapped[list["ValueCaseBenefit"]] = relationship(
+        order_by="ValueCaseBenefit.position", cascade="all, delete-orphan"
+    )
+
+
+class ValueCaseBenefit(Base):
+    """One benefit: what it is, how it is measured, where it stands now, the target and when."""
+
+    __tablename__ = BENEFITS_TABLE
+    __table_args__ = (
+        UniqueConstraint("value_case_id", "position", name="uq_value_case_benefits_position"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    value_case_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{VALUE_CASES_TABLE}.id", name="fk_value_case_benefits_value_case")
+    )
+    position: Mapped[int]
+    description: Mapped[str] = mapped_column(String(LONG_TEXT_MAX))
+    measure: Mapped[str | None] = mapped_column(String(MEASURE_MAX))
+    current_value: Mapped[str | None] = mapped_column(String(TARGET_MAX))
+    target: Mapped[str | None] = mapped_column(String(TARGET_MAX))
+    target_date: Mapped[date | None] = mapped_column(Date)
