@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 
@@ -9,8 +9,10 @@ import RiskHeatMap from '../components/RiskHeatMap.vue'
 import {
   ApiError,
   bandColor,
+  canAcceptRisk,
   CATEGORIES,
   CONFLICT_MESSAGE,
+  type EscalatedRisk,
   type Filters,
   type HeatCell,
   type Heatmap,
@@ -19,6 +21,7 @@ import {
   KINDS,
   label,
   listQuery,
+  MIN_ACCEPT_REASON,
   NEEDS_JUDGEMENT,
   NO_FILTERS,
   openTotal,
@@ -39,8 +42,19 @@ const route = useRoute()
 const router = useRouter()
 const display = useDisplay()
 
-// Only a role with project:write gets the add, edit and close buttons; the API checks too.
+// Only a role with project:write gets the add, edit, close, open and reject buttons, and only a
+// role at or above a band's owner gets Accept for a risk in it; the API checks too.
 const canWrite = computed(() => auth.can('project:write'))
+const canAcceptSelected = computed(
+  () =>
+    !!selected.value &&
+    canAcceptRisk(
+      selected.value,
+      auth.user?.role,
+      auth.can('risk:accept'),
+      heatmap.value?.bands ?? [],
+    ),
+)
 
 const projects = ref<Project[]>([])
 const projectId = ref<number | null>(null)
@@ -75,6 +89,21 @@ const chosen = ref<string[]>([])
 const libraryError = ref('')
 
 const confirmClose = ref(false)
+
+const acceptOpen = ref(false)
+const acceptReason = ref('')
+const reviewDate = ref('')
+const rejectOpen = ref(false)
+const rejectReason = ref('')
+const today = () => new Date().toISOString().slice(0, 10)
+const acceptReady = computed(
+  () => acceptReason.value.trim().length >= MIN_ACCEPT_REASON && reviewDate.value >= today(),
+)
+
+// Open risks escalated to the signed-in role, across projects.
+const escalations = ref<EscalatedRisk[]>([])
+const escalationsTotal = ref(0)
+const escalationsError = ref('')
 
 const headers = [
   { title: 'Title', key: 'title', sortable: false },
@@ -129,8 +158,19 @@ async function loadHeatmap() {
   }
 }
 
+async function loadEscalations() {
+  try {
+    const result = await riskApi.escalations()
+    escalations.value = result.items
+    escalationsTotal.value = result.total
+    escalationsError.value = ''
+  } catch (error) {
+    escalationsError.value = failed(error)
+  }
+}
+
 function refresh() {
-  return Promise.all([loadRisks(), loadHeatmap()])
+  return Promise.all([loadRisks(), loadHeatmap(), loadEscalations()])
 }
 
 onMounted(async () => {
@@ -293,6 +333,67 @@ async function closeSelected() {
   }
 }
 
+// Accept, open and reject: each is one request, then the risk, its history and the lists reload.
+async function decide(request: () => Promise<Risk>, done: string) {
+  busy.value = true
+  try {
+    selected.value = await request()
+    showMessage(done, 'success')
+    await Promise.all([loadHistory(selected.value.id), refresh()])
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) await afterConflict()
+    else showMessage(failed(error), 'error')
+  } finally {
+    busy.value = false
+  }
+}
+
+function startAccept() {
+  acceptReason.value = ''
+  reviewDate.value = ''
+  acceptOpen.value = true
+}
+
+async function acceptSelected() {
+  const risk = selected.value
+  if (projectId.value === null || !risk || !acceptReady.value) return
+  const id = projectId.value
+  const body = { version: risk.version, reason: acceptReason.value, review_date: reviewDate.value }
+  acceptOpen.value = false
+  await decide(() => riskApi.accept(id, risk.id, body), 'Risk accepted.')
+}
+
+async function openSelected() {
+  const risk = selected.value
+  if (projectId.value === null || !risk) return
+  const id = projectId.value
+  await decide(() => riskApi.open(id, risk.id, risk.version), 'Risk opened.')
+}
+
+function startReject() {
+  rejectReason.value = ''
+  rejectOpen.value = true
+}
+
+async function rejectSelected() {
+  const risk = selected.value
+  if (projectId.value === null || !risk || !rejectReason.value.trim()) return
+  const id = projectId.value
+  const body = { version: risk.version, reason: rejectReason.value }
+  rejectOpen.value = false
+  await decide(() => riskApi.reject(id, risk.id, body), 'Risk rejected.')
+}
+
+// An escalation may be on another project: switch to it (its watcher closes the drawer and
+// reloads), then show the risk.
+async function showEscalation(item: EscalatedRisk) {
+  if (projectId.value !== item.project_id) {
+    projectId.value = item.project_id
+    await nextTick()
+  }
+  await openRisk(item)
+}
+
 async function startLibrary() {
   chosen.value = []
   libraryError.value = ''
@@ -355,6 +456,35 @@ async function addFromLibrary() {
     <p v-if="!projects.length && !pageError" class="text-body-1" data-test="no-projects">
       There are no projects yet.
     </p>
+
+    <v-card variant="outlined" class="pa-3 mb-4" data-test="escalations">
+      <h2 class="text-subtitle-1 mb-2">
+        Escalated to you ({{ label(auth.user?.role ?? '') }}): {{ escalationsTotal }}
+      </h2>
+      <v-alert v-if="escalationsError" type="error" variant="tonal" density="compact">
+        {{ escalationsError }}
+      </v-alert>
+      <p v-else-if="!escalations.length" class="text-body-2" data-test="no-escalations">
+        Nothing is escalated to your role.
+      </p>
+      <v-list v-else density="compact" class="py-0">
+        <v-list-item
+          v-for="item in escalations"
+          :key="item.id"
+          class="px-0"
+          :data-test="`escalation-${item.id}`"
+          @click="showEscalation(item)"
+        >
+          <v-list-item-title class="text-body-2">
+            <v-chip :color="bandColor(item.band)" variant="flat" size="x-small" class="mr-2">
+              {{ item.band }}
+            </v-chip>
+            {{ item.title }}
+          </v-list-item-title>
+          <v-list-item-subtitle>{{ item.project_name }}, score {{ item.score }}</v-list-item-subtitle>
+        </v-list-item>
+      </v-list>
+    </v-card>
 
     <v-row v-if="projectId !== null">
       <v-col cols="12" md="4" order-md="2">
@@ -528,17 +658,95 @@ async function addFromLibrary() {
         :history-total="historyTotal"
         :owner-name="ownerName"
         :can-write="canWrite"
+        :can-accept="canAcceptSelected"
         :busy="busy"
         :message="message"
         :message-type="messageType"
         @close="drawerOpen = false"
         @edit="startEdit"
         @close-risk="confirmClose = true"
+        @accept="startAccept"
+        @open-proposed="openSelected"
+        @reject="startReject"
         @more-history="selected && loadHistory(selected.id, true)"
       />
     </v-navigation-drawer>
 
+    <v-dialog v-if="auth.can('risk:accept')" v-model="acceptOpen" max-width="480">
+      <v-card data-test="accept-dialog">
+        <v-card-title>Accept this risk?</v-card-title>
+        <v-card-text>
+          <p class="text-body-2 mb-3">
+            Accepting means taking no further action beyond watching it. Your name, the reason and
+            the review date are recorded.
+          </p>
+          <v-textarea
+            v-model="acceptReason"
+            label="Why accept it"
+            :hint="`At least ${MIN_ACCEPT_REASON} characters`"
+            persistent-hint
+            rows="3"
+            counter
+            maxlength="4000"
+            data-test="accept-reason"
+          />
+          <v-text-field
+            v-model="reviewDate"
+            label="Review date"
+            type="date"
+            :min="today()"
+            class="mt-2"
+            data-test="accept-review-date"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="acceptOpen = false">Cancel</v-btn>
+          <v-btn
+            color="secondary"
+            variant="flat"
+            :disabled="!acceptReady"
+            :loading="busy"
+            data-test="accept-yes"
+            @click="acceptSelected"
+          >
+            Accept risk
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <template v-if="canWrite">
+      <v-dialog v-model="rejectOpen" max-width="480">
+        <v-card data-test="reject-dialog">
+          <v-card-title>Reject this proposed risk?</v-card-title>
+          <v-card-text>
+            <v-textarea
+              v-model="rejectReason"
+              label="Why reject it"
+              rows="3"
+              counter
+              maxlength="4000"
+              data-test="reject-reason"
+            />
+          </v-card-text>
+          <v-card-actions>
+            <v-spacer />
+            <v-btn variant="text" @click="rejectOpen = false">Cancel</v-btn>
+            <v-btn
+              color="primary"
+              variant="flat"
+              :disabled="!rejectReason.trim()"
+              :loading="busy"
+              data-test="reject-yes"
+              @click="rejectSelected"
+            >
+              Reject risk
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
+
       <RiskForm
         v-model="formOpen"
         :risk="formRisk"

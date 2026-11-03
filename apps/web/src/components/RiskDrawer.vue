@@ -3,6 +3,7 @@ import { computed } from 'vue'
 
 import {
   bandColor,
+  canCloseRisk,
   changedFields,
   type HistoryEntry,
   label,
@@ -10,14 +11,16 @@ import {
   scoreText,
 } from '../lib/risks'
 
-// Every field of one risk and its history from the audit trail. The edit and close buttons are
-// only rendered for a role that may use them; the API refuses everyone else anyway.
+// Every field of one risk and its history from the audit trail. The edit, close, open, reject and
+// accept buttons are only rendered for a role that may use them; the API refuses everyone else
+// anyway. `canAccept` is worked out by the page, which knows each band's owner.
 const props = defineProps<{
   risk: Risk | null
   history: HistoryEntry[]
   historyTotal: number
   ownerName: (id: number | null) => string
   canWrite: boolean
+  canAccept: boolean
   busy: boolean
   message: string
   messageType: 'error' | 'warning' | 'success'
@@ -26,8 +29,13 @@ const emit = defineEmits<{
   close: []
   edit: []
   closeRisk: []
+  accept: []
+  openProposed: []
+  reject: []
   moreHistory: []
 }>()
+
+const proposed = computed(() => props.canWrite && props.risk?.status === 'proposed')
 
 const fields = computed(() => {
   const risk = props.risk
@@ -47,6 +55,8 @@ const fields = computed(() => {
     ['Response', label(risk.response)],
     ['Response plan', risk.response_plan],
     ['Owner', props.ownerName(risk.owner_user_id)],
+    ['Escalated to', risk.escalated_to ? `${label(risk.escalated_to)} (${risk.escalated_band})` : '—'],
+    ['Review date', risk.review_date ?? '—'],
     ['Needs a person’s judgement', risk.needs_judgement ? 'Yes' : 'No'],
     ['Source', label(risk.source)],
     ['Version', String(risk.version)],
@@ -93,8 +103,52 @@ function describe(entry: HistoryEntry) {
     >
       {{ message }}
     </v-alert>
-    <div v-if="canWrite" class="d-flex flex-wrap ga-2 mb-4">
+    <v-alert
+      v-if="risk.escalated_to"
+      type="info"
+      variant="tonal"
+      density="compact"
+      class="mb-3"
+      data-test="escalated"
+    >
+      Escalated to the {{ label(risk.escalated_to).toLowerCase() }} ({{ risk.escalated_band }}
+      band).
+    </v-alert>
+    <div v-if="canWrite || canAccept" class="d-flex flex-wrap ga-2 mb-4">
       <v-btn
+        v-if="canAccept"
+        color="secondary"
+        variant="flat"
+        size="small"
+        :loading="busy"
+        data-test="accept-risk"
+        @click="emit('accept')"
+      >
+        Accept
+      </v-btn>
+      <template v-if="proposed">
+        <v-btn
+          color="primary"
+          variant="flat"
+          size="small"
+          :loading="busy"
+          data-test="open-risk"
+          @click="emit('openProposed')"
+        >
+          Open
+        </v-btn>
+        <v-btn
+          variant="outlined"
+          size="small"
+          :loading="busy"
+          data-test="reject-risk"
+          @click="emit('reject')"
+        >
+          Reject
+        </v-btn>
+      </template>
+      <v-btn
+        v-if="canWrite"
         color="primary"
         variant="flat"
         size="small"
@@ -104,7 +158,7 @@ function describe(entry: HistoryEntry) {
         Edit
       </v-btn>
       <v-btn
-        v-if="risk.status !== 'closed'"
+        v-if="canWrite && canCloseRisk(risk)"
         variant="outlined"
         size="small"
         :loading="busy"
