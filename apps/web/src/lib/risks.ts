@@ -224,6 +224,30 @@ export function canAcceptRisk(
   )
 }
 
+// Whether a role may close an escalated risk or move it to a lower band: only a role holding
+// risk:accept at or above the escalation owner (the API's escalation hold). A risk that isn't
+// escalated holds nobody back.
+export function mayClearEscalation(
+  risk: Pick<Risk, 'escalated_to' | 'escalated_band'>,
+  role: string | undefined,
+  holdsAccept: boolean,
+  bands: Heatmap['bands'],
+): boolean {
+  if (!risk.escalated_to) return true
+  return holdsAccept && mayAcceptBand(role, risk.escalated_band, bands)
+}
+
+// What a person who can't clear an escalation sees in place of Close risk.
+export function escalationLine(risk: Pick<Risk, 'escalated_to'>): string {
+  const owner = label(risk.escalated_to ?? 'owner').toLowerCase()
+  return `Escalated to the ${owner}: only the ${owner} can accept or close it`
+}
+
+// A rejected risk is final: the API refuses any change to it.
+export function canEditRisk(risk: Pick<Risk, 'status'>): boolean {
+  return risk.status !== 'rejected'
+}
+
 // A PATCH may close an open or accepted risk; other moves have their own routes.
 export function canCloseRisk(risk: Pick<Risk, 'status'>): boolean {
   return risk.status === 'open' || risk.status === 'accepted'

@@ -5,7 +5,9 @@ import {
   AGENT_PROPOSAL,
   bandColor,
   canCloseRisk,
+  canEditRisk,
   changedFields,
+  escalationLine,
   type HistoryEntry,
   isAgentProposal,
   label,
@@ -15,7 +17,8 @@ import {
 
 // Every field of one risk and its history from the audit trail. The edit, close, open, reject and
 // accept buttons are only rendered for a role that may use them; the API refuses everyone else
-// anyway. `canAccept` is worked out by the page, which knows each band's owner.
+// anyway. `canAccept` and `canClearEscalation` are worked out by the page, which knows each band's
+// owner: a person who can't clear an escalation gets no Close risk, and a line saying who can.
 const props = defineProps<{
   risk: Risk | null
   history: HistoryEntry[]
@@ -23,6 +26,7 @@ const props = defineProps<{
   ownerName: (id: number | null) => string
   canWrite: boolean
   canAccept: boolean
+  canClearEscalation: boolean
   busy: boolean
   message: string
   messageType: 'error' | 'warning' | 'success'
@@ -125,6 +129,9 @@ function describe(entry: HistoryEntry) {
     >
       Escalated to the {{ label(risk.escalated_to).toLowerCase() }} ({{ risk.escalated_band }}
       band).
+      <span v-if="!canClearEscalation" class="d-block" data-test="escalation-hold">
+        {{ escalationLine(risk) }}.
+      </span>
     </v-alert>
     <div v-if="canWrite || canAccept" class="d-flex flex-wrap ga-2 mb-4">
       <v-btn
@@ -160,7 +167,7 @@ function describe(entry: HistoryEntry) {
         </v-btn>
       </template>
       <v-btn
-        v-if="canWrite"
+        v-if="canWrite && canEditRisk(risk)"
         color="primary"
         variant="flat"
         size="small"
@@ -170,7 +177,7 @@ function describe(entry: HistoryEntry) {
         Edit
       </v-btn>
       <v-btn
-        v-if="canWrite && canCloseRisk(risk)"
+        v-if="canWrite && canCloseRisk(risk) && canClearEscalation"
         variant="outlined"
         size="small"
         :loading="busy"
