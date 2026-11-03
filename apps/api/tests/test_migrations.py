@@ -119,6 +119,10 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
             for uq in inspector.get_unique_constraints("readiness_actions")
         }
         assert action_uniques == {"uq_readiness_actions_position": ["check_id", "area", "position"]}
+        # 0013: an agent's draft action has no owner or date until a person adds them.
+        action_columns = {c["name"]: c for c in inspector.get_columns("readiness_actions")}
+        assert action_columns["owner_id"]["nullable"] is True
+        assert action_columns["due_date"]["nullable"] is True
         gate_fks = {
             fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("gate_decisions")
         }
@@ -129,6 +133,11 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         assert "ix_gate_decisions_subject" in gate_indexes
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0012")
+        inspector = inspect(create_engine(get_settings().database_url))
+        action_columns = {c["name"]: c for c in inspector.get_columns("readiness_actions")}
+        assert action_columns["owner_id"]["nullable"] is False
+        assert action_columns["due_date"]["nullable"] is False
         command.downgrade(config, "base")
     finally:
         get_settings.cache_clear()

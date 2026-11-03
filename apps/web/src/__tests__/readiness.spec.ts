@@ -6,8 +6,11 @@ import App from '../App.vue'
 import ReadinessSection from '../components/ReadinessSection.vue'
 import {
   canEditReadiness,
+  dueText,
+  isAgentDraft,
   isOverdue,
   localDate,
+  ownerText,
   type ProjectRequest,
   ratingColor,
   ratingText,
@@ -244,6 +247,21 @@ describe('readiness helpers', () => {
     expect(isOverdue({ due_date: '2026-11-02' }, now)).toBe(true)
     expect(isOverdue({ due_date: '2026-11-03' }, now)).toBe(false)
     expect(isOverdue({ due_date: '2026-11-04' }, now)).toBe(false)
+    // An agent's draft action has no date yet: never overdue.
+    expect(isOverdue({ due_date: null }, now)).toBe(false)
+  })
+
+  it('says when an action has no owner or date yet', () => {
+    expect(ownerText({ owner_id: null, owner_name: null })).toBe('No owner yet')
+    expect(ownerText({ owner_id: 11, owner_name: 'Pat Manager' })).toBe('owner Pat Manager')
+    expect(dueText({ due_date: null })).toBe('No date yet')
+    expect(dueText({ due_date: '2026-12-01' })).toBe('due 2026-12-01')
+  })
+
+  it('treats only an unconfirmed agent section as an agent draft', () => {
+    expect(isAgentDraft({ source: 'agent', confirmed_by: null })).toBe(true)
+    expect(isAgentDraft({ source: 'agent', confirmed_by: 11 })).toBe(false)
+    expect(isAgentDraft({ source: 'person', confirmed_by: 11 })).toBe(false)
   })
 })
 
@@ -283,6 +301,30 @@ describe('the readiness section', () => {
     expect(wrapper.get('[data-test="readiness-confirmed"]').text()).toContain(
       'a person must confirm it',
     )
+  })
+
+  it('marks an agent draft with a chip, and its actions with no owner or date', async () => {
+    const action = { description: 'Compare with a rule', owner_id: null, owner_name: null }
+    const draft = readiness({
+      overall: 'unrated',
+      source: 'agent',
+      confirmed_by: null,
+      confirmed_by_name: null,
+      approach: { rating: 'yellow', note: 'Maybe', actions: [{ ...action, due_date: null }] },
+    })
+    const { wrapper } = await mountAt('project_manager', { readiness: draft })
+    expect(wrapper.get('[data-test="readiness-agent-draft"]').text()).toBe(
+      'Agent draft, not confirmed',
+    )
+    const shown = wrapper.get('[data-test="action-approach-0"]')
+    expect(shown.text()).toContain('No owner yet')
+    expect(shown.text()).toContain('No date yet')
+    expect(shown.find('[data-test="overdue"]').exists()).toBe(false)
+  })
+
+  it('shows no agent chip once a person has confirmed the check', async () => {
+    const { wrapper } = await mountAt('sponsor', { readiness: readiness({ source: 'agent' }) })
+    expect(wrapper.find('[data-test="readiness-agent-draft"]').exists()).toBe(false)
   })
 
   it('says when there is no readiness check yet', async () => {

@@ -239,7 +239,8 @@ class ReadinessCheck(Base):
 
 
 class ReadinessAction(Base):
-    """One thing to do before an area is ready: what, who owns it, and by when."""
+    """One thing to do before an area is ready: what, who owns it, and by when. Owner and date
+    are empty only on an agent's draft; a person's save sets both."""
 
     __tablename__ = READINESS_ACTIONS_TABLE
     __table_args__ = (
@@ -254,7 +255,7 @@ class ReadinessAction(Base):
     area: Mapped[str] = mapped_column(String(16))
     position: Mapped[int]
     description: Mapped[str] = mapped_column(String(ACTION_MAX))
-    owner_id: Mapped[int] = mapped_column(
+    owner_id: Mapped[int | None] = mapped_column(
         ForeignKey(f"{USERS_TABLE}.id", name="fk_readiness_actions_owner"), index=True
     )
-    due_date: Mapped[date] = mapped_column(Date)
+    due_date: Mapped[date | None] = mapped_column(Date)

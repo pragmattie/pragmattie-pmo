@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     risk_agent_input_usd_per_mtok: Decimal = Field(default=Decimal("2"), ge=0)
     risk_agent_output_usd_per_mtok: Decimal = Field(default=Decimal("10"), ge=0)
 
+    # The intake agent (app/agents/intake_agent.py), set the same way as the risk agent.
+    intake_agent_model: str = Field(default="claude-sonnet-5-5", min_length=1)
+    intake_agent_max_tokens: int = Field(default=4096, ge=256, le=32000)
+    intake_agent_input_usd_per_mtok: Decimal = Field(default=Decimal("2"), ge=0)
+    intake_agent_output_usd_per_mtok: Decimal = Field(default=Decimal("10"), ge=0)
+
     # Read only by tests/security/test_mysql_races.py: a throwaway MySQL database those tests
     # empty and fill. Never point it at a database whose data matters.
     test_mysql_url: str | None = Field(default=None, repr=False)

@@ -220,6 +220,24 @@ describe('the value case section', () => {
     expect(wrapper.get('[data-test="field-Budget available"]').text()).toBe('$1,000.00 to $2,000.00')
   })
 
+  it('marks an agent draft with a chip until a person confirms it', async () => {
+    const draft = valueCase({ source: 'agent', confirmed_by: null, confirmed_by_name: null })
+    const { wrapper } = await mountAt('project_manager', { valueCase: draft })
+    expect(wrapper.get('[data-test="value-case-agent-draft"]').text()).toBe(
+      'Agent draft, not confirmed',
+    )
+  })
+
+  it.each([
+    ['person', 11],
+    ['agent', 11],
+  ] as const)('shows no agent chip on a confirmed %s value case', async (source, by) => {
+    const { wrapper } = await mountAt('sponsor', {
+      valueCase: valueCase({ source, confirmed_by: by }),
+    })
+    expect(wrapper.find('[data-test="value-case-agent-draft"]').exists()).toBe(false)
+  })
+
   it('says when there is no value case yet', async () => {
     const { wrapper } = await mountAt('auditor', { valueCase: null })
     expect(wrapper.get('[data-test="value-case-none"]').text()).toContain('No value case yet')

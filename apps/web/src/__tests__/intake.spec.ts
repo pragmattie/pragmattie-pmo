@@ -6,9 +6,11 @@ import App from '../App.vue'
 import RequestForm from '../components/RequestForm.vue'
 import {
   budgetText,
+  canDraftRequest,
   canEditRequest,
   canSubmitRequest,
   canWithdrawRequest,
+  draftText,
   moneyText,
   NO_QUEUE_FILTERS,
   type ProjectRequest,
@@ -80,6 +82,21 @@ function page(items: unknown[]) {
 interface FakeOptions {
   stored?: ProjectRequest
   status?: number
+  // The intake agent's answer: 409 when AGENT_MODE is off.
+  draftStatus?: number
+}
+
+const DRAFTED = {
+  mode: 'enforce',
+  dry_run: false,
+  model: 'claude-sonnet-5-5',
+  prompt_version: 'intake-agent-2026-11-03.1',
+  cost_ceiling_usd: null,
+  saved: ['value_case', 'readiness'],
+  skipped: [],
+  dropped: [],
+  adjusted: [],
+  audit_id: 40,
 }
 
 function fakeApi(role: string, options: FakeOptions = {}) {
@@ -118,6 +135,12 @@ function fakeApi(role: string, options: FakeOptions = {}) {
       }
       const status = move[2] === 'submit' ? 'submitted' : 'withdrawn'
       return json(request(Number(move[1]), { status, version: 2 }))
+    }
+    if (/^\/api\/v1\/requests\/\d+\/draft$/.test(path) && method === 'POST') {
+      if (options.draftStatus === 409) {
+        return json({ detail: 'the intake agent is off (AGENT_MODE=off)' }, 409)
+      }
+      return json(DRAFTED)
     }
     const one = path.match(/^\/api\/v1\/requests\/(\d+)$/)
     if (one && method === 'PATCH') {
@@ -210,6 +233,23 @@ describe('intake helpers', () => {
       limit: '25',
       offset: '25',
     })
+  })
+
+  it('offers the intake agent only on a draft, to a role that may write', () => {
+    expect(canDraftRequest({ status: 'draft' }, true)).toBe(true)
+    expect(canDraftRequest({ status: 'draft' }, false)).toBe(false)
+    expect(canDraftRequest({ status: 'submitted' }, true)).toBe(false)
+  })
+
+  it('says what the intake agent saved, skipped, or that shadow mode saved nothing', () => {
+    expect(draftText({ mode: 'enforce', saved: ['value_case'], skipped: [] })).toBe(
+      'The agent drafted the value case. Check every part and save it to confirm it.',
+    )
+    const skipped = [{ section: 'readiness' as const, reason: 'a person has confirmed it' }]
+    expect(draftText({ mode: 'enforce', saved: [], skipped })).toBe(
+      'The agent saved nothing. Left alone, because a person confirmed it: readiness check.',
+    )
+    expect(draftText({ mode: 'shadow', saved: [], skipped: [] })).toContain('nothing was saved')
   })
 
   it('shows money and budget ranges', () => {
@@ -396,6 +436,40 @@ describe('the request page', () => {
   ])('shows %s on a %s request the buttons %j', async (role, status, expected) => {
     const { wrapper } = await mountAt('/intake/1', role, { stored: request(1, { status }) })
     expect(buttons(wrapper)).toEqual(expected)
+  })
+
+  it.each<[string, RequestStatus, boolean]>([
+    ['project_manager', 'draft', true],
+    ['project_manager', 'submitted', false],
+    ['project_manager', 'withdrawn', false],
+    ['sponsor', 'draft', false],
+    ['auditor', 'draft', false],
+    ['admin', 'draft', false],
+  ])('shows %s on a %s request the agent button: %s', async (role, status, expected) => {
+    const { wrapper } = await mountAt('/intake/1', role, { stored: request(1, { status }) })
+    expect(wrapper.find('[data-test="draft-agent"]').exists()).toBe(expected)
+  })
+
+  it('runs the intake agent, then reloads the request and says what it drafted', async () => {
+    const { wrapper, fetchMock } = await mountAt('/intake/1', 'project_manager')
+    const button = wrapper.get('[data-test="draft-agent"]')
+    expect(button.text()).toBe('Draft with the agent')
+    const reads = calls(fetchMock, 'GET', '/api/v1/requests/1').length
+    await button.trigger('click')
+    await flushPromises()
+    const [[, init]] = calls(fetchMock, 'POST', '/api/v1/requests/1/draft')
+    expect(init!.body).toBeUndefined()
+    expect(calls(fetchMock, 'GET', '/api/v1/requests/1').length).toBe(reads + 1)
+    expect(wrapper.get('[data-test="message"]').text()).toContain(
+      'The agent drafted the value case and readiness check.',
+    )
+  })
+
+  it('explains when the intake agent is off', async () => {
+    const { wrapper } = await mountAt('/intake/1', 'project_manager', { draftStatus: 409 })
+    await wrapper.get('[data-test="draft-agent"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="message"]').text()).toContain('AGENT_MODE=off')
   })
 
   it('submits a draft with the version it read', async () => {

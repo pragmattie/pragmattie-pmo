@@ -392,6 +392,8 @@ SAMPLES = {
     ("PUT", "/api/v1/requests/{request_id}/readiness"): _intake_sample(
         "/readiness", _readiness_body, uses_ai=True
     ),
+    # AGENT_MODE is off in tests, so an allowed caller gets the refusal (409), never a call.
+    ("POST", "/api/v1/requests/{request_id}/draft"): _intake_sample("/draft?dry_run=true"),
     ("GET", "/api/v1/requests/{request_id}/gate"): _intake_sample("/gate", value_case=True),
     # Raised by the target project manager, so a sponsor deciding it is not deciding their own.
     ("POST", "/api/v1/requests/{request_id}/gate"): _intake_sample(
@@ -434,8 +436,11 @@ CREATED = {
 }
 
 
-# Allowed requests refused for another reason: the risk agent is off in tests.
-REFUSED = {("POST", "/api/v1/projects/{project_id}/risks/suggest")}
+# Allowed requests refused for another reason: the risk and intake agents are off in tests.
+REFUSED = {
+    ("POST", "/api/v1/projects/{project_id}/risks/suggest"),
+    ("POST", "/api/v1/requests/{request_id}/draft"),
+}
 
 # Routes that also need a role the gates policy lists: other roles holding the action get 403.
 GATE_DECIDERS = {("POST", "/api/v1/requests/{request_id}/gate"): {Role.SPONSOR}}
@@ -488,6 +493,7 @@ def test_matrix_covers_the_existing_routes():
         ("PUT", "/api/v1/requests/{request_id}/readiness"),
         ("GET", "/api/v1/requests/{request_id}/gate"),
         ("POST", "/api/v1/requests/{request_id}/gate"),
+        ("POST", "/api/v1/requests/{request_id}/draft"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -531,6 +537,7 @@ def test_matrix_covers_the_existing_routes():
         ("POST", f"{request}/withdraw"),
         ("PUT", f"{request}/value-case"),
         ("PUT", f"{request}/readiness"),
+        ("POST", f"{request}/draft"),
     ):
         assert by_method[(method, path)] == Action.PROJECT_WRITE
 
