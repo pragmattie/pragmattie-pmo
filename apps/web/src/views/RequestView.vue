@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
+import GateSection from '../components/GateSection.vue'
 import ReadinessSection from '../components/ReadinessSection.vue'
 import RequestForm from '../components/RequestForm.vue'
 import ValueCaseSection from '../components/ValueCaseSection.vue'
@@ -170,9 +171,15 @@ async function readinessSaved() {
   show('Readiness check saved.', 'success')
 }
 
-async function sectionConflict(text: string) {
+async function sectionConflict(text: string, items: string[] = []) {
   await load()
-  show(text.includes('changed') ? REQUEST_CONFLICT : text, 'warning')
+  show(text.includes('changed') ? REQUEST_CONFLICT : text, 'warning', items)
+}
+
+// A gate decision changed the request's status and version: reload it and its history.
+async function gateDecided(text: string) {
+  await load()
+  show(text, 'success')
 }
 
 function describe(entry: HistoryEntry): string {
@@ -244,6 +251,8 @@ function describe(entry: HistoryEntry): string {
         @saved="readinessSaved"
         @conflict="sectionConflict"
       />
+
+      <GateSection :request="request" @decided="gateDecided" @conflict="sectionConflict" />
 
       <h2 class="text-subtitle-1 mt-4 mb-2">History</h2>
       <p v-if="!history.length" class="text-body-2">No recorded changes.</p>

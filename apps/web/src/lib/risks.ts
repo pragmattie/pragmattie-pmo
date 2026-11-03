@@ -321,7 +321,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
-    // What is still needed, when the API refuses a step and lists why (submitting a request).
+    // What is still needed, when the API refuses a step and lists why (submitting a request,
+    // passing a gate).
     readonly missing: string[] = [],
   ) {
     super(message)
@@ -339,6 +340,12 @@ async function apiError(response: Response): Promise<ApiError> {
     }
     if (detail && typeof detail.message === 'string') {
       const missing = Array.isArray(detail.missing) ? detail.missing.map(String) : []
+      // A gate's unmet criteria (passing the approval gate): each one's text and why.
+      if (Array.isArray(detail.unmet)) {
+        for (const item of detail.unmet as { text?: string; detail?: string | null }[]) {
+          missing.push(item.detail ? `${item.text}: ${item.detail}` : String(item.text))
+        }
+      }
       return new ApiError(response.status, detail.message, missing)
     }
   } catch {
