@@ -28,7 +28,17 @@ from app.authz import (
 from app.config import get_settings
 from app.db import engine
 from app.main import app, create_app
-from app.models import AuditDecision, Base, Project, ProjectRequest, Risk, User
+from app.models import (
+    AuditDecision,
+    Base,
+    Project,
+    ProjectAssumption,
+    ProjectBrief,
+    ProjectRequest,
+    ProjectStakeholder,
+    Risk,
+    User,
+)
 from app.security import CSRF_COOKIE, SESSION_COOKIE, issue_token
 
 CSRF = {"X-CSRF-Token": "test-csrf-value"}
@@ -317,6 +327,38 @@ def _readiness_body(owner: int) -> dict:
     }
 
 
+def _planning_sample(suffix: str, body: dict | None = None):
+    """A project with a brief, a stakeholder and an assumption owned by the target, for the
+    project routes' samples. `{stakeholder}` and `{assumption}` in `suffix` take their ids."""
+
+    def sample(target: int) -> dict:
+        with Session(engine) as session:
+            project = Project(name="Plan", stage="planning", sponsor="S", pm="P", status="on_track")
+            session.add(project)
+            session.flush()
+            stakeholder = ProjectStakeholder(
+                project_id=project.id, name="Sponsor", role_or_interest="Sponsor"
+            )
+            assumption = ProjectAssumption(
+                project_id=project.id,
+                text="Data exists",
+                owner_user_id=target,
+                confirm_by=date(2026, 12, 1),
+            )
+            brief = ProjectBrief(
+                project_id=project.id, purpose="Why", objectives="What", decision_rights=[]
+            )
+            session.add_all([stakeholder, assumption, brief])
+            session.commit()
+            path = suffix.format(stakeholder=stakeholder.id, assumption=assumption.id)
+            url = f"/api/v1/projects/{project.id}{path}"
+        if callable(body):
+            return {"url": url, "json": body(target)}
+        return {"url": url, "json": body} if body is not None else {"url": url}
+
+    return sample
+
+
 # Routes with path parameters or a body need a sample request that succeeds when allowed. Each
 # takes the id of a project-manager user that the caller may act on.
 SAMPLES = {
@@ -396,9 +438,10 @@ SAMPLES = {
     ("POST", "/api/v1/requests/{request_id}/draft"): _intake_sample("/draft?dry_run=true"),
     ("GET", "/api/v1/requests/{request_id}/gate"): _intake_sample("/gate", value_case=True),
     # Raised by the target project manager, so a sponsor deciding it is not deciding their own.
+    # The target project manager is also the new project's project manager.
     ("POST", "/api/v1/requests/{request_id}/gate"): _intake_sample(
         "/gate",
-        {
+        lambda target: {
             "version": 1,
             "outcome": "pass",
             "reason": "Worth doing and we have the people for it",
@@ -406,9 +449,40 @@ SAMPLES = {
                 {"id": "value_justifies_cost", "met": True, "note": "Pays back in a year"},
                 {"id": "people_available", "met": True, "note": "Two analysts free"},
             ],
+            "project_manager_id": target,
         },
         value_case=True,
         status="submitted",
+    ),
+    ("GET", "/api/v1/projects/{project_id}"): _planning_sample(""),
+    ("GET", "/api/v1/projects/{project_id}/brief"): _planning_sample("/brief"),
+    ("PATCH", "/api/v1/projects/{project_id}/brief"): _planning_sample(
+        "/brief", {"version": 1, "scope_out": "Stores outside the pilot"}
+    ),
+    ("GET", "/api/v1/projects/{project_id}/stakeholders"): _planning_sample("/stakeholders"),
+    ("POST", "/api/v1/projects/{project_id}/stakeholders"): _planning_sample(
+        "/stakeholders", {"name": "Store managers", "role_or_interest": "Use the forecast"}
+    ),
+    ("PATCH", "/api/v1/projects/{project_id}/stakeholders/{stakeholder_id}"): _planning_sample(
+        "/stakeholders/{stakeholder}", {"version": 1, "how_often": "Weekly"}
+    ),
+    ("DELETE", "/api/v1/projects/{project_id}/stakeholders/{stakeholder_id}"): _planning_sample(
+        "/stakeholders/{stakeholder}?version=1"
+    ),
+    ("GET", "/api/v1/projects/{project_id}/assumptions"): _planning_sample("/assumptions"),
+    ("POST", "/api/v1/projects/{project_id}/assumptions"): _planning_sample(
+        "/assumptions",
+        lambda target: {
+            "text": "Two years of sales history exist",
+            "owner_user_id": target,
+            "confirm_by": "2026-12-01",
+        },
+    ),
+    ("PATCH", "/api/v1/projects/{project_id}/assumptions/{assumption_id}"): _planning_sample(
+        "/assumptions/{assumption}", {"version": 1, "status": "confirmed"}
+    ),
+    ("DELETE", "/api/v1/projects/{project_id}/assumptions/{assumption_id}"): _planning_sample(
+        "/assumptions/{assumption}?version=1"
     ),
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
@@ -433,6 +507,14 @@ CREATED = {
     ("POST", "/api/v1/projects/{project_id}/risks"),
     ("POST", "/api/v1/projects/{project_id}/risks/from-library"),
     ("POST", "/api/v1/requests"),
+    ("POST", "/api/v1/projects/{project_id}/stakeholders"),
+    ("POST", "/api/v1/projects/{project_id}/assumptions"),
+}
+
+# Allowed deletes answer 204.
+DELETED = {
+    ("DELETE", "/api/v1/projects/{project_id}/stakeholders/{stakeholder_id}"),
+    ("DELETE", "/api/v1/projects/{project_id}/assumptions/{assumption_id}"),
 }
 
 
@@ -453,6 +535,8 @@ def _expected(guard, role: Role, method: str = "GET", path: str = "") -> int:
         return 403
     if (method, path) in REFUSED:
         return 409
+    if (method, path) in DELETED:
+        return 204
     return 201 if (method, path) in CREATED else 200
 
 
@@ -494,6 +578,17 @@ def test_matrix_covers_the_existing_routes():
         ("GET", "/api/v1/requests/{request_id}/gate"),
         ("POST", "/api/v1/requests/{request_id}/gate"),
         ("POST", "/api/v1/requests/{request_id}/draft"),
+        ("GET", "/api/v1/projects/{project_id}"),
+        ("GET", "/api/v1/projects/{project_id}/brief"),
+        ("PATCH", "/api/v1/projects/{project_id}/brief"),
+        ("GET", "/api/v1/projects/{project_id}/stakeholders"),
+        ("POST", "/api/v1/projects/{project_id}/stakeholders"),
+        ("PATCH", "/api/v1/projects/{project_id}/stakeholders/{stakeholder_id}"),
+        ("DELETE", "/api/v1/projects/{project_id}/stakeholders/{stakeholder_id}"),
+        ("GET", "/api/v1/projects/{project_id}/assumptions"),
+        ("POST", "/api/v1/projects/{project_id}/assumptions"),
+        ("PATCH", "/api/v1/projects/{project_id}/assumptions/{assumption_id}"),
+        ("DELETE", "/api/v1/projects/{project_id}/assumptions/{assumption_id}"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -538,6 +633,19 @@ def test_matrix_covers_the_existing_routes():
         ("PUT", f"{request}/value-case"),
         ("PUT", f"{request}/readiness"),
         ("POST", f"{request}/draft"),
+    ):
+        assert by_method[(method, path)] == Action.PROJECT_WRITE
+    project = "/api/v1/projects/{project_id}"
+    for path in (project, f"{project}/brief", f"{project}/stakeholders", f"{project}/assumptions"):
+        assert by_method[("GET", path)] == Action.PROJECT_READ
+    for method, path in (
+        ("PATCH", f"{project}/brief"),
+        ("POST", f"{project}/stakeholders"),
+        ("PATCH", f"{project}/stakeholders/{{stakeholder_id}}"),
+        ("DELETE", f"{project}/stakeholders/{{stakeholder_id}}"),
+        ("POST", f"{project}/assumptions"),
+        ("PATCH", f"{project}/assumptions/{{assumption_id}}"),
+        ("DELETE", f"{project}/assumptions/{{assumption_id}}"),
     ):
         assert by_method[(method, path)] == Action.PROJECT_WRITE
 

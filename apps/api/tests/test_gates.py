@@ -67,8 +67,18 @@ def _submitted(web: TestClient, pm: User, uses_ai: bool = False, **readiness) ->
     return rid
 
 
+def _first_project_manager() -> int | None:
+    with Session(engine) as session:
+        stmt = select(User.id).where(User.role == "project_manager").order_by(User.id).limit(1)
+        return session.scalar(stmt)
+
+
 def _decide(client: TestClient, rid: int, outcome: str = "pass", **changes):
-    body = {"version": 2, "outcome": outcome, "reason": REASON, "criteria": TICKS, **changes}
+    """A decision; a `pass` names the first project manager unless told otherwise."""
+    body = {"version": 2, "outcome": outcome, "reason": REASON, "criteria": TICKS}
+    if outcome == "pass":
+        body["project_manager_id"] = _first_project_manager()
+    body.update(changes)
     return client.post(f"{URL}/{rid}/gate", json=body)
 
 
@@ -202,11 +212,13 @@ def test_a_red_readiness_check_blocks_pass_with_a_409_naming_it(web, db, pm, spo
     assert row.output["status"] == "submitted"
 
 
-def test_an_unowned_yellow_area_blocks_pass(web, db, pm, sponsor):
+def test_an_unowned_yellow_area_blocks_pass(web, db, sign_in, pm, sponsor):
     rid = _submitted(web, pm, uses_ai=True)
+    _, other_pm = _client(db, sign_in, "project_manager", "other.pm@pmo.example")
     pm.is_active = False  # the action's owner leaves
     db.commit()
-    assert _unmet_ids(_decide(sponsor, rid)) == ["yellow_actions_owned"]
+    response = _decide(sponsor, rid, project_manager_id=other_pm.id)
+    assert _unmet_ids(response) == ["yellow_actions_owned"]
 
 
 @pytest.mark.parametrize(

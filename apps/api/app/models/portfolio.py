@@ -14,6 +14,7 @@ from app.models.base import Base, utcnow
 
 CLIENTS_TABLE = table_name("clients")
 PROJECTS_TABLE = table_name("projects")
+USERS_TABLE = table_name("users")
 
 # Working value sets until the stage gates (milestone P4) and status reports define them.
 STAGES = ("intake", "planning", "delivery", "closure", "closed")
@@ -52,5 +53,13 @@ class Project(Base):
     pm: Mapped[str] = mapped_column(String(200))
     pm_email: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(32))
+    # The users behind `sponsor` and `pm`, for a project made from a request (item 4.6). Seeded
+    # and older projects name people only as text.
+    sponsor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey(f"{USERS_TABLE}.id", name="fk_projects_sponsor_user"), index=True
+    )
+    pm_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey(f"{USERS_TABLE}.id", name="fk_projects_pm_user"), index=True
+    )
     seed_key: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -1,5 +1,7 @@
 """API shapes of stage gates and their decisions (item 4.4).
 
+A `pass` names the project manager of the project it creates (item 4.6).
+
 A decision carries the person criteria's ticks and notes with it: nothing is saved before the
 decision is sent, so a `GET` shows them unticked (`met` is null). Inputs refuse unknown fields.
 """
@@ -46,12 +48,23 @@ class GateDecisionIn(BaseModel):
     outcome: Outcome
     reason: Reason
     criteria: list[PersonTick] = Field(default_factory=list, max_length=20)
+    # The project manager of the project a `pass` creates (item 4.6): needed for `pass`, refused
+    # for `return` and `decline`, which create nothing.
+    project_manager_id: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _ids_unique(self) -> Self:
         ids = [tick.id for tick in self.criteria]
         if len(set(ids)) != len(ids):
             raise ValueError("each criterion may be answered once")
+        return self
+
+    @model_validator(mode="after")
+    def _project_manager_only_on_pass(self) -> Self:
+        if self.outcome == "pass" and self.project_manager_id is None:
+            raise ValueError("a pass names the project manager of the new project")
+        if self.outcome != "pass" and self.project_manager_id is not None:
+            raise ValueError("only a pass names a project manager")
         return self
 
 
@@ -95,6 +108,7 @@ class GateOut(BaseModel):
     request_version: int
     request_status: str
     requested_by: int
+    project_id: int | None  # the project a pass made
     criteria: list[CriterionOut]
     checks_met: bool  # every automatic check is met now
     policy_version: str

@@ -114,6 +114,7 @@ class RequestOut(BaseModel):
     requested_by_name: str | None = None
     status: str
     submitted_at: datetime | None
+    project_id: int | None  # the project it became at the approval gate
     version: int
     created_at: datetime
     updated_at: datetime

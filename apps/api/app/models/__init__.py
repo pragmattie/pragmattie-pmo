@@ -11,6 +11,7 @@ from app.models.intake import (
     ValueCase,
     ValueCaseBenefit,
 )
+from app.models.planning import ProjectAssumption, ProjectBrief, ProjectStakeholder
 from app.models.portfolio import Client, Project
 from app.models.risk import Risk
 
@@ -21,7 +22,10 @@ __all__ = [
     "GateDecision",
     "Money",
     "Project",
+    "ProjectAssumption",
+    "ProjectBrief",
     "ProjectRequest",
+    "ProjectStakeholder",
     "ReadinessAction",
     "ReadinessCheck",
     "RevokedToken",

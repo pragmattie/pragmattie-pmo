@@ -110,6 +110,10 @@ features:
     title: Intake agent
     rules: [R1, R2, R4, R5, R9, R11]
     notes: Drafts an unconfirmed value case and readiness check; never rates green; concerns left to a person; AGENT_MODE can stop it; each run audited.
+  - id: P4-project-from-approval
+    title: From approval to project
+    rules: [R1, R5, R10, R12]
+    notes: A sponsor's pass names the project manager; project, brief, stakeholders and unscored proposed AI and project risks made in one transaction; each edit audited.
   # --- P5 Planning, proposals and the go-ahead gate
   - id: P5-client-proposals
     title: Client proposal workflow

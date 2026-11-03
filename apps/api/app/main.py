@@ -13,6 +13,7 @@ from app.api import (
     health,
     intake,
     portfolio,
+    projects,
     risk_library,
     risks,
     standards,
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
     api.include_router(intake.router)
     api.include_router(gates.router)
     api.include_router(portfolio.router)
+    api.include_router(projects.router)
     api.include_router(risk_library.router)
     api.include_router(risks.router)
     api.include_router(risks.escalations_router)

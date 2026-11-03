@@ -52,7 +52,13 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         assert request_fks == {
             "fk_project_requests_client": "clients",
             "fk_project_requests_requested_by": "users",
+            "fk_project_requests_project": "projects",
         }
+        request_uniques = {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("project_requests")
+        }
+        assert request_uniques == {"uq_project_requests_project": ["project_id"]}
         request_indexes = {ix["name"] for ix in inspector.get_indexes("project_requests")}
         assert {
             "ix_project_requests_status",
@@ -131,8 +137,54 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         assert {"ck_gate_decisions_outcome", "ck_gate_decisions_subject_type"} <= gate_checks
         gate_indexes = {ix["name"] for ix in inspector.get_indexes("gate_decisions")}
         assert "ix_gate_decisions_subject" in gate_indexes
+        # 0014: a project made from a request names its sponsor and project manager as users.
+        project_fks = {
+            fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("projects")
+        }
+        assert project_fks == {
+            "fk_projects_client": "clients",
+            "fk_projects_sponsor_user": "users",
+            "fk_projects_pm_user": "users",
+        }
+        # 0015: the brief, stakeholders and assumptions.
+        brief_fks = {
+            fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("project_briefs")
+        }
+        assert brief_fks == {"fk_project_briefs_project": "projects"}
+        brief_uniques = {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("project_briefs")
+        }
+        assert brief_uniques == {"uq_project_briefs_project": ["project_id"]}
+        assert {ck["name"] for ck in inspector.get_check_constraints("project_briefs")} == {
+            "ck_project_briefs_budget"
+        }
+        stakeholder_fks = {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("project_stakeholders")
+        }
+        assert stakeholder_fks == {
+            "fk_project_stakeholders_project": "projects",
+            "fk_project_stakeholders_user": "users",
+        }
+        assumption_fks = {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("project_assumptions")
+        }
+        assert assumption_fks == {
+            "fk_project_assumptions_project": "projects",
+            "fk_project_assumptions_owner": "users",
+        }
+        assert {ck["name"] for ck in inspector.get_check_constraints("project_assumptions")} == {
+            "ck_project_assumptions_status"
+        }
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0013")
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert "project_briefs" not in inspector.get_table_names()
+        assert "project_id" not in {c["name"] for c in inspector.get_columns("project_requests")}
+        assert "pm_user_id" not in {c["name"] for c in inspector.get_columns("projects")}
         command.downgrade(config, "0012")
         inspector = inspect(create_engine(get_settings().database_url))
         action_columns = {c["name"]: c for c in inspector.get_columns("readiness_actions")}

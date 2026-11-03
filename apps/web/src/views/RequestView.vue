@@ -240,6 +240,15 @@ function describe(entry: HistoryEntry): string {
         <h1 class="text-h4 text-primary" data-test="page-title">{{ request.title }}</h1>
         <v-spacer />
         <v-btn
+          v-if="request.project_id"
+          variant="text"
+          color="primary"
+          :to="{ name: 'project', params: { id: request.project_id } }"
+          data-test="project-link"
+        >
+          Open its project
+        </v-btn>
+        <v-btn
           v-if="showDraft"
           variant="outlined"
           color="secondary"
