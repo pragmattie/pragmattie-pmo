@@ -119,6 +119,14 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
             for uq in inspector.get_unique_constraints("readiness_actions")
         }
         assert action_uniques == {"uq_readiness_actions_position": ["check_id", "area", "position"]}
+        gate_fks = {
+            fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("gate_decisions")
+        }
+        assert gate_fks == {"fk_gate_decisions_decided_by": "users"}
+        gate_checks = {ck["name"] for ck in inspector.get_check_constraints("gate_decisions")}
+        assert {"ck_gate_decisions_outcome", "ck_gate_decisions_subject_type"} <= gate_checks
+        gate_indexes = {ix["name"] for ix in inspector.get_indexes("gate_decisions")}
+        assert "ix_gate_decisions_subject" in gate_indexes
         # Fails if the models and the migrations disagree.
         command.check(config)
         command.downgrade(config, "base")
