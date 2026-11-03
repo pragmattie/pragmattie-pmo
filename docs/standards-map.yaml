@@ -79,6 +79,12 @@ features:
     notes: >-
       Bands name their owner in policy; only a person at or above it accepts, with a reason and
       review date; judgement risks need a person's score first; every decision is audited.
+  - id: P3-risk-agent
+    title: Risk agent
+    rules: [R1, R2, R4, R5, R9]
+    notes: >-
+      Proposes up to five unscored risks for a person to open or reject; AGENT_MODE can stop it;
+      limits in docs/agents.md, enforced in code; each run audited; judgement risks stay unscored.
   # --- P4 Intake and the approval gate
   - id: P4-project-intake
     title: Project requests, value case and readiness check

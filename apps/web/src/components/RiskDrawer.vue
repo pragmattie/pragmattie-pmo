@@ -2,10 +2,12 @@
 import { computed } from 'vue'
 
 import {
+  AGENT_PROPOSAL,
   bandColor,
   canCloseRisk,
   changedFields,
   type HistoryEntry,
+  isAgentProposal,
   label,
   type Risk,
   scoreText,
@@ -92,6 +94,16 @@ function describe(entry: HistoryEntry) {
       class="mb-3"
     >
       {{ risk.band }}
+    </v-chip>
+    <v-chip
+      v-if="isAgentProposal(risk)"
+      color="secondary"
+      variant="tonal"
+      size="small"
+      class="mb-3 ml-1"
+      data-test="drawer-agent-chip"
+    >
+      {{ AGENT_PROPOSAL }}
     </v-chip>
     <v-alert
       v-if="message"

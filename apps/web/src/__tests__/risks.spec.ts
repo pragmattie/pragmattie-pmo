@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
 import {
+  AGENT_PROPOSAL,
   bandColor,
   canAcceptRisk,
   canCloseRisk,
@@ -16,7 +17,9 @@ import {
   NEEDS_JUDGEMENT,
   NO_FILTERS,
   type Risk,
+  type RiskSuggestion,
   scoreText,
+  suggestionMessage,
   toggleCell,
 } from '../lib/risks'
 import { bandColors, makeVuetify } from '../plugins/vuetify'
@@ -103,7 +106,8 @@ const RISKS = [
     status: 'proposed',
     escalated_to: null,
     escalated_band: null,
-    title: 'From the library',
+    title: 'Proposed by the agent',
+    source: 'agent',
   }),
   risk(4, {
     probability: null,
@@ -139,7 +143,28 @@ function page(items: unknown[]) {
   return { items, total: items.length, limit: 100, offset: 0 }
 }
 
+const SUGGESTION: RiskSuggestion = {
+  mode: 'enforce',
+  dry_run: false,
+  proposals: [
+    {
+      kind: 'threat',
+      category: 'ai',
+      title: 'Model answers drift',
+      probability: 3,
+      impact: 4,
+      response: 'reduce',
+      needs_judgement: false,
+      reason: 'Monthly data loads.',
+    },
+  ],
+  dropped: [],
+  saved: [risk(6, { status: 'proposed', source: 'agent' })],
+}
+
 interface FakeOptions {
+  suggestStatus?: number
+  suggestion?: RiskSuggestion
   patchStatus?: number
   stored?: Risk
 }
@@ -167,6 +192,12 @@ function fakeApi(role: string, options: FakeOptions = {}) {
     if (path === '/api/v1/risks/escalations') {
       const mine = RISKS.filter((r) => r.escalated_to === role)
       return json(page(mine.map((r) => ({ ...r, project_name: 'Harbour Analytics' }))))
+    }
+    if (path === '/api/v1/projects/3/risks/suggest' && method === 'POST') {
+      if (options.suggestStatus === 409) {
+        return json({ detail: 'the risk agent is off (AGENT_MODE=off)' }, 409)
+      }
+      return json(options.suggestion ?? SUGGESTION)
     }
     const decision = path.match(/^\/api\/v1\/projects\/3\/risks\/(\d+)\/(accept|open|reject)$/)
     if (decision && method === 'POST') {
@@ -462,6 +493,7 @@ describe('role-based buttons', () => {
     const { wrapper } = await mountRisks('project_manager')
     expect(wrapper.find('[data-test="add-risk"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="add-from-library"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="suggest-risks"]').exists()).toBe(true)
     await wrapper.get('[data-test="risk-row-2"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="edit-risk"]').exists()).toBe(true)
@@ -472,6 +504,7 @@ describe('role-based buttons', () => {
     const { wrapper } = await mountRisks(role)
     expect(wrapper.find('[data-test="add-risk"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="add-from-library"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="suggest-risks"]').exists()).toBe(false)
     await wrapper.get('[data-test="risk-row-2"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="risk-drawer"]').exists()).toBe(true)
@@ -708,5 +741,47 @@ describe('escalations list', () => {
     await wrapper.get('[data-test="escalation-5"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-test="drawer-title"]').text()).toBe('Risk 5')
+  })
+})
+
+describe('risk agent', () => {
+  it('marks agent proposals in the table and the drawer, and only those', async () => {
+    const { wrapper } = await mountRisks('auditor')
+    expect(wrapper.get('[data-test="agent-chip-6"]').text()).toBe(AGENT_PROPOSAL)
+    expect(wrapper.findAll('[data-test^="agent-chip-"]')).toHaveLength(1)
+    await wrapper.get('[data-test="risk-row-6"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="drawer-agent-chip"]').text()).toBe(AGENT_PROPOSAL)
+    await wrapper.get('[data-test="risk-row-2"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="drawer-agent-chip"]').exists()).toBe(false)
+  })
+
+  it('runs the agent for a project manager and reloads the register', async () => {
+    const { wrapper, fetchMock } = await mountRisks('project_manager')
+    const listsBefore = listCalls(fetchMock).length
+    await wrapper.get('[data-test="suggest-risks"]').trigger('click')
+    await flushPromises()
+    const post = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/risks/suggest'))!
+    expect(post[1]?.method).toBe('POST')
+    expect(wrapper.get('[data-test="suggest-result"]').text()).toContain('proposed 1 risk.')
+    expect(listCalls(fetchMock).length).toBeGreaterThan(listsBefore)
+  })
+
+  it('says why when the agent is off', async () => {
+    const { wrapper } = await mountRisks('project_manager', { suggestStatus: 409 })
+    await wrapper.get('[data-test="suggest-risks"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="suggest-result"]').text()).toContain('the risk agent is off')
+  })
+
+  it('words the result for each mode', () => {
+    expect(suggestionMessage({ ...SUGGESTION, proposals: [], saved: [] })).toBe(
+      'The risk agent found no new risks to suggest.',
+    )
+    expect(suggestionMessage({ ...SUGGESTION, mode: 'shadow', saved: [] })).toBe(
+      'The risk agent suggested 1 risk (shadow mode, so nothing was saved): Model answers drift.',
+    )
+    expect(suggestionMessage(SUGGESTION)).toContain(`"${AGENT_PROPOSAL}"`)
   })
 })

@@ -9,3 +9,4 @@ cryptography==50.0.2
 PyYAML==6.0.3
 argon2-cffi==25.1.0
 PyJWT==2.15.1
+anthropic==2.4.0

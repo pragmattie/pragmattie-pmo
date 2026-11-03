@@ -139,6 +139,45 @@ export const RESPONSES_BY_KIND: Record<Kind, string[]> = {
   opportunity: ['pursue', 'increase', 'share', 'accept'],
 }
 
+// Shown on every risk the risk agent proposed, so a person knows to decide on it.
+export const AGENT_PROPOSAL = 'Agent proposal'
+
+export function isAgentProposal(risk: Pick<Risk, 'source'>): boolean {
+  return risk.source === 'agent'
+}
+
+export interface RiskProposal {
+  kind: Kind
+  category: Category
+  title: string
+  probability: number | null
+  impact: number | null
+  response: string
+  needs_judgement: boolean
+  reason: string
+}
+
+export interface RiskSuggestion {
+  mode: 'shadow' | 'enforce'
+  dry_run: boolean
+  proposals: RiskProposal[]
+  dropped: { index: number; title: string | null; reason: string }[]
+  saved: Risk[]
+}
+
+// What a person sees after the risk agent runs.
+export function suggestionMessage(result: RiskSuggestion): string {
+  const count = result.proposals.length
+  const risks = count === 1 ? '1 risk' : `${count} risks`
+  if (!count) return 'The risk agent found no new risks to suggest.'
+  if (result.mode === 'shadow') {
+    return `The risk agent suggested ${risks} (shadow mode, so nothing was saved): ${result.proposals
+      .map((p) => p.title)
+      .join('; ')}.`
+  }
+  return `The risk agent proposed ${risks}. Each is marked "${AGENT_PROPOSAL}": open or reject it.`
+}
+
 export const NEEDS_JUDGEMENT = "Needs a person's judgement"
 export const NOT_SCORED = 'Not scored yet'
 export const CONFLICT_MESSAGE =
@@ -301,6 +340,8 @@ export const riskApi = {
       method: 'POST',
       body: JSON.stringify({ template_ids: templateIds }),
     }),
+  suggest: (projectId: number) =>
+    call<RiskSuggestion>(`${base(projectId)}/suggest`, { method: 'POST' }),
   update: (projectId: number, riskId: number, body: Partial<RiskInput> & { version: number }) =>
     call<Risk>(`${base(projectId)}/${riskId}`, { method: 'PATCH', body: JSON.stringify(body) }),
   accept: (

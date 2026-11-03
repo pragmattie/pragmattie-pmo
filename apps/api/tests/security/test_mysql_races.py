@@ -1,4 +1,4 @@
-"""Two rules SQLite can't prove, run on real MySQL (item 2.4).
+"""Rules SQLite can't prove, run on real MySQL (item 2.4).
 
 SQLite has no row locks (`SELECT ... FOR UPDATE` does nothing there), so these run only against
 the MySQL database named by the `TEST_MYSQL_URL` setting, which must already be migrated
@@ -13,6 +13,7 @@ Each test makes the race certain rather than lucky: a barrier holds every reques
 just before it takes its row lock, then releases them all at once.
 """
 
+import json
 import threading
 from collections.abc import Iterator
 
@@ -22,13 +23,17 @@ from sqlalchemy import Engine, create_engine, make_url, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 import app.api.auth as auth_api
+import app.api.risks as risks_api
 import app.api.users as users_api
+from app.agents import risk_agent
+from app.agents.risk_agent import ClaudeReply
 from app.config import get_settings
 from app.db import get_db
 from app.main import app
-from app.models import AuditDecision, User
+from app.models import AuditDecision, Project, Risk, User
 from app.models.audit import AUDIT_TABLE
 from app.models.auth import REVOKED_TOKENS_TABLE, USERS_TABLE
+from app.models.risk import PROJECTS_TABLE, RISKS_TABLE
 from app.security import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, hash_password, issue_token
 
 CSRF_VALUE = "mysql-race-csrf-value"
@@ -65,7 +70,7 @@ def mysql_engine() -> Iterator[Engine]:
 def mysql_db(mysql_engine) -> Iterator[sessionmaker]:
     """Empty tables, and the app's `get_db` pointed at MySQL for the test."""
     with mysql_engine.begin() as conn:
-        for table in (AUDIT_TABLE, REVOKED_TOKENS_TABLE, USERS_TABLE):
+        for table in (AUDIT_TABLE, RISKS_TABLE, PROJECTS_TABLE, REVOKED_TOKENS_TABLE, USERS_TABLE):
             conn.execute(text(f"DELETE FROM `{table}`"))
     factory = sessionmaker(bind=mysql_engine, autoflush=False, expire_on_commit=False)
 
@@ -228,3 +233,74 @@ def test_parallel_login_failures_are_all_counted(mysql_db, monkeypatch):
     assert user.locked_until is None
     assert len(failures) == PARALLEL_FAILURES
     assert {row.signals["reason"] for row in failures} == {"bad_password"}
+
+
+class _ClaudeAtTheSameMoment:
+    """A fake Claude client: every run waits here until all have read the project (and so
+    picked the same highest audit attempt), then they all go on to save at once."""
+
+    def __init__(self, barrier: threading.Barrier):
+        self.barrier = barrier
+        self.calls = 0
+        self.lock = threading.Lock()
+
+    def create(self, request: dict) -> ClaudeReply:
+        with self.lock:
+            self.calls += 1
+            title = f"Parallel risk {self.calls}"
+        self.barrier.wait()
+        item = {
+            "kind": "threat",
+            "category": "ai",
+            "title": title,
+            "cause": "Two people asked at once",
+            "effect": "Both runs save at the same moment",
+            "objectives": ["quality"],
+            "probability": 3,
+            "impact": 3,
+            "response": "reduce",
+            "judgement": "none",
+            "reason": "The project is in delivery.",
+        }
+        return ClaudeReply(json.dumps({"risks": [item]}), 1000, 200, "end_turn")
+
+
+@pytest.mark.mysql
+def test_two_overlapping_risk_agent_runs_each_write_one_audit_row(mysql_db, monkeypatch):
+    factory = mysql_db
+    monkeypatch.setattr(get_settings(), "agent_mode", "enforce")
+    pm = _add_user(factory, "pm.parallel@pmo.example", "project_manager", "not-a-real-hash")
+    with factory() as session:
+        project = Project(
+            name="Parallel Analytics", stage="delivery", sponsor="S", pm="P", status="on_track"
+        )
+        session.add(project)
+        session.commit()
+        project_id = project.id
+    claude = _ClaudeAtTheSameMoment(threading.Barrier(2, timeout=BARRIER_TIMEOUT))
+    app.dependency_overrides[risks_api.get_claude_client] = lambda: claude
+    try:
+        for round_ in range(1, ROUNDS + 1):
+            claude.barrier.reset()
+            webs = [_signed_in(pm, "project_manager") for _ in range(2)]
+            responses = _run_together(
+                [
+                    lambda web=web: web.post(f"/api/v1/projects/{project_id}/risks/suggest")
+                    for web in webs
+                ]
+            )
+            assert [r.status_code for r in responses] == [200, 200], [r.text for r in responses]
+            with factory() as session:
+                runs = session.scalars(
+                    select(AuditDecision)
+                    .where(AuditDecision.agent == risk_agent.AGENT)
+                    .order_by(AuditDecision.attempt)
+                ).all()
+                saved = session.scalars(select(Risk).where(Risk.project_id == project_id)).all()
+            # Exactly one audit row per run, each at its own attempt, and every risk kept.
+            assert [run.attempt for run in runs] == list(range(1, 2 * round_ + 1))
+            assert {run.status for run in runs} == {"ok"}
+            assert {r.json()["audit_id"] for r in responses} <= {run.id for run in runs}
+            assert len(saved) == 2 * round_
+    finally:
+        app.dependency_overrides.pop(risks_api.get_claude_client, None)

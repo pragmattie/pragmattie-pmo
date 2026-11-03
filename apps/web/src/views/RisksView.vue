@@ -7,6 +7,7 @@ import RiskDrawer from '../components/RiskDrawer.vue'
 import RiskForm from '../components/RiskForm.vue'
 import RiskHeatMap from '../components/RiskHeatMap.vue'
 import {
+  AGENT_PROPOSAL,
   ApiError,
   bandColor,
   canAcceptRisk,
@@ -18,6 +19,7 @@ import {
   type Heatmap,
   type HistoryEntry,
   type Kind,
+  isAgentProposal,
   KINDS,
   label,
   listQuery,
@@ -33,6 +35,7 @@ import {
   type RiskTemplate,
   scoreText,
   STATUSES,
+  suggestionMessage,
   toggleCell,
 } from '../lib/risks'
 import { useAuthStore } from '../stores/auth'
@@ -399,6 +402,28 @@ async function showEscalation(item: EscalatedRisk) {
   await openRisk(item)
 }
 
+// The risk agent: what it found, or why it could not run (it is off, or it failed).
+const suggesting = ref(false)
+const suggestion = ref('')
+const suggestionType = ref<'error' | 'info' | 'success'>('info')
+
+async function suggestRisks() {
+  if (projectId.value === null) return
+  suggesting.value = true
+  suggestion.value = ''
+  try {
+    const result = await riskApi.suggest(projectId.value)
+    suggestion.value = suggestionMessage(result)
+    suggestionType.value = result.saved.length ? 'success' : 'info'
+    if (result.saved.length) await refresh()
+  } catch (error) {
+    suggestion.value = failed(error)
+    suggestionType.value = 'error'
+  } finally {
+    suggesting.value = false
+  }
+}
+
 async function startLibrary() {
   chosen.value = []
   libraryError.value = ''
@@ -443,6 +468,15 @@ async function addFromLibrary() {
         >
           Add from the library
         </v-btn>
+        <v-btn
+          color="secondary"
+          variant="outlined"
+          :loading="suggesting"
+          data-test="suggest-risks"
+          @click="suggestRisks"
+        >
+          Suggest risks
+        </v-btn>
       </template>
     </div>
 
@@ -455,6 +489,17 @@ async function addFromLibrary() {
       :max-width="display.xs.value ? undefined : 420"
       data-test="project-picker"
     />
+    <v-alert
+      v-if="suggestion"
+      :type="suggestionType"
+      variant="tonal"
+      closable
+      class="mb-4"
+      data-test="suggest-result"
+      @click:close="suggestion = ''"
+    >
+      {{ suggestion }}
+    </v-alert>
     <v-alert v-if="pageError" type="error" variant="tonal" class="mb-4" data-test="page-error">
       {{ pageError }}
     </v-alert>
@@ -623,6 +668,16 @@ async function addFromLibrary() {
             >
               {{ item.title }}
             </button>
+            <v-chip
+              v-if="isAgentProposal(item)"
+              color="secondary"
+              variant="tonal"
+              size="x-small"
+              class="ml-2"
+              :data-test="`agent-chip-${item.id}`"
+            >
+              {{ AGENT_PROPOSAL }}
+            </v-chip>
           </template>
           <template #[`item.kind`]="{ item }">{{ label(item.kind) }}</template>
           <template #[`item.category`]="{ item }">{{ label(item.category) }}</template>
