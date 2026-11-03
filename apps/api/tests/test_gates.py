@@ -434,3 +434,10 @@ def test_the_routes_answer_503_until_the_gates_file_is_applied(web, db, pm, spon
         assert response.status_code == 503
         assert response.json()["detail"] == GATES_UNAVAILABLE
     assert _status(db, rid) == "submitted"
+
+
+def test_the_code_implements_exactly_the_checks_the_loader_knows():
+    from app.gates import CHECKS
+    from app.policy import KNOWN_CHECKS
+
+    assert tuple(CHECKS) == KNOWN_CHECKS
