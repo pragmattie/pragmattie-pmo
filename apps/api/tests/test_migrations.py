@@ -66,6 +66,24 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
                 "SELECT sql FROM sqlite_master WHERE name = 'project_requests'"
             ).scalar_one()
         assert "AUTOINCREMENT" in requests_sql
+        value_case_fks = {
+            fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("value_cases")
+        }
+        assert value_case_fks == {
+            "fk_value_cases_request": "project_requests",
+            "fk_value_cases_confirmed_by": "users",
+        }
+        value_case_checks = {ck["name"] for ck in inspector.get_check_constraints("value_cases")}
+        assert {"ck_value_cases_cost", "ck_value_cases_source"} <= value_case_checks
+        value_case_uniques = {
+            uq["name"]: uq["column_names"] for uq in inspector.get_unique_constraints("value_cases")
+        }
+        assert value_case_uniques == {"uq_value_cases_request": ["request_id"]}
+        benefit_uniques = {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("value_case_benefits")
+        }
+        assert benefit_uniques == {"uq_value_case_benefits_position": ["value_case_id", "position"]}
         # Fails if the models and the migrations disagree.
         command.check(config)
         command.downgrade(config, "base")

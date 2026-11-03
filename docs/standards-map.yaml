@@ -94,6 +94,10 @@ features:
     title: Project requests and the queue
     rules: [R1, R5, R12]
     notes: Project managers draft, submit and withdraw; only the approval gate approves or declines; each change audited.
+  - id: P4-value-case
+    title: The value case
+    rules: [R1, R5, R12]
+    notes: Benefits, estimated cost and strategic fit; a person confirms an agent's draft before the request is submitted; each change audited.
   - id: P4-gates
     title: Gates between stages
     rules: [R1, R3]
