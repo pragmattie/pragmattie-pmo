@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import RevokedToken, User
+from app.policy import RiskPolicy
 from app.security import SESSION_COOKIE, decode_token
 
 
@@ -43,7 +44,8 @@ class Action(StrEnum):
 
 
 # Admin manages users but holds no decision rights. Project managers accept Low risks and
-# sponsors accept Medium and High ones (the risk policy file); P4 enforces the band.
+# sponsors accept Medium and High ones: `may_accept_band` checks the band's owner in the risk
+# policy file.
 PERMISSIONS: dict[Role, frozenset[Action]] = {
     Role.ADMIN: frozenset(
         {Action.USER_ADMIN, Action.AUDIT_READ, Action.PROJECT_READ, Action.STANDARDS_READ}
@@ -123,6 +125,23 @@ def allowed_actions(role: str) -> list[Action]:
 
 def can(role: str, action: Action) -> bool:
     return action in allowed_actions(role)
+
+
+# How senior each role is when accepting a risk: a role may accept a band whose escalation owner
+# ranks at or below it. Roles not listed accept no band.
+ROLE_RANK: dict[Role, int] = {Role.PROJECT_MANAGER: 1, Role.SPONSOR: 2}
+
+
+def may_accept_band(role: str, band: str | None, policy: RiskPolicy) -> bool:
+    """True when `role` holds `risk:accept` and ranks at or above `band`'s escalation owner in
+    the risk policy. False for an unscored risk (no band) or an unknown role or band."""
+    if band is None or not can(role, Action.RISK_ACCEPT):
+        return False
+    owner = next((b.escalation_owner for b in policy.priority_bands if b.name == band), None)
+    try:
+        return ROLE_RANK.get(Role(role), 0) >= ROLE_RANK[Role(owner)]
+    except (KeyError, ValueError):
+        return False
 
 
 def require(action: Action) -> Callable[..., User]:
