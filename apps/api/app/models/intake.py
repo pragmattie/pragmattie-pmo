@@ -160,3 +160,100 @@ class ValueCaseBenefit(Base):
     current_value: Mapped[str | None] = mapped_column(String(TARGET_MAX))
     target: Mapped[str | None] = mapped_column(String(TARGET_MAX))
     target_date: Mapped[date | None] = mapped_column(Date)
+
+
+READINESS_TABLE = table_name("readiness_checks")
+READINESS_ACTIONS_TABLE = table_name("readiness_actions")
+
+READINESS_AREAS = ("problem", "approach", "data")
+RATINGS = ("green", "yellow", "red")
+# Worst last: the overall result is the rating furthest along this list.
+RATING_ORDER = {rating: rank for rank, rating in enumerate(RATINGS)}
+UNRATED = "unrated"
+ACTION_MAX = 500
+# Actions per area. At 10, a check with every field at its longest fits in the API's body limit.
+ACTIONS_MAX = 10
+
+
+def _rating_check(area: str) -> CheckConstraint:
+    rating = column(f"{area}_rating")
+    return CheckConstraint(
+        or_(rating.is_(None), rating.in_(RATINGS)), name=f"ck_readiness_checks_{area}_rating"
+    )
+
+
+class ReadinessCheck(Base):
+    """Whether a request that uses AI is ready (item 4.3, R11).
+
+    Three areas, each rated green, yellow or red with a note: the problem is worth solving, AI is
+    the right tool, and the data is good enough. One per request, edited with it like the value
+    case. A rating may be empty only on an agent's draft; a person's save rates every area.
+    """
+
+    __tablename__ = READINESS_TABLE
+    __table_args__ = (
+        *(_rating_check(area) for area in READINESS_AREAS),
+        CheckConstraint(
+            column("source").in_(VALUE_CASE_SOURCES), name="ck_readiness_checks_source"
+        ),
+        UniqueConstraint("request_id", name="uq_readiness_checks_request"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    request_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{REQUESTS_TABLE}.id", name="fk_readiness_checks_request")
+    )
+    problem_rating: Mapped[str | None] = mapped_column(String(8))
+    problem_note: Mapped[str | None] = mapped_column(String(LONG_TEXT_MAX))
+    approach_rating: Mapped[str | None] = mapped_column(String(8))
+    approach_note: Mapped[str | None] = mapped_column(String(LONG_TEXT_MAX))
+    data_rating: Mapped[str | None] = mapped_column(String(8))
+    data_note: Mapped[str | None] = mapped_column(String(LONG_TEXT_MAX))
+    source: Mapped[str] = mapped_column(String(16), default="person")
+    confirmed_by: Mapped[int | None] = mapped_column(
+        ForeignKey(f"{USERS_TABLE}.id", name="fk_readiness_checks_confirmed_by"), index=True
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    actions: Mapped[list["ReadinessAction"]] = relationship(
+        order_by="(ReadinessAction.area, ReadinessAction.position)", cascade="all, delete-orphan"
+    )
+
+    def ratings(self) -> dict[str, str | None]:
+        return {area: getattr(self, f"{area}_rating") for area in READINESS_AREAS}
+
+    def area_actions(self, area: str) -> list["ReadinessAction"]:
+        return sorted((a for a in self.actions if a.area == area), key=lambda a: a.position)
+
+    @property
+    def overall(self) -> str:
+        """The worst of the three ratings. Never stored. An agent's draft no person has confirmed
+        yet, or one with an area left unrated, is `unrated`."""
+        ratings = self.ratings().values()
+        if self.confirmed_by is None or None in ratings:
+            return UNRATED
+        return max(ratings, key=RATING_ORDER.__getitem__)
+
+
+class ReadinessAction(Base):
+    """One thing to do before an area is ready: what, who owns it, and by when."""
+
+    __tablename__ = READINESS_ACTIONS_TABLE
+    __table_args__ = (
+        CheckConstraint(column("area").in_(READINESS_AREAS), name="ck_readiness_actions_area"),
+        UniqueConstraint("check_id", "area", "position", name="uq_readiness_actions_position"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    check_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{READINESS_TABLE}.id", name="fk_readiness_actions_check")
+    )
+    area: Mapped[str] = mapped_column(String(16))
+    position: Mapped[int]
+    description: Mapped[str] = mapped_column(String(ACTION_MAX))
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{USERS_TABLE}.id", name="fk_readiness_actions_owner"), index=True
+    )
+    due_date: Mapped[date] = mapped_column(Date)

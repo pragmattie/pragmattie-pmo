@@ -12,7 +12,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from test_intake import add_value_case
+from test_intake import add_readiness, add_value_case
 
 import app.api.users as users_api
 from app.authz import (
@@ -263,25 +263,55 @@ REQUEST_BODY = {
 }
 
 
-def _project_request(requested_by: int, status: str = "draft", value_case: bool = False) -> int:
+def _project_request(
+    requested_by: int,
+    status: str = "draft",
+    value_case: bool = False,
+    uses_ai: bool = False,
+    readiness: bool = False,
+) -> int:
     """A project request, for the intake routes' samples; with a complete, confirmed value case
-    if asked, so it can be submitted."""
+    if asked, so it can be submitted, and a confirmed readiness check if asked."""
     with Session(engine) as session:
-        request = ProjectRequest(requested_by=requested_by, status=status, **REQUEST_BODY)
+        request = ProjectRequest(
+            requested_by=requested_by, status=status, uses_ai=uses_ai, **REQUEST_BODY
+        )
         session.add(request)
         session.commit()
         request_id = request.id
     if value_case:
         add_value_case(request_id, requested_by)
+    if readiness:
+        add_readiness(request_id, requested_by, requested_by)
     return request_id
 
 
-def _intake_sample(suffix: str = "", body: dict | None = None, value_case: bool = False):
+def _intake_sample(
+    suffix: str = "",
+    body: dict | None = None,
+    value_case: bool = False,
+    uses_ai: bool = False,
+    readiness: bool = False,
+):
     def sample(target: int) -> dict:
-        url = f"/api/v1/requests/{_project_request(target, value_case=value_case)}{suffix}"
+        rid = _project_request(target, value_case=value_case, uses_ai=uses_ai, readiness=readiness)
+        url = f"/api/v1/requests/{rid}{suffix}"
+        if callable(body):
+            return {"url": url, "json": body(target)}
         return {"url": url, "json": body} if body is not None else {"url": url}
 
     return sample
+
+
+def _readiness_body(owner: int) -> dict:
+    action = {"description": "Compare with a reorder rule", "owner_id": owner}
+    action["due_date"] = "2026-12-01"
+    return {
+        "version": 1,
+        "problem": {"rating": "green", "note": "Worth solving", "actions": []},
+        "approach": {"rating": "yellow", "note": "Maybe rules", "actions": [action]},
+        "data": {"rating": "red", "note": "No history yet", "actions": []},
+    }
 
 
 # Routes with path parameters or a body need a sample request that succeeds when allowed. Each
@@ -353,6 +383,12 @@ SAMPLES = {
         },
     ),
     ("POST", "/api/v1/requests/{request_id}/withdraw"): _intake_sample("/withdraw", {"version": 1}),
+    ("GET", "/api/v1/requests/{request_id}/readiness"): _intake_sample(
+        "/readiness", uses_ai=True, readiness=True
+    ),
+    ("PUT", "/api/v1/requests/{request_id}/readiness"): _intake_sample(
+        "/readiness", _readiness_body, uses_ai=True
+    ),
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -424,6 +460,8 @@ def test_matrix_covers_the_existing_routes():
         ("POST", "/api/v1/requests/{request_id}/withdraw"),
         ("GET", "/api/v1/requests/{request_id}/value-case"),
         ("PUT", "/api/v1/requests/{request_id}/value-case"),
+        ("GET", "/api/v1/requests/{request_id}/readiness"),
+        ("PUT", "/api/v1/requests/{request_id}/readiness"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -450,7 +488,13 @@ def test_matrix_covers_the_existing_routes():
     assert by_method[("GET", "/api/v1/risks/escalations")] == Action.PROJECT_READ
     assert by_method[("POST", f"{risks}/suggest")] == Action.PROJECT_WRITE
     requests, request = "/api/v1/requests", "/api/v1/requests/{request_id}"
-    for path in (requests, request, f"{request}/history", f"{request}/value-case"):
+    for path in (
+        requests,
+        request,
+        f"{request}/history",
+        f"{request}/value-case",
+        f"{request}/readiness",
+    ):
         assert by_method[("GET", path)] == Action.PROJECT_READ
     for method, path in (
         ("POST", requests),
@@ -458,6 +502,7 @@ def test_matrix_covers_the_existing_routes():
         ("POST", f"{request}/submit"),
         ("POST", f"{request}/withdraw"),
         ("PUT", f"{request}/value-case"),
+        ("PUT", f"{request}/readiness"),
     ):
         assert by_method[(method, path)] == Action.PROJECT_WRITE
 

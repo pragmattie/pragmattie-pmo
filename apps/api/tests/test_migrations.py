@@ -84,6 +84,41 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
             for uq in inspector.get_unique_constraints("value_case_benefits")
         }
         assert benefit_uniques == {"uq_value_case_benefits_position": ["value_case_id", "position"]}
+        readiness_fks = {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("readiness_checks")
+        }
+        assert readiness_fks == {
+            "fk_readiness_checks_request": "project_requests",
+            "fk_readiness_checks_confirmed_by": "users",
+        }
+        readiness_checks = {
+            ck["name"] for ck in inspector.get_check_constraints("readiness_checks")
+        }
+        assert {
+            "ck_readiness_checks_problem_rating",
+            "ck_readiness_checks_approach_rating",
+            "ck_readiness_checks_data_rating",
+            "ck_readiness_checks_source",
+        } <= readiness_checks
+        readiness_uniques = {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("readiness_checks")
+        }
+        assert readiness_uniques == {"uq_readiness_checks_request": ["request_id"]}
+        action_fks = {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("readiness_actions")
+        }
+        assert action_fks == {
+            "fk_readiness_actions_check": "readiness_checks",
+            "fk_readiness_actions_owner": "users",
+        }
+        action_uniques = {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("readiness_actions")
+        }
+        assert action_uniques == {"uq_readiness_actions_position": ["check_id", "area", "position"]}
         # Fails if the models and the migrations disagree.
         command.check(config)
         command.downgrade(config, "base")

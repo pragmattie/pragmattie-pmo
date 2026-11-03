@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
+import ReadinessSection from '../components/ReadinessSection.vue'
 import RequestForm from '../components/RequestForm.vue'
 import ValueCaseSection from '../components/ValueCaseSection.vue'
 import {
@@ -164,7 +165,12 @@ async function valueCaseSaved() {
   show('Value case saved.', 'success')
 }
 
-async function valueCaseConflict(text: string) {
+async function readinessSaved() {
+  await load()
+  show('Readiness check saved.', 'success')
+}
+
+async function sectionConflict(text: string) {
   await load()
   show(text.includes('changed') ? REQUEST_CONFLICT : text, 'warning')
 }
@@ -228,7 +234,15 @@ function describe(entry: HistoryEntry): string {
         :request="request"
         :can-write="canWrite"
         @saved="valueCaseSaved"
-        @conflict="valueCaseConflict"
+        @conflict="sectionConflict"
+      />
+
+      <ReadinessSection
+        v-if="request.uses_ai"
+        :request="request"
+        :can-write="canWrite"
+        @saved="readinessSaved"
+        @conflict="sectionConflict"
       />
 
       <h2 class="text-subtitle-1 mt-4 mb-2">History</h2>
