@@ -27,7 +27,7 @@ from app.authz import (
 from app.config import get_settings
 from app.db import engine
 from app.main import app, create_app
-from app.models import AuditDecision, Base, Project, Risk, User
+from app.models import AuditDecision, Base, Project, ProjectRequest, Risk, User
 from app.security import CSRF_COOKIE, SESSION_COOKIE, issue_token
 
 CSRF = {"X-CSRF-Token": "test-csrf-value"}
@@ -254,6 +254,31 @@ def _risk_sample(item: bool, body: dict | None = None):
     return sample
 
 
+REQUEST_BODY = {
+    "title": "Warehouse forecasting pilot",
+    "asked_for": "A demand forecast for two warehouses",
+    "problem": "Stock-outs every quarter",
+    "outcome": "Fewer stock-outs",
+}
+
+
+def _project_request(requested_by: int, status: str = "draft") -> int:
+    """A project request, for the intake routes' samples."""
+    with Session(engine) as session:
+        request = ProjectRequest(requested_by=requested_by, status=status, **REQUEST_BODY)
+        session.add(request)
+        session.commit()
+        return request.id
+
+
+def _intake_sample(suffix: str = "", body: dict | None = None):
+    def sample(target: int) -> dict:
+        url = f"/api/v1/requests/{_project_request(target)}{suffix}"
+        return {"url": url, "json": body} if body is not None else {"url": url}
+
+    return sample
+
+
 # Routes with path parameters or a body need a sample request that succeeds when allowed. Each
 # takes the id of a project-manager user that the caller may act on.
 SAMPLES = {
@@ -296,6 +321,17 @@ SAMPLES = {
     ("POST", "/api/v1/projects/{project_id}/risks/suggest"): lambda _target: {
         "url": f"/api/v1/projects/{_project_with_risk()[0]}/risks/suggest?dry_run=true",
     },
+    ("POST", "/api/v1/requests"): lambda _target: {
+        "url": "/api/v1/requests",
+        "json": REQUEST_BODY,
+    },
+    ("GET", "/api/v1/requests/{request_id}"): _intake_sample(),
+    ("GET", "/api/v1/requests/{request_id}/history"): _intake_sample("/history"),
+    ("PATCH", "/api/v1/requests/{request_id}"): _intake_sample(
+        "", {"version": 1, "title": "Renamed"}
+    ),
+    ("POST", "/api/v1/requests/{request_id}/submit"): _intake_sample("/submit", {"version": 1}),
+    ("POST", "/api/v1/requests/{request_id}/withdraw"): _intake_sample("/withdraw", {"version": 1}),
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -318,6 +354,7 @@ def _request(web: TestClient, method: str, path: str, target: int):
 CREATED = {
     ("POST", "/api/v1/projects/{project_id}/risks"),
     ("POST", "/api/v1/projects/{project_id}/risks/from-library"),
+    ("POST", "/api/v1/requests"),
 }
 
 
@@ -357,6 +394,13 @@ def test_matrix_covers_the_existing_routes():
         ("POST", "/api/v1/projects/{project_id}/risks/{risk_id}/reject"),
         ("GET", "/api/v1/risks/escalations"),
         ("POST", "/api/v1/projects/{project_id}/risks/suggest"),
+        ("GET", "/api/v1/requests"),
+        ("POST", "/api/v1/requests"),
+        ("GET", "/api/v1/requests/{request_id}"),
+        ("PATCH", "/api/v1/requests/{request_id}"),
+        ("GET", "/api/v1/requests/{request_id}/history"),
+        ("POST", "/api/v1/requests/{request_id}/submit"),
+        ("POST", "/api/v1/requests/{request_id}/withdraw"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -382,6 +426,16 @@ def test_matrix_covers_the_existing_routes():
     assert by_method[("POST", f"{risk}/reject")] == Action.PROJECT_WRITE
     assert by_method[("GET", "/api/v1/risks/escalations")] == Action.PROJECT_READ
     assert by_method[("POST", f"{risks}/suggest")] == Action.PROJECT_WRITE
+    requests, request = "/api/v1/requests", "/api/v1/requests/{request_id}"
+    for path in (requests, request, f"{request}/history"):
+        assert by_method[("GET", path)] == Action.PROJECT_READ
+    for method, path in (
+        ("POST", requests),
+        ("PATCH", request),
+        ("POST", f"{request}/submit"),
+        ("POST", f"{request}/withdraw"),
+    ):
+        assert by_method[(method, path)] == Action.PROJECT_WRITE
 
 
 @pytest.mark.parametrize("role", list(Role))

@@ -90,6 +90,10 @@ features:
     title: Project requests, value case and readiness check
     rules: [R1, R11]
     notes: An agent may draft the value case and readiness check; a person passes the approval gate.
+  - id: P4-project-requests
+    title: Project requests and the queue
+    rules: [R1, R5, R12]
+    notes: Project managers draft, submit and withdraw; only the approval gate approves or declines; each change audited.
   - id: P4-gates
     title: Gates between stages
     rules: [R1, R3]
