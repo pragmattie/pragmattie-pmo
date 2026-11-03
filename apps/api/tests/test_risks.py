@@ -1,5 +1,6 @@
-"""The risk register's model and API (item 3.1)."""
+"""The risk register's model and API (items 3.1 and 3.4)."""
 
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 
 import app.api.risks as risks_api
 from app import risks
+from app.authz import may_accept_band
 from app.db import engine
 from app.main import app
 from app.models import AuditDecision, Base, Project, Risk, User
@@ -607,3 +609,365 @@ def test_the_rescore_command_reports_a_policy_failure(monkeypatch, capsys):
     monkeypatch.setattr(risks, "risk_policy", broken)
     assert risks.main(["rescore"]) == 1
     assert "could not be loaded" in capsys.readouterr().err
+
+
+# --- Escalation and acceptance (item 3.4)
+
+LOW = {"probability": 1, "impact": 2}  # score 2
+MEDIUM = {"probability": 3, "impact": 3}  # score 9
+HIGH = {"probability": 4, "impact": 4}  # score 16
+REASON = "Small, well understood and cheaper to watch than to treat"
+
+
+def _client(db: Session, sign_in, role: str, email: str) -> TestClient:
+    client = TestClient(app, base_url="http://localhost")
+    sign_in(client, db, role, email)
+    return client
+
+
+@pytest.fixture
+def sponsor(db, sign_in) -> TestClient:
+    return _client(db, sign_in, "sponsor", "sponsor.one@pmo.example")
+
+
+def _accept(client: TestClient, project_id: int, risk: dict, **changes):
+    body = {
+        "version": risk["version"],
+        "reason": REASON,
+        "review_date": (date.today() + timedelta(days=30)).isoformat(),
+        **changes,
+    }
+    return client.post(_url(project_id, risk["id"]) + "/accept", json=body)
+
+
+def _proposed(web: TestClient, project_id: int) -> dict:
+    response = web.post(
+        _url(project_id) + "/from-library", json={"template_ids": ["ai-model-drift"]}
+    )
+    assert response.status_code == 201, response.text
+    return response.json()[0]
+
+
+def _actions(db: Session) -> list[str]:
+    return [row.action_taken["action"] for row in _audit(db, escalations=True)]
+
+
+def test_the_band_owner_rank_decides_who_may_accept():
+    policy = load_policies(REPO_ROOT / "policies").risk
+    assert may_accept_band("project_manager", "Low", policy)
+    assert not may_accept_band("project_manager", "Medium", policy)
+    assert not may_accept_band("project_manager", "High", policy)
+    assert all(may_accept_band("sponsor", band, policy) for band in ("Low", "Medium", "High"))
+    for role in ("admin", "auditor", "ethics_reviewer", "nobody"):
+        assert not may_accept_band(role, "Low", policy)
+    assert not may_accept_band("sponsor", None, policy)
+    assert not may_accept_band("sponsor", "Unknown", policy)
+
+
+def test_a_pm_accepting_a_medium_risk_is_403_and_audited(web, db, pm, project, sponsor):
+    risk = _create(web, project.id, **MEDIUM).json()
+    response = _accept(web, project.id, risk)
+    assert response.status_code == 403
+    assert "sponsor" in response.json()["detail"]
+    refused = _audit(db)[-1]
+    assert (refused.status, refused.actor_user_id, refused.trigger) == ("rejected", pm.id, "human")
+    assert refused.action_taken == {
+        "action": "accept",
+        "band": "Medium",
+        "owner_role": "sponsor",
+        "actor_role": "project_manager",
+    }
+    assert web.get(_url(project.id, risk["id"])).json()["status"] == "open"
+
+    response = _accept(sponsor, project.id, risk)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["status"], body["response"]) == ("accepted", "accept")
+    assert body["review_date"] == (date.today() + timedelta(days=30)).isoformat()
+    assert (body["escalated_to"], body["escalated_band"]) == (None, None)
+    accepted = _audit(db)[-1]
+    assert (accepted.status, accepted.version) == ("ok", 2)
+    assert accepted.action_taken["action"] == "accept"
+    assert accepted.action_taken["reason"] == REASON
+    assert accepted.actor_user_id != pm.id
+    assert (accepted.signals["status"], accepted.output["status"]) == ("open", "accepted")
+
+
+def test_a_refused_acceptance_twice_is_two_rows(web, db, pm, project):
+    risk = _create(web, project.id, **HIGH).json()
+    assert _accept(web, project.id, risk).status_code == 403
+    assert _accept(web, project.id, risk).status_code == 403
+    refused = [row for row in _audit(db) if row.status == "rejected"]
+    assert [row.attempt for row in refused] == [3, 4]  # after the create and its escalation
+
+
+def test_a_pm_may_accept_a_low_risk(web, db, pm, project):
+    risk = _create(web, project.id, **LOW).json()
+    response = _accept(web, project.id, risk)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "accepted"
+
+
+@pytest.mark.parametrize("role", ["admin", "auditor", "ethics_reviewer"])
+def test_roles_without_risk_accept_are_403(web, db, project, sign_in, role):
+    writer = _client(db, sign_in, "project_manager", "writer@pmo.example")
+    risk = _create(writer, project.id, **LOW).json()
+    sign_in(web, db, role)
+    assert _accept(web, project.id, risk).status_code == 403
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"reason": "Too short"},
+        {"reason": "    padded but short    "},
+        {"review_date": (date.today() - timedelta(days=1)).isoformat()},
+        {"review_date": "soon"},
+        {"extra": 1},
+        {"reason": None},
+        {"review_date": None},
+    ],
+)
+def test_accepting_needs_a_reason_and_a_review_date(web, db, pm, project, changes):
+    risk = _create(web, project.id, **LOW).json()
+    payload = {"version": 1, "reason": REASON, "review_date": date.today().isoformat(), **changes}
+    payload = {key: value for key, value in payload.items() if value is not None}
+    response = web.post(_url(project.id, risk["id"]) + "/accept", json=payload)
+    assert response.status_code == 422
+    assert web.get(_url(project.id, risk["id"])).json()["status"] == "open"
+
+
+def test_a_review_date_of_today_is_allowed(web, db, pm, project):
+    risk = _create(web, project.id, **LOW).json()
+    response = _accept(web, project.id, risk, review_date=date.today().isoformat())
+    assert response.status_code == 200, response.text
+
+
+def test_a_needs_judgement_risk_is_accepted_only_once_scored(web, db, pm, project, sponsor):
+    risk = _create(web, project.id, needs_judgement=True, probability=None, impact=None).json()
+    assert risk["escalated_to"] is None
+    response = _accept(sponsor, project.id, risk)
+    assert response.status_code == 409
+    assert "score" in response.json()["detail"]
+
+    scored = web.patch(_url(project.id, risk["id"]), json={"version": 1, **MEDIUM}).json()
+    assert scored["escalated_to"] == "sponsor"
+    assert _accept(sponsor, project.id, scored).status_code == 200
+
+
+def test_only_an_open_risk_can_be_accepted(web, db, pm, project, sponsor):
+    proposed = _proposed(web, project.id)
+    assert _accept(sponsor, project.id, proposed).status_code == 409
+    risk = _create(web, project.id, **LOW).json()
+    closed = web.patch(_url(project.id, risk["id"]), json={"version": 1, "status": "closed"})
+    assert _accept(sponsor, project.id, closed.json()).status_code == 409
+    assert _accept(sponsor, project.id, {**risk, "version": 9}).status_code == 409
+
+
+def test_rescoring_into_a_higher_band_reopens_and_escalates(web, db, pm, project):
+    risk = _create(web, project.id, **LOW).json()
+    accepted = _accept(web, project.id, risk).json()
+    assert accepted["status"] == "accepted"
+
+    response = web.patch(_url(project.id, risk["id"]), json={"version": 2, **MEDIUM})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["status"], body["band"]) == ("open", "Medium")
+    assert (body["escalated_to"], body["escalated_band"]) == ("sponsor", "Medium")
+    assert body["review_date"] is None
+    rows = _audit(db, escalations=True)
+    update, escalation = rows[-2:]
+    assert update.action_taken == {"action": "update", "reopened": True}
+    assert (update.signals["status"], update.output["status"]) == ("accepted", "open")
+    assert escalation.action_taken == {
+        "action": "escalate",
+        "risk_id": risk["id"],
+        "band": "Medium",
+        "owner_role": "sponsor",
+    }
+    assert (escalation.version, escalation.actor_user_id) == (3, pm.id)
+
+
+def test_rescoring_within_or_below_the_band_keeps_it_accepted(web, db, pm, project, sponsor):
+    risk = _create(web, project.id, **HIGH).json()
+    _accept(sponsor, project.id, risk)
+    same = web.patch(_url(project.id, risk["id"]), json={"version": 2, "probability": 5}).json()
+    assert (same["status"], same["band"], same["escalated_to"]) == ("accepted", "High", None)
+    lower = web.patch(_url(project.id, risk["id"]), json={"version": 3, **LOW}).json()
+    assert (lower["status"], lower["escalated_to"]) == ("accepted", None)
+
+
+def test_a_new_risk_escalates_to_its_bands_owner(web, db, pm, project):
+    low = _create(web, project.id, **LOW).json()
+    medium = _create(web, project.id, **MEDIUM).json()
+    assert (low["escalated_to"], low["escalated_band"]) == ("project_manager", "Low")
+    assert (medium["escalated_to"], medium["escalated_band"]) == ("sponsor", "Medium")
+    assert _actions(db) == ["create", "escalate", "create", "escalate"]
+
+
+def test_an_escalation_follows_the_owner_not_every_edit(web, db, pm, project):
+    risk = _create(web, project.id, **LOW).json()
+    url = _url(project.id, risk["id"])
+    # Low to Medium: a new owner, so a new escalation.
+    body = web.patch(url, json={"version": 1, **MEDIUM}).json()
+    assert (body["escalated_to"], body["escalated_band"]) == ("sponsor", "Medium")
+    assert _actions(db)[-2:] == ["update", "escalate"]
+    # Medium to High: the same owner, so no new row, but the band it shows moves.
+    body = web.patch(url, json={"version": 2, **HIGH}).json()
+    assert (body["escalated_to"], body["escalated_band"]) == ("sponsor", "High")
+    assert _actions(db)[-1] == "update"
+    # A text edit keeps the escalation.
+    body = web.patch(url, json={"version": 3, "title": "Renamed"}).json()
+    assert body["escalated_to"] == "sponsor"
+    # Back to Low: the owner changes again.
+    body = web.patch(url, json={"version": 4, **LOW}).json()
+    assert (body["escalated_to"], body["escalated_band"]) == ("project_manager", "Low")
+    assert _actions(db)[-1] == "escalate"
+    # Closing clears it; reopening escalates afresh.
+    body = web.patch(url, json={"version": 5, "status": "closed"}).json()
+    assert body["escalated_to"] is None
+    body = web.patch(url, json={"version": 6, "status": "open"}).json()
+    assert body["escalated_to"] == "project_manager"
+
+
+def test_losing_the_score_clears_the_escalation(web, db, pm, project):
+    risk = _create(web, project.id, **MEDIUM).json()
+    body = web.patch(
+        _url(project.id, risk["id"]),
+        json={"version": 1, "needs_judgement": True, "probability": None, "impact": None},
+    ).json()
+    assert (body["band"], body["escalated_to"]) == (None, None)
+
+
+@pytest.mark.parametrize("target", ["open", "closed"])
+def test_a_patch_never_moves_a_proposed_risk(web, db, pm, project, target):
+    risk = _proposed(web, project.id)
+    response = web.patch(_url(project.id, risk["id"]), json={"version": 1, "status": target})
+    assert response.status_code == 409
+    assert web.get(_url(project.id, risk["id"])).json()["status"] == "proposed"
+
+
+def test_a_patch_may_still_edit_and_score_a_proposed_risk(web, db, pm, project):
+    risk = _proposed(web, project.id)
+    response = web.patch(_url(project.id, risk["id"]), json={"version": 1, **MEDIUM})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Not open yet, so not escalated.
+    assert (body["status"], body["band"], body["escalated_to"]) == ("proposed", "Medium", None)
+
+
+def test_a_patch_never_opens_an_accepted_or_rejected_risk(web, db, pm, project):
+    accepted = _accept(web, project.id, _create(web, project.id, **LOW).json()).json()
+    response = web.patch(_url(project.id, accepted["id"]), json={"version": 2, "status": "open"})
+    assert response.status_code == 409
+    proposed = _proposed(web, project.id)
+    rejected = web.post(
+        _url(project.id, proposed["id"]) + "/reject", json={"version": 1, "reason": "Duplicate"}
+    ).json()
+    for target in ("open", "closed"):
+        response = web.patch(
+            _url(project.id, rejected["id"]), json={"version": 2, "status": target}
+        )
+        assert response.status_code == 409
+
+
+def test_an_accepted_risk_can_be_closed(web, db, pm, project):
+    accepted = _accept(web, project.id, _create(web, project.id, **LOW).json()).json()
+    response = web.patch(_url(project.id, accepted["id"]), json={"version": 2, "status": "closed"})
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "closed"
+    assert _audit(db)[-1].action_taken == {"action": "close"}
+
+
+def test_opening_a_proposed_risk(web, db, pm, project, sponsor):
+    risk = _proposed(web, project.id)
+    url = _url(project.id, risk["id"]) + "/open"
+    assert sponsor.post(url, json={"version": 1}).status_code == 403
+    assert web.post(url, json={"version": 2}).status_code == 409
+    response = web.post(url, json={"version": 1})
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "open"
+    # Unscored, so nobody to escalate to yet.
+    assert response.json()["escalated_to"] is None
+    row = _audit(db)[-1]
+    assert (row.action_taken, row.actor_user_id) == ({"action": "open"}, pm.id)
+    assert web.post(url, json={"version": 2}).status_code == 409
+
+
+def test_opening_a_scored_proposed_risk_escalates_it(web, db, pm, project):
+    risk = _proposed(web, project.id)
+    web.patch(_url(project.id, risk["id"]), json={"version": 1, **HIGH})
+    response = web.post(_url(project.id, risk["id"]) + "/open", json={"version": 2})
+    assert response.json()["escalated_to"] == "sponsor"
+    assert _actions(db)[-2:] == ["open", "escalate"]
+
+
+@pytest.mark.parametrize("body", [{"version": 1}, {"version": 1, "reason": "   "}])
+def test_rejecting_needs_a_reason(web, db, pm, project, body):
+    risk = _proposed(web, project.id)
+    assert web.post(_url(project.id, risk["id"]) + "/reject", json=body).status_code == 422
+
+
+def test_rejecting_a_proposed_risk(web, db, pm, project, sponsor):
+    risk = _proposed(web, project.id)
+    url = _url(project.id, risk["id"]) + "/reject"
+    body = {"version": 1, "reason": "Already covered by the supplier risk"}
+    assert sponsor.post(url, json=body).status_code == 403
+    response = web.post(url, json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "rejected"
+    row = _audit(db)[-1]
+    assert row.action_taken == {"action": "reject", "reason": body["reason"]}
+    assert web.post(url, json={**body, "version": 2}).status_code == 409
+    open_risk = _create(web, project.id).json()
+    response = web.post(_url(project.id, open_risk["id"]) + "/reject", json=body)
+    assert response.status_code == 409
+
+
+ESCALATIONS = "/api/v1/risks/escalations"
+
+
+def test_the_escalations_list_is_for_the_callers_role(web, db, pm, project, sponsor, sign_in):
+    other = _project(db, "Other Project")
+    low = _create(web, project.id, **LOW).json()
+    medium = _create(web, project.id, **MEDIUM).json()
+    high = _create(web, other.id, **HIGH).json()
+    _create(web, project.id, needs_judgement=True, probability=None, impact=None)
+
+    mine = web.get(ESCALATIONS).json()
+    assert [item["id"] for item in mine["items"]] == [low["id"]]
+    theirs = sponsor.get(ESCALATIONS).json()
+    assert theirs["total"] == 2
+    assert [item["id"] for item in theirs["items"]] == [high["id"], medium["id"]]
+    assert theirs["items"][0]["project_name"] == "Other Project"
+    paged = sponsor.get(ESCALATIONS, params={"limit": 1, "offset": 1}).json()
+    assert [item["id"] for item in paged["items"]] == [medium["id"]]
+
+    # Once the owner acts, it drops off.
+    _accept(sponsor, project.id, medium)
+    assert [item["id"] for item in sponsor.get(ESCALATIONS).json()["items"]] == [high["id"]]
+    web.patch(_url(other.id, high["id"]), json={"version": 1, "status": "closed"})
+    assert sponsor.get(ESCALATIONS).json()["total"] == 0
+
+    auditor = _client(db, sign_in, "auditor", "auditor.one@pmo.example")
+    assert auditor.get(ESCALATIONS).json()["total"] == 0
+    assert TestClient(app, base_url="http://localhost").get(ESCALATIONS).status_code == 401
+
+
+def test_rescore_reopens_an_accepted_risk_that_rises(web, db, pm, project, tmp_path):
+    risk = _create(web, project.id, probability=2, impact=3).json()  # 6: Low
+    _accept(web, project.id, risk)
+    for name in ("approvers.yaml", "tiers.yaml", "gates.yaml", "risk.yaml"):
+        (tmp_path / name).write_text((REPO_ROOT / "policies" / name).read_text())
+    data = yaml.safe_load(RISK_YAML.read_text())
+    data["priority_bands"][0]["max_score"] = 5
+    data["priority_bands"][1]["min_score"] = 6
+    (tmp_path / "risk.yaml").write_text(yaml.safe_dump(data))
+    policy = load_policies(tmp_path).risk
+
+    with Session(engine) as session:
+        assert risks.rescore(session, policy) == 1
+    db.expire_all()
+    stored = db.get(Risk, risk["id"])
+    assert (stored.status, stored.band, stored.escalated_to) == ("open", "Medium", "sponsor")
+    assert _actions(db)[-2:] == ["rescore", "escalate"]
