@@ -217,9 +217,20 @@ function describe(entry: HistoryEntry): string {
 
 <template>
   <v-container class="py-8">
-    <v-btn variant="text" :to="{ name: 'intake' }" class="mb-2 px-0" data-test="back">
-      Back to the queue
-    </v-btn>
+    <div class="d-flex flex-wrap ga-4 mb-2">
+      <v-btn
+        v-if="request?.project_id"
+        variant="text"
+        :to="{ name: 'project', params: { id: request.project_id } }"
+        class="px-0"
+        data-test="back-to-project"
+      >
+        Back to the project
+      </v-btn>
+      <v-btn variant="text" :to="{ name: 'intake' }" class="px-0" data-test="back">
+        Back to the queue
+      </v-btn>
+    </div>
     <v-alert
       v-if="message"
       :type="messageType"
@@ -239,15 +250,6 @@ function describe(entry: HistoryEntry): string {
       <div class="d-flex flex-wrap align-center ga-2 mb-4">
         <h1 class="text-h4 text-primary" data-test="page-title">{{ request.title }}</h1>
         <v-spacer />
-        <v-btn
-          v-if="request.project_id"
-          variant="text"
-          color="primary"
-          :to="{ name: 'project', params: { id: request.project_id } }"
-          data-test="project-link"
-        >
-          Open its project
-        </v-btn>
         <v-btn
           v-if="showDraft"
           variant="outlined"

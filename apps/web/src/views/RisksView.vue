@@ -496,15 +496,27 @@ async function addFromLibrary() {
       </template>
     </div>
 
-    <v-select
-      v-model="projectId"
-      :items="projects"
-      item-title="name"
-      item-value="id"
-      label="Project"
-      :max-width="display.xs.value ? undefined : 420"
-      data-test="project-picker"
-    />
+    <div class="d-flex flex-wrap align-center column-gap-3">
+      <v-select
+        v-model="projectId"
+        :items="projects"
+        item-title="name"
+        item-value="id"
+        label="Project"
+        :max-width="display.xs.value ? undefined : 420"
+        data-test="project-picker"
+      />
+      <v-btn
+        v-if="projectId !== null"
+        variant="text"
+        color="primary"
+        class="mb-5"
+        :to="{ name: 'project', params: { id: projectId } }"
+        data-test="project-brief-link"
+      >
+        Open the project's brief
+      </v-btn>
+    </div>
     <v-alert
       v-if="suggestion"
       :type="suggestionType"
