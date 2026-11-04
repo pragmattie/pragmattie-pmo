@@ -1,4 +1,36 @@
-# Stage gates. A placeholder until milestone P4 defines the gates and their criteria; the loader
-# accepts only an empty list for now. Drafted by an agent for item 1.4.
+# Stage gates (item 4.4). Each gate sits between two stages and lists what must be true before it
+# is passed, and which roles may decide it. Drafted by an agent; a person applies it over
+# policies/gates.yaml.
+#
+# - from_stage and to_stage are one of: intake, planning, delivery, closure, closed.
+# - applies_to is `request` (a project request) or `project`.
+# - deciders are roles; a person with one of them decides the gate, never an agent.
+# - Each criterion has an id, plain text, and either `check` (a check the code knows) or
+#   `person: true` (a person ticks it with a note when they decide).
 version: 1
-gates: []
+gates:
+  - id: approval
+    name: Approval gate
+    from_stage: intake
+    to_stage: planning
+    applies_to: request
+    deciders: [sponsor]
+    criteria:
+      - id: value_case_confirmed
+        text: The value case is complete and a person has confirmed it
+        check: value_case_confirmed
+      - id: readiness_confirmed
+        text: For a request that uses AI, a person has completed and confirmed the readiness check
+        check: readiness_confirmed
+      - id: readiness_not_red
+        text: For a request that uses AI, no readiness area is rated red
+        check: readiness_not_red
+      - id: yellow_actions_owned
+        text: For a request that uses AI, every yellow readiness area has an action with an active owner
+        check: yellow_actions_owned
+      - id: value_justifies_cost
+        text: The expected value justifies the cost
+        person: true
+      - id: people_available
+        text: We have, or can get, the people to do it
+        person: true

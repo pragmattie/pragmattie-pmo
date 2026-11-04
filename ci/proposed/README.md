@@ -18,14 +18,14 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`policies/gates.yaml`** (item 4.4): the approval gate (intake to planning, for project
-  requests, decided by `sponsor`) with its four automatic checks and two person criteria. Apply it
-  over the live placeholder; until then `GET` and `POST /api/v1/requests/{id}/gate` answer 503.
-  The tests load this file from here while it is pending, and the applied file once this copy is
-  deleted.
+Nothing.
 
 ## Applied
 
+- **`policies/gates.yaml`** (item 4.4): the approval gate (intake to planning, for project
+  requests, decided by `sponsor`) with its four automatic checks and two person criteria, moved
+  over the live placeholder unchanged. `GET` and `POST /api/v1/requests/{id}/gate` now answer
+  instead of returning 503, and the tests load the applied file.
 - **`policies/risk-library.yaml`** (item 3.2): the starter risk library, moved from
   `ci/proposed/policies/risk-library.yaml` unchanged. The library routes now answer instead of
   returning 503.
