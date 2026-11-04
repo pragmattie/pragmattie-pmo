@@ -333,10 +333,12 @@ def clear_seeded(db: Session) -> tuple[int, int]:
     db.execute(delete(Risk).where(Risk.seed_key.is_not(None)))
     has_risk = exists().where(Risk.project_id == Project.id)
     doomed = select(Project.id).where(Project.seed_key.is_not(None), ~has_risk)
-    plans = select(ProjectPlan.id).where(ProjectPlan.project_id.in_(doomed))
-    for model in (PlanDeliverable, PlanEstimateLine, PlanMilestone):
-        db.execute(delete(model).where(model.plan_id.in_(plans)))
-    db.execute(delete(ProjectPlan).where(ProjectPlan.id.in_(plans)))
+    # Read the ids first: MySQL can't delete from a table that its own subquery reads.
+    plans = list(db.scalars(select(ProjectPlan.id).where(ProjectPlan.project_id.in_(doomed))))
+    if plans:
+        for model in (PlanDeliverable, PlanEstimateLine, PlanMilestone):
+            db.execute(delete(model).where(model.plan_id.in_(plans)))
+        db.execute(delete(ProjectPlan).where(ProjectPlan.id.in_(plans)))
     projects = db.execute(delete(Project).where(Project.seed_key.is_not(None), ~has_risk)).rowcount
     in_use = exists().where(Project.client_id == Client.id)
     clients = db.execute(delete(Client).where(Client.seed_key.is_not(None), ~in_use)).rowcount
