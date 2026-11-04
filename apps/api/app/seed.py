@@ -38,7 +38,16 @@ from sqlalchemy.orm import Session
 
 from app.audit import record_decision
 from app.authz import Role
-from app.models import Client, Project, Risk, User
+from app.models import (
+    Client,
+    PlanDeliverable,
+    PlanEstimateLine,
+    PlanMilestone,
+    Project,
+    ProjectPlan,
+    Risk,
+    User,
+)
 from app.policy import PolicyError, RiskPolicy
 from app.risks import apply_score, record_risk_change, risk_policy, snapshot
 from app.security import hash_password
@@ -318,10 +327,16 @@ def _upsert[T: (Client, Project)](db: Session, model: type[T], values: dict[str,
 def clear_seeded(db: Session) -> tuple[int, int]:
     """Delete seeded risks, then seeded projects that no person's risk is on, then seeded clients
     that no remaining project uses. A seeded project or client that a person's row refers to is
-    kept (it is reset to its seed values on the next seed). Their audit rows stay. Returns
+    kept (it is reset to its seed values on the next seed). A deleted project's plan (which the
+    plans migration gave every project) goes with it. Their audit rows stay. Returns
     (clients, projects) deleted. The caller commits."""
     db.execute(delete(Risk).where(Risk.seed_key.is_not(None)))
     has_risk = exists().where(Risk.project_id == Project.id)
+    doomed = select(Project.id).where(Project.seed_key.is_not(None), ~has_risk)
+    plans = select(ProjectPlan.id).where(ProjectPlan.project_id.in_(doomed))
+    for model in (PlanDeliverable, PlanEstimateLine, PlanMilestone):
+        db.execute(delete(model).where(model.plan_id.in_(plans)))
+    db.execute(delete(ProjectPlan).where(ProjectPlan.id.in_(plans)))
     projects = db.execute(delete(Project).where(Project.seed_key.is_not(None), ~has_risk)).rowcount
     in_use = exists().where(Project.client_id == Client.id)
     clients = db.execute(delete(Client).where(Client.seed_key.is_not(None), ~in_use)).rowcount

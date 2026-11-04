@@ -208,6 +208,34 @@ def test_reset_clears_only_seeded_rows(db):
     assert db.scalars(select(Project.name)).all() == ["Own"]
 
 
+def test_reset_also_removes_the_plans_of_the_projects_it_deletes(db):
+    """The plans migration gave every project, seeded ones too, a plan (item 5.1)."""
+    from datetime import date
+
+    from app.models import PlanDeliverable, PlanEstimateLine, PlanMilestone, ProjectPlan
+
+    seed(db)
+    project = db.scalars(select(Project).order_by(Project.id)).first()
+    plan = ProjectPlan(project_id=project.id, contingency_pct=0)
+    db.add(plan)
+    db.flush()
+    milestone = PlanMilestone(plan_id=plan.id, name="Pilot", target_date=date(2027, 3, 1))
+    db.add(milestone)
+    db.flush()
+    db.add_all(
+        [
+            PlanDeliverable(plan_id=plan.id, name="Forecast", milestone_id=milestone.id),
+            PlanEstimateLine(plan_id=plan.id, description="Team", category="people", amount=1),
+        ]
+    )
+    db.commit()
+
+    clear_seeded(db)
+    db.commit()
+    for model in (ProjectPlan, PlanMilestone, PlanDeliverable, PlanEstimateLine):
+        assert db.scalar(select(func.count()).select_from(model)) == 0, model.__name__
+
+
 def test_reset_keeps_a_seeded_client_that_a_persons_project_uses(db):
     seed(db)
     db.commit()
