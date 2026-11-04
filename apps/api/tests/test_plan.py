@@ -199,7 +199,10 @@ def test_the_total_is_lines_plus_contingency_rounded_half_up(amounts, pct, total
         ("999.99", "1000", "2000", "below"),
         ("2000.01", "1000", "2000", "above"),
         ("10", None, "2000", "within"),
-        ("10", "1000", None, "no_range"),
+        ("2000.01", None, "2000", "above"),
+        ("999.99", "1000", None, "below"),
+        ("1000", "1000", None, "within"),
+        ("99999", "1000", None, "within"),
         ("10", None, None, "no_range"),
     ],
 )
@@ -233,9 +236,33 @@ def test_the_api_shows_the_total_against_the_budget_range(web, db, pm, project):
     assert [i["amount"] for i in lines["items"]] == ["1200.00", "300.00"]
 
 
-def test_no_top_budget_is_no_range(web, db, pm):
+def test_no_budget_is_no_range(web, db, pm):
     project = _project(db, low=None, high=None)
     assert _plan(web, project)["budget_fit"] == "no_range"
+
+
+def test_a_brief_with_only_a_low_bound_is_compared_against_it(web, db, pm):
+    project = _project(db, low="1000", high=None)
+    assert _plan(web, project)["budget_fit"] == "below"
+    _add(web, project, "estimate-lines", description="Team", category="people", amount="5000")
+    plan = _plan(web, project)
+    assert (plan["budget_low"], plan["budget_high"], plan["budget_fit"]) == (
+        "1000.00",
+        None,
+        "within",
+    )
+
+
+def test_a_brief_with_only_a_high_bound_is_compared_against_it(web, db, pm):
+    project = _project(db, low=None, high="2000")
+    assert _plan(web, project)["budget_fit"] == "within"
+    _add(web, project, "estimate-lines", description="Team", category="people", amount="2000.01")
+    plan = _plan(web, project)
+    assert (plan["budget_low"], plan["budget_high"], plan["budget_fit"]) == (
+        None,
+        "2000.00",
+        "above",
+    )
 
 
 @pytest.mark.parametrize("kind", ["plan", "line"])

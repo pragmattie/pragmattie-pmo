@@ -174,6 +174,20 @@ describe('the plan section', () => {
     )
   })
 
+  it('compares against a low bound alone', async () => {
+    await mountPlan(plan({ budget_fit: 'below', budget_low: '20000.00', budget_high: null }))
+    expect(find('plan-budget-fit')?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'Below the budget range (from 20000.00).',
+    )
+  })
+
+  it('compares against a high bound alone', async () => {
+    await mountPlan(plan({ budget_fit: 'above', budget_low: null, budget_high: '10000.00' }))
+    expect(find('plan-budget-fit')?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'Above the budget range (up to 10000.00).',
+    )
+  })
+
   it('says when the brief has no budget range', async () => {
     await mountPlan(plan({ budget_fit: 'no_range', budget_low: null, budget_high: null }))
     expect(find('plan-budget-fit')?.textContent?.trim()).toBe('The brief has no budget range.')

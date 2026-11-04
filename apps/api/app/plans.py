@@ -3,7 +3,7 @@
 - `compute_total`: the estimate lines plus the contingency, rounded half-up to 2 places. It is
   computed on every read and never stored or taken from a client.
 - `budget_fit`: the total against the brief's budget range: `within`, `below` or `above`, or
-  `no_range` when the brief has no top budget.
+  `no_range` when the brief gives neither bound. Whichever bound exists is compared.
 - `missing`: the gaps the go-ahead gate (5.4) will check, in plain words; empty for a complete
   plan.
 """
@@ -53,11 +53,11 @@ def compute_total(amounts: Iterable[Decimal], contingency_pct: int) -> Decimal:
 
 
 def budget_fit(total: Decimal, low: Decimal | None, high: Decimal | None) -> str:
-    if high is None:
+    if low is None and high is None:
         return "no_range"
     if low is not None and total < low:
         return "below"
-    if total > high:
+    if high is not None and total > high:
         return "above"
     return "within"
 
