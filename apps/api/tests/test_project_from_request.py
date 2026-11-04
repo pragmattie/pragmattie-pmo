@@ -21,6 +21,7 @@ from app.models import (
     Project,
     ProjectAssumption,
     ProjectBrief,
+    ProjectPlan,
     ProjectRequest,
     ProjectStakeholder,
     ReadinessAction,
@@ -85,7 +86,15 @@ def _count(db: Session, model: type) -> int:
 
 
 def _nothing_created(db: Session, rid: int) -> None:
-    for model in (Project, ProjectBrief, ProjectStakeholder, ProjectAssumption, Risk, GateDecision):
+    for model in (
+        Project,
+        ProjectBrief,
+        ProjectPlan,
+        ProjectStakeholder,
+        ProjectAssumption,
+        Risk,
+        GateDecision,
+    ):
         assert _count(db, model) == 0, model.__name__
     request = db.get(ProjectRequest, rid)
     assert (request.status, request.project_id, request.version) == ("submitted", None, 2)
@@ -150,6 +159,11 @@ def test_passing_the_gate_creates_the_project_and_its_records(web, db, pm, spons
     assert (str(brief.budget_low), str(brief.budget_high)) == ("10000.00", "20000.00")
     assert brief.decision_rights == decision_rights()
 
+    # The plan starts empty, its scope copied from the brief (item 5.1).
+    plan = db.scalars(select(ProjectPlan).where(ProjectPlan.project_id == project_id)).one()
+    assert (plan.scope_in, plan.scope_out) == (brief.scope_in, brief.scope_out)
+    assert (plan.contingency_pct, plan.report_period, plan.report_due_day) == (0, None, None)
+
     stakeholders = db.scalars(
         select(ProjectStakeholder)
         .where(ProjectStakeholder.project_id == project_id)
@@ -182,6 +196,7 @@ def test_passing_the_gate_creates_the_project_and_its_records(web, db, pm, spons
     assert row.action_taken["created"] == {
         "project_id": project_id,
         "brief_id": brief.id,
+        "plan_id": plan.id,
         "stakeholder_ids": [s.id for s in stakeholders],
         "assumption_ids": [],
         "risk_ids": [risk.id],
