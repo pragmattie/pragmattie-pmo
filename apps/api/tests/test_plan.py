@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
-from app.api.intake import STALE
+from app.api import intake
 from app.api.plan import (
     BAD_DUE_DAY,
     BAD_MILESTONE,
@@ -22,6 +22,7 @@ from app.api.plan import (
     DAY_NEEDS_PERIOD,
     NOT_PLANNING,
     PERIOD_NEEDS_DAY,
+    STALE,
 )
 from app.db import engine
 from app.main import app
@@ -407,6 +408,11 @@ def test_deliverables_and_lines_are_edited_and_deleted(web, db, pm, project):
     assert _plan(web, project)["total"] == "0.00"
 
 
+def test_a_stale_plan_says_the_plan_changed_and_intake_keeps_its_message():
+    assert STALE == "This plan has changed since you loaded it. Reload and try again."
+    assert intake.STALE == "this request has changed since you read it; reload it and try again"
+
+
 # --- The reporting plan
 
 
@@ -444,6 +450,34 @@ def test_changing_the_period_needs_a_due_day_that_fits_it(web, db, pm, project):
     for day in (0, 29):
         response = web.patch(_url(project), json={"version": 3, "report_due_day": day})
         assert response.status_code == 422
+
+
+@pytest.mark.parametrize("extra", [{}, {"report_due_day": None}])
+def test_clearing_the_period_clears_the_due_day(web, db, pm, project, extra):
+    ok = web.patch(
+        _url(project), json={"version": 1, "report_period": "monthly", "report_due_day": 28}
+    )
+    assert ok.status_code == 200, ok.text
+    response = web.patch(_url(project), json={"version": 2, "report_period": None, **extra})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["report_period"], body["report_due_day"]) == (None, None)
+    assert "No reporting plan" in body["missing"]
+
+
+def test_clearing_the_period_with_a_due_day_is_refused(web, db, pm, project):
+    web.patch(_url(project), json={"version": 1, "report_period": "weekly", "report_due_day": 5})
+    response = web.patch(
+        _url(project), json={"version": 2, "report_period": None, "report_due_day": 3}
+    )
+    assert (response.status_code, response.json()["detail"]) == (422, DAY_NEEDS_PERIOD)
+
+
+def test_resending_the_same_period_needs_no_due_day(web, db, pm, project):
+    web.patch(_url(project), json={"version": 1, "report_period": "weekly", "report_due_day": 5})
+    response = web.patch(_url(project), json={"version": 2, "report_period": "weekly"})
+    assert response.status_code == 200, response.text
+    assert response.json()["report_due_day"] == 5
 
 
 # --- Write rules

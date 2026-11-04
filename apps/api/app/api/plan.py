@@ -26,9 +26,11 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
-from app.api.intake import STALE, _commit, _names, _save
+from app.api.intake import _names
 from app.api.projects import (
     AUDIT_AGENT,
     Db,
@@ -72,6 +74,7 @@ from app.schemas.plan import (
 router = APIRouter(prefix="/projects", tags=["plans"])
 
 NO_PLAN = "this project has no plan"
+STALE = "This plan has changed since you loaded it. Reload and try again."
 MILESTONE_NOT_FOUND = "milestone not found"
 DELIVERABLE_NOT_FOUND = "deliverable not found"
 LINE_NOT_FOUND = "estimate line not found"
@@ -157,6 +160,23 @@ def _item[T](db: Session, model: type[T], plan: ProjectPlan, item_id: int, missi
     return row
 
 
+def _save(db: Session) -> None:
+    try:
+        db.flush()
+    except StaleDataError:
+        # Another write changed the plan between our read and this update.
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, STALE) from None
+
+
+def _commit(db: Session) -> None:
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, STALE) from None
+
+
 def _check_version(row: Any, version: int) -> None:
     if row.version != version:
         raise HTTPException(status.HTTP_409_CONFLICT, STALE)
@@ -201,10 +221,18 @@ def get_plan(project_id: int, _user: Reader, db: Db) -> PlanOut:
 
 
 def _check_reporting(plan: ProjectPlan, changes: dict[str, Any]) -> None:
+    """Clearing the period with no due day clears the due day too (it means nothing without a
+    period); a change to a different period needs a due day that fits it."""
+    if (
+        "report_period" in changes
+        and changes["report_period"] is None
+        and "report_due_day" not in changes
+    ):
+        changes["report_due_day"] = None
     period = changes.get("report_period", plan.report_period)
     day = changes.get("report_due_day", plan.report_due_day)
-    if "report_period" in changes and changes["report_period"] != plan.report_period:
-        if "report_due_day" not in changes or (period is not None and day is None):
+    if period is not None and period != plan.report_period:
+        if "report_due_day" not in changes or day is None:
             raise _invalid(PERIOD_NEEDS_DAY)
     if day is not None and period is None:
         raise _invalid(DAY_NEEDS_PERIOD)
