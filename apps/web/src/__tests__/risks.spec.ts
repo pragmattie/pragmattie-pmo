@@ -180,6 +180,7 @@ interface FakeOptions {
   suggestion?: RiskSuggestion
   patchStatus?: number
   stored?: Risk
+  projects?: { id: number; name: string }[]
 }
 
 function fakeApi(role: string, options: FakeOptions = {}) {
@@ -190,7 +191,7 @@ function fakeApi(role: string, options: FakeOptions = {}) {
     const method = init.method ?? 'GET'
     if (path === '/api/v1/auth/me') return json({ ...user, actions: ACTIONS[role] })
     if (path === '/api/v1/projects') {
-      return json(page([{ id: 3, name: 'Harbour Analytics' }]))
+      return json(page(options.projects ?? [{ id: 3, name: 'Harbour Analytics' }]))
     }
     if (path === '/api/v1/users') {
       return json(page([{ id: 11, display_name: 'Pat Owner' }]))
@@ -423,6 +424,26 @@ describe('risks page', () => {
     expect(router.currentRoute.value.query.project).toBe('3')
     expect(wrapper.get('[data-test="page-title"]').text()).toBe('Risk register')
     expect(lastList(fetchMock)).toEqual({ limit: '25', offset: '0' })
+  })
+
+  it("links to the selected project's brief and follows the selector", async () => {
+    const projects = [
+      { id: 3, name: 'Harbour Analytics' },
+      { id: 4, name: 'Depot Planning' },
+    ]
+    const { wrapper } = await mountRisks('auditor', { projects })
+    const link = () => wrapper.find('[data-test="project-brief-link"]')
+    expect(link().text()).toBe("Open the project's brief")
+    expect(link().attributes('href')).toBe('/projects/3')
+    setSelect(wrapper, 'project-picker', 4)
+    await flushPromises()
+    expect(link().attributes('href')).toBe('/projects/4')
+  })
+
+  it('shows no brief link with no project selected', async () => {
+    const { wrapper } = await mountRisks('auditor', { projects: [] })
+    expect(wrapper.find('[data-test="no-projects"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="project-brief-link"]').exists()).toBe(false)
   })
 
   it('shows the heat map counts and open totals per band', async () => {

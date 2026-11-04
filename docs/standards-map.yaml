@@ -114,6 +114,10 @@ features:
     title: From approval to project
     rules: [R1, R5, R10, R12]
     notes: A sponsor's pass names the project manager; project, brief, stakeholders and unscored proposed AI and project risks made in one transaction; each edit audited.
+  - id: P4-brief-links
+    title: A way back to the project's brief
+    rules: [R6, R12]
+    notes: The request and Risks pages link back to the project's brief for anyone with project:read; the project page checks access itself.
   # --- P5 Planning, proposals and the go-ahead gate
   - id: P5-client-proposals
     title: Client proposal workflow
