@@ -2,8 +2,8 @@
 
 Creates three invented client companies, a project for each, and "PragMattie Sync" as an internal
 project (no client), and gives each project a few scored risks, AI and ordinary, so every priority
-band appears. Every person, company, email address and website is made up and uses the
-reserved `.example` domain.
+band appears. Each project gets an empty plan, as any new project does. Every person, company,
+email address and website is made up and uses the reserved `.example` domain.
 
 Seeding is deterministic and idempotent: each seeded row has a fixed `seed_key`, and running the
 seed again sets those rows back to the values below without adding duplicates. `--reset` first
@@ -44,10 +44,12 @@ from app.models import (
     PlanEstimateLine,
     PlanMilestone,
     Project,
+    ProjectBrief,
     ProjectPlan,
     Risk,
     User,
 )
+from app.plans import new_plan
 from app.policy import PolicyError, RiskPolicy
 from app.risks import apply_score, record_risk_change, risk_policy, snapshot
 from app.security import hash_password
@@ -369,6 +371,14 @@ def _seed_risk(db: Session, policy: RiskPolicy, values: dict[str, Any], project_
         record_risk_change(db, risk, action="seed", before=before, actor_user_id=None)
 
 
+def _ensure_plan(db: Session, project: Project) -> None:
+    """Give a seeded project its empty plan, scope prefilled from its brief if it has one, as for
+    any new project (item 5.1). A plan it already has is left as it is."""
+    if db.scalar(select(ProjectPlan.id).where(ProjectPlan.project_id == project.id)) is None:
+        brief = db.scalar(select(ProjectBrief).where(ProjectBrief.project_id == project.id))
+        db.add(new_plan(project.id, brief))
+
+
 def seed(db: Session, *, reset: bool = False, policy: RiskPolicy | None = None) -> SeedResult:
     """Create or restore the demo rows. Risks are scored from `policy`, by default the risk
     policy (a `PolicyError` if it can't be loaded, before anything is written). The caller
@@ -384,6 +394,8 @@ def seed(db: Session, *, reset: bool = False, policy: RiskPolicy | None = None) 
         project["client_id"] = clients[client_key].id if client_key else None
         projects[project["seed_key"]] = _upsert(db, Project, project)
     db.flush()
+    for project in projects.values():
+        _ensure_plan(db, project)
     for values in RISKS:
         risk = dict(values)
         _seed_risk(db, policy, risk, projects[risk.pop("project")].id)
