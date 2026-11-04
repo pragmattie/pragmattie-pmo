@@ -15,7 +15,8 @@ import { budgetText, label } from '../lib/projects'
 
 // The project's plan (item 5.1), read only: what is missing first, then scope and deliverables,
 // milestones in date order with who does what, the estimate and its total against the brief's
-// budget range, and the reporting plan. The API computes the total and the missing list.
+// budget range, and the reporting plan. The API computes the total and the missing list. Every
+// page of each list is read.
 const props = defineProps<{ projectId: number }>()
 
 const plan = ref<Plan | null>(null)
@@ -28,16 +29,16 @@ async function load(id: number) {
   error.value = ''
   plan.value = null
   try {
-    const [found, milestonePage, deliverablePage, linePage] = await Promise.all([
+    const [found, milestoneItems, deliverableItems, lineItems] = await Promise.all([
       planApi.get(id),
       planApi.milestones(id),
       planApi.deliverables(id),
       planApi.estimateLines(id),
     ])
     plan.value = found
-    milestones.value = milestonePage.items
-    deliverables.value = deliverablePage.items
-    lines.value = linePage.items
+    milestones.value = milestoneItems
+    deliverables.value = deliverableItems
+    lines.value = lineItems
   } catch (failure) {
     error.value = (failure as Error).message
   }

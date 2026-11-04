@@ -94,10 +94,22 @@ export function ownerText(milestone: Milestone): string {
 }
 
 const base = (id: number) => `/api/v1/projects/${id}/plan`
+const PAGE = 100 // The most the API sends in one page.
+
+// Every item of a paged list: follow `total` page by page. An empty page ends it early, so a list
+// that shrinks while it is read can't loop.
+export async function allPages<T>(path: string): Promise<T[]> {
+  const items: T[] = []
+  for (;;) {
+    const page = await call<Page<T>>(`${path}?limit=${PAGE}&offset=${items.length}`)
+    items.push(...page.items)
+    if (!page.items.length || items.length >= page.total) return items
+  }
+}
 
 export const planApi = {
   get: (id: number) => call<Plan>(base(id)),
-  milestones: (id: number) => call<Page<Milestone>>(`${base(id)}/milestones?limit=100`),
-  deliverables: (id: number) => call<Page<Deliverable>>(`${base(id)}/deliverables?limit=100`),
-  estimateLines: (id: number) => call<Page<EstimateLine>>(`${base(id)}/estimate-lines?limit=100`),
+  milestones: (id: number) => allPages<Milestone>(`${base(id)}/milestones`),
+  deliverables: (id: number) => allPages<Deliverable>(`${base(id)}/deliverables`),
+  estimateLines: (id: number) => allPages<EstimateLine>(`${base(id)}/estimate-lines`),
 }

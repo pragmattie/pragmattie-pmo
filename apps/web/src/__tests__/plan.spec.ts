@@ -70,8 +70,12 @@ const LINES = [
   { id: 2, plan_id: 2, description: 'Licence', category: 'software', amount: '2000.00', version: 1 },
 ]
 
-function page(items: unknown[]) {
-  return { items, total: items.length, limit: 100, offset: 0 }
+// One page of `items` as the API sends it: at most `limit` from `offset`, with the full total.
+function page(items: unknown[], url = 'http://localhost/') {
+  const params = new URL(url, 'http://localhost').searchParams
+  const limit = Number(params.get('limit') ?? 100)
+  const offset = Number(params.get('offset') ?? 0)
+  return { items: items.slice(offset, offset + limit), total: items.length, limit, offset }
 }
 
 function json(body: unknown, status = 200) {
@@ -81,15 +85,15 @@ function json(body: unknown, status = 200) {
   })
 }
 
-function fakeApi(found: Plan | null) {
+function fakeApi(found: Plan | null, lines: unknown[] = LINES) {
   return vi.fn(async (input: string) => {
     const path = new URL(input, 'http://localhost').pathname
     if (path === '/api/v1/projects/5/plan') {
       return found ? json(found) : json({ detail: 'this project has no plan' }, 404)
     }
-    if (path === '/api/v1/projects/5/plan/milestones') return json(page(MILESTONES))
-    if (path === '/api/v1/projects/5/plan/deliverables') return json(page(DELIVERABLES))
-    if (path === '/api/v1/projects/5/plan/estimate-lines') return json(page(LINES))
+    if (path === '/api/v1/projects/5/plan/milestones') return json(page(MILESTONES, input))
+    if (path === '/api/v1/projects/5/plan/deliverables') return json(page(DELIVERABLES, input))
+    if (path === '/api/v1/projects/5/plan/estimate-lines') return json(page(lines, input))
     return json({ detail: `unexpected ${path}` }, 404)
   })
 }
@@ -197,6 +201,36 @@ describe('the plan section', () => {
   it('says a plan outside planning is changed through change requests', async () => {
     await mountPlan(plan({ editable: false }))
     expect(find('plan-baselined')).not.toBeNull()
+  })
+
+  it('reads every page of a long list, not only the first 100', async () => {
+    const many = Array.from({ length: 230 }, (_, i) => ({
+      id: i + 1,
+      plan_id: 2,
+      description: `Line ${i + 1}`,
+      category: 'other',
+      amount: '1.00',
+      version: 1,
+    }))
+    const api = fakeApi(plan(), many)
+    vi.stubGlobal('fetch', api)
+    mount(PlanSection, {
+      props: { projectId: 5 },
+      global: { plugins: [makeVuetify()] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    const rows = findAll('plan-line')
+    expect(rows).toHaveLength(230)
+    expect(rows[229].textContent).toContain('Line 230')
+    const linePages = api.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes('/estimate-lines'))
+    expect(linePages).toEqual([
+      '/api/v1/projects/5/plan/estimate-lines?limit=100&offset=0',
+      '/api/v1/projects/5/plan/estimate-lines?limit=100&offset=100',
+      '/api/v1/projects/5/plan/estimate-lines?limit=100&offset=200',
+    ])
   })
 
   it('says when the project has no plan', async () => {
