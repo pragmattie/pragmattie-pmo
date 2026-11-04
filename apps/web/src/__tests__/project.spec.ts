@@ -194,6 +194,16 @@ describe('the project page', () => {
     expect(find('decision-rights')?.textContent).toContain('Project sponsor: stage gates')
   })
 
+  it('shows the plan section above the stakeholders', async () => {
+    await mountAt('/projects/5')
+    const plan = find('plan')
+    expect(plan?.textContent).toContain('Plan')
+    expect(plan?.compareDocumentPosition(find('stakeholders')!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    )
+    expect(find('stakeholders')?.id).toBe('stakeholders')
+  })
+
   it('shows the stakeholders', async () => {
     await mountAt('/projects/5')
     const rows = findAll('stakeholder').map((row) => row.textContent)

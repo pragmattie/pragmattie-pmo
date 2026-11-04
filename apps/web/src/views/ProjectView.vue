@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
+import PlanSection from '../components/PlanSection.vue'
 import {
   type Assumption,
   type Brief,
@@ -15,7 +16,7 @@ import {
 } from '../lib/projects'
 
 // Projects (item 4.6). Without an id, the list of projects; with one, the project: its brief,
-// stakeholders and assumptions, a link to its risks and one back to the request it came from.
+// plan (item 5.1), stakeholders and assumptions, a link to its risks and one back to the request it came from.
 // Reading only: the API guards every route.
 const route = useRoute()
 const projectId = computed(() => (route.params.id ? Number(route.params.id) : null))
@@ -151,7 +152,9 @@ watch(projectId, load, { immediate: true })
         </v-table>
       </section>
 
-      <section class="mb-6" data-test="stakeholders">
+      <PlanSection :project-id="project.id" />
+
+      <section id="stakeholders" class="mb-6" data-test="stakeholders">
         <h2 class="text-subtitle-1 mb-2">Stakeholders</h2>
         <p v-if="!stakeholders.length" class="text-body-2">No stakeholders yet.</p>
         <v-table v-else density="compact">
