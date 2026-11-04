@@ -178,8 +178,55 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         assert {ck["name"] for ck in inspector.get_check_constraints("project_assumptions")} == {
             "ck_project_assumptions_status"
         }
+        # 0016: the plan, its milestones, deliverables and estimate lines.
+        plan_fks = {
+            fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("project_plans")
+        }
+        assert plan_fks == {"fk_project_plans_project": "projects"}
+        plan_uniques = {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("project_plans")
+        }
+        assert plan_uniques == {"uq_project_plans_project": ["project_id"]}
+        assert {ck["name"] for ck in inspector.get_check_constraints("project_plans")} == {
+            "ck_project_plans_contingency",
+            "ck_project_plans_report_period",
+            "ck_project_plans_report_due_day",
+        }
+        assert {
+            fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("plan_milestones")
+        } == {"fk_plan_milestones_plan": "project_plans", "fk_plan_milestones_owner": "users"}
+        assert {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("plan_deliverables")
+        } == {
+            "fk_plan_deliverables_plan": "project_plans",
+            "fk_plan_deliverables_milestone": "plan_milestones",
+        }
+        assert {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("plan_estimate_lines")
+        } == {"fk_plan_estimate_lines_plan": "project_plans"}
+        assert {ck["name"] for ck in inspector.get_check_constraints("plan_estimate_lines")} == {
+            "ck_plan_estimate_lines_category",
+            "ck_plan_estimate_lines_amount",
+        }
+        with create_engine(get_settings().database_url).connect() as conn:
+            for table in ("plan_milestones", "plan_deliverables", "plan_estimate_lines"):
+                table_sql = conn.exec_driver_sql(
+                    f"SELECT sql FROM sqlite_master WHERE name = '{table}'"
+                ).scalar_one()
+                assert "AUTOINCREMENT" in table_sql, table
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0015")
+        tables = set(inspect(create_engine(get_settings().database_url)).get_table_names())
+        assert not tables & {
+            "project_plans",
+            "plan_milestones",
+            "plan_deliverables",
+            "plan_estimate_lines",
+        }
         command.downgrade(config, "0013")
         inspector = inspect(create_engine(get_settings().database_url))
         assert "project_briefs" not in inspector.get_table_names()

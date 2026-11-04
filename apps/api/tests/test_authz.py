@@ -31,9 +31,13 @@ from app.main import app, create_app
 from app.models import (
     AuditDecision,
     Base,
+    PlanDeliverable,
+    PlanEstimateLine,
+    PlanMilestone,
     Project,
     ProjectAssumption,
     ProjectBrief,
+    ProjectPlan,
     ProjectRequest,
     ProjectStakeholder,
     Risk,
@@ -359,6 +363,40 @@ def _planning_sample(suffix: str, body: dict | None = None):
     return sample
 
 
+def _plan_sample(suffix: str, body: dict | None = None):
+    """A project in planning with a plan holding one milestone, deliverable and estimate line,
+    for the plan routes' samples. `{milestone}`, `{deliverable}` and `{line}` in `suffix` take
+    their ids. Every item and the plan are at version 1."""
+
+    def sample(target: int) -> dict:
+        with Session(engine) as session:
+            project = Project(name="Plan", stage="planning", sponsor="S", pm="P", status="on_track")
+            session.add(project)
+            session.flush()
+            plan = ProjectPlan(project_id=project.id, contingency_pct=0)
+            session.add(plan)
+            session.flush()
+            milestone = PlanMilestone(plan_id=plan.id, name="Pilot", target_date=date(2027, 1, 1))
+            line = PlanEstimateLine(
+                plan_id=plan.id, description="Team", category="people", amount=1
+            )
+            session.add_all([milestone, line])
+            session.flush()
+            deliverable = PlanDeliverable(plan_id=plan.id, name="Model", milestone_id=milestone.id)
+            session.add(deliverable)
+            session.commit()
+            path = suffix.format(milestone=milestone.id, deliverable=deliverable.id, line=line.id)
+            url = f"/api/v1/projects/{project.id}/plan{path}"
+        if callable(body):
+            return {"url": url, "json": body(target)}
+        return {"url": url, "json": body} if body is not None else {"url": url}
+
+    return sample
+
+
+PLAN = "/api/v1/projects/{project_id}/plan"
+
+
 # Routes with path parameters or a body need a sample request that succeeds when allowed. Each
 # takes the id of a project-manager user that the caller may act on.
 SAMPLES = {
@@ -484,6 +522,43 @@ SAMPLES = {
     ("DELETE", "/api/v1/projects/{project_id}/assumptions/{assumption_id}"): _planning_sample(
         "/assumptions/{assumption}?version=1"
     ),
+    ("GET", PLAN): _plan_sample(""),
+    ("PATCH", PLAN): _plan_sample("", {"version": 1, "contingency_pct": 10}),
+    ("GET", f"{PLAN}/milestones"): _plan_sample("/milestones"),
+    ("POST", f"{PLAN}/milestones"): _plan_sample(
+        "/milestones",
+        lambda target: {
+            "version": 1,
+            "name": "Go live",
+            "target_date": "2027-06-01",
+            "owner_user_id": target,
+        },
+    ),
+    ("PATCH", f"{PLAN}/milestones/{{milestone_id}}"): _plan_sample(
+        "/milestones/{milestone}", lambda target: {"version": 1, "owner_user_id": target}
+    ),
+    ("DELETE", f"{PLAN}/milestones/{{milestone_id}}"): _plan_sample(
+        "/milestones/{milestone}?version=1"
+    ),
+    ("GET", f"{PLAN}/deliverables"): _plan_sample("/deliverables"),
+    ("POST", f"{PLAN}/deliverables"): _plan_sample("/deliverables", {"version": 1, "name": "Doc"}),
+    ("PATCH", f"{PLAN}/deliverables/{{deliverable_id}}"): _plan_sample(
+        "/deliverables/{deliverable}", {"version": 1, "description": "Weekly"}
+    ),
+    ("DELETE", f"{PLAN}/deliverables/{{deliverable_id}}"): _plan_sample(
+        "/deliverables/{deliverable}?version=1"
+    ),
+    ("GET", f"{PLAN}/estimate-lines"): _plan_sample("/estimate-lines"),
+    ("POST", f"{PLAN}/estimate-lines"): _plan_sample(
+        "/estimate-lines",
+        {"version": 1, "description": "Licence", "category": "software", "amount": "250.00"},
+    ),
+    ("PATCH", f"{PLAN}/estimate-lines/{{line_id}}"): _plan_sample(
+        "/estimate-lines/{line}", {"version": 1, "amount": "2.00"}
+    ),
+    ("DELETE", f"{PLAN}/estimate-lines/{{line_id}}"): _plan_sample(
+        "/estimate-lines/{line}?version=1"
+    ),
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -509,12 +584,18 @@ CREATED = {
     ("POST", "/api/v1/requests"),
     ("POST", "/api/v1/projects/{project_id}/stakeholders"),
     ("POST", "/api/v1/projects/{project_id}/assumptions"),
+    ("POST", f"{PLAN}/milestones"),
+    ("POST", f"{PLAN}/deliverables"),
+    ("POST", f"{PLAN}/estimate-lines"),
 }
 
 # Allowed deletes answer 204.
 DELETED = {
     ("DELETE", "/api/v1/projects/{project_id}/stakeholders/{stakeholder_id}"),
     ("DELETE", "/api/v1/projects/{project_id}/assumptions/{assumption_id}"),
+    ("DELETE", f"{PLAN}/milestones/{{milestone_id}}"),
+    ("DELETE", f"{PLAN}/deliverables/{{deliverable_id}}"),
+    ("DELETE", f"{PLAN}/estimate-lines/{{line_id}}"),
 }
 
 
@@ -648,6 +729,15 @@ def test_matrix_covers_the_existing_routes():
         ("DELETE", f"{project}/assumptions/{{assumption_id}}"),
     ):
         assert by_method[(method, path)] == Action.PROJECT_WRITE
+    lists = ("milestones", "deliverables", "estimate-lines")
+    items = ("milestone_id", "deliverable_id", "line_id")
+    for path in (PLAN, *(f"{PLAN}/{name}" for name in lists)):
+        assert by_method[("GET", path)] == Action.PROJECT_READ
+    assert by_method[("PATCH", PLAN)] == Action.PROJECT_WRITE
+    for name, item in zip(lists, items, strict=True):
+        assert by_method[("POST", f"{PLAN}/{name}")] == Action.PROJECT_WRITE
+        for method in ("PATCH", "DELETE"):
+            assert by_method[(method, f"{PLAN}/{name}/{{{item}}}")] == Action.PROJECT_WRITE
 
 
 @pytest.mark.parametrize("role", list(Role))
