@@ -119,6 +119,10 @@ features:
     rules: [R6, R12]
     notes: The request and Risks pages link back to the project's brief for anyone with project:read; the project page checks access itself.
   # --- P5 Planning, proposals and the go-ahead gate
+  - id: P5-project-plan
+    title: The project plan
+    rules: [R1, R5, R12]
+    notes: People write scope, milestones, estimate and reporting; the total is computed, never typed; each change is one audit row.
   - id: P5-client-proposals
     title: Client proposal workflow
     rules: [R1]
