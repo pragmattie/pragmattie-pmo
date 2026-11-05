@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.proposals import HAS_FLAGS, NO_CLIENT, OWN, STALE
+from app.api.proposals import EXISTS, FINAL, HAS_FLAGS, NO_CLIENT, OWN, STALE
 from app.db import engine
 from app.main import app
 from app.models import (
@@ -310,6 +310,62 @@ def test_a_shown_risk_since_closed_or_rejected(status):
     ]
 
 
+def test_removed_deliverable():
+    facts = _facts(deliverables=[])
+    flags = check(_values(), facts)
+    assert [f.as_dict() for f in flags] == [
+        {"rule": "removed_deliverable", "section": "deliverables", "text": "Model"}
+    ]
+
+
+def test_changed_deliverable_description():
+    facts = _facts(deliverables=[{"name": "Model", "description": "Weekly", "milestone": "Pilot"}])
+    flags = check(_values(), facts)
+    assert [(f.rule, f.section) for f in flags] == [("changed_deliverable", "deliverables")]
+    assert "Model" in flags[0].text
+
+
+def test_changed_milestone_description():
+    facts = _facts(
+        milestones=[{"name": "Pilot", "target_date": "2027-03-01", "description": "Two sites"}]
+    )
+    flags = check(_values(), facts)
+    assert [(f.rule, f.section) for f in flags] == [("changed_milestone", "milestones")]
+    assert "Pilot (2027-03-01)" in flags[0].text
+
+
+RISK = {"risk_id": 7, "title": "Late data", "response": "reduce", "response_plan": "Chase"}
+
+
+def test_a_shown_risk_no_longer_ticked():
+    flags = check(_values(risks=[RISK]), _facts(risk_states={7: ("open", False)}))
+    assert [f.as_dict() for f in flags] == [
+        {"rule": "risk_changed", "section": "risks", "text": "Late data (no longer ticked to show)"}
+    ]
+
+
+def test_a_ticked_risk_not_yet_shown():
+    flags = check(_values(risks=[]), _facts(shown_risks=[RISK], risk_states={7: ("open", True)}))
+    assert [f.as_dict() for f in flags] == [
+        {
+            "rule": "risk_changed",
+            "section": "risks",
+            "text": "Late data (ticked to show, not yet shown)",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"title": "Data arrives late"}, {"response": "avoid"}, {"response_plan": "Escalate"}],
+)
+def test_a_shown_risk_whose_title_or_response_changed(change):
+    facts = _facts(shown_risks=[{**RISK, **change}], risk_states={7: ("open", True)})
+    flags = check(_values(risks=[RISK]), facts)
+    assert [(f.rule, f.section) for f in flags] == [("risk_changed", "risks")]
+    assert "title or response changed" in flags[0].text
+
+
 # --- What the proposal takes from the plan
 
 
@@ -378,11 +434,113 @@ def test_every_save_runs_the_checker(web, project):
     ]
 
 
-def test_a_stale_edit_is_a_409(web, project):
+def test_a_description_change_in_the_plan_flags_until_refreshed(web, db, project):
     _create(web, project)
-    response = web.patch(_url(project), json={"version": 99, "summary": "x"})
+    plan = _plan(db, project)
+    db.scalar(
+        select(PlanDeliverable).where(PlanDeliverable.plan_id == plan.id)
+    ).description = "Weekly demand forecast"
+    db.scalar(
+        select(PlanMilestone).where(PlanMilestone.plan_id == plan.id)
+    ).description = "Two warehouses live"
+    db.commit()
+    assert _rules(_get(web, project)) == ["changed_deliverable", "changed_milestone"]
+    assert _post(web, project, "/refresh").json()["flags"] == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"title": "Data arrives late"}, {"response": "avoid"}, {"response_plan": "Escalate early"}],
+)
+def test_a_shown_risk_edited_in_the_register_flags_until_refreshed(web, db, project, change):
+    risk = _risk(db, project, show_in_proposal=True)
+    _create(web, project)
+    for name, value in change.items():
+        setattr(risk, name, value)
+    db.commit()
+    assert _rules(_get(web, project)) == ["risk_changed"]
+    assert _post(web, project, "/refresh").json()["flags"] == []
+
+
+def _refusal(db: Session, action: str, refusal: str) -> AuditDecision:
+    row = _audit(db)[-1]
+    assert row.status == "rejected"
+    assert row.action_taken["action"] == f"{action}_refused"
+    assert row.action_taken["refusal"] == refusal
+    return row
+
+
+@pytest.mark.parametrize("edit", ["update", "refresh"])
+def test_a_stale_edit_is_a_409_audited(web, db, project, edit):
+    _create(web, project)
+    if edit == "update":
+        response = web.patch(_url(project), json={"version": 99, "summary": "x"})
+    else:
+        response = web.post(_url(project, "/refresh"), json={"version": 99})
     assert response.status_code == 409
     assert response.json()["detail"] == STALE
+    _refusal(db, edit, "stale")
+    assert _get(web, project)["summary"] is None
+
+
+@pytest.mark.parametrize("final", ["sent", "accepted", "declined", "withdrawn"])
+@pytest.mark.parametrize("edit", ["update", "refresh"])
+def test_an_edit_to_a_sent_answered_or_withdrawn_proposal_is_a_409_audited(
+    web, db, sign_in, project, pm, final, edit
+):
+    if final == "withdrawn":
+        _create(web, project)
+        assert _post(web, project, "/withdraw", reason=WITHDRAW_REASON).status_code == 200
+    else:
+        _to_status(web, db, sign_in, project, pm, final)
+    before = len(_audit(db))
+    version = _get(web, project)["version"]
+    if edit == "update":
+        response = web.patch(_url(project), json={"version": version, "summary": "x"})
+    else:
+        response = web.post(_url(project, "/refresh"), json={"version": version})
+    assert response.status_code == 409
+    assert response.json()["detail"] == FINAL
+    assert len(_audit(db)) == before + 1
+    assert _refusal(db, edit, "wrong_status").action_taken["status"] == final
+    assert _get(web, project)["status"] == final
+
+
+def test_a_second_create_is_a_409_audited(web, db, project):
+    proposal = _create(web, project)
+    response = web.post(_url(project))
+    assert response.status_code == 409
+    assert response.json()["detail"] == EXISTS
+    row = _refusal(db, "create", "exists")
+    assert (row.subject_type, row.subject_id) == ("proposal", str(proposal["id"]))
+
+
+@pytest.mark.parametrize("role", ["sponsor", "auditor", "ethics_reviewer", "admin"])
+def test_a_create_without_project_write_is_a_403_audited_against_the_project(
+    web, db, sign_in, project, role
+):
+    sign_in(web, db, role, email=f"other.{role}@pmo.example")
+    assert web.post(_url(project)).status_code == 403
+    row = _refusal(db, "create", "no_permission")
+    assert (row.subject_type, row.subject_id) == ("project", str(project.id))
+    assert row.action_taken["actor_role"] == role
+
+
+@pytest.mark.parametrize("role", ["sponsor", "auditor", "ethics_reviewer", "admin"])
+@pytest.mark.parametrize("edit", ["update", "refresh"])
+def test_an_edit_without_project_write_is_a_403_audited(web, db, sign_in, project, role, edit):
+    proposal = _create(web, project)
+    sign_in(web, db, role, email=f"other.{role}@pmo.example")
+    body = {"version": proposal["version"], "summary": "x"}
+    if edit == "update":
+        response = web.patch(_url(project), json=body)
+    else:
+        response = web.post(_url(project, "/refresh"), json={"version": proposal["version"]})
+    assert response.status_code == 403
+    row = _refusal(db, edit, "no_permission")
+    assert (row.subject_type, row.subject_id) == ("proposal", str(proposal["id"]))
+    assert row.action_taken["actor_role"] == role
+    assert _get(web, project)["summary"] is None
 
 
 # --- Risks shown to the client

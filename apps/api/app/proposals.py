@@ -22,9 +22,12 @@
   - `missing_deliverable` and `missing_milestone`: one in the plan that the proposal lacks (a
     milestone counts as missing when its date moved). `removed_deliverable` and
     `removed_milestone`: one in the proposal that the plan no longer has.
+    `changed_deliverable` and `changed_milestone`: one in both whose description the plan has
+    since changed.
   - `stale_price`: the proposal's price is not the plan's total.
   - `closed_risk`: a risk shown that has since been closed or rejected. `risk_changed`: a risk
-    shown that is no longer ticked, or one ticked that the proposal doesn't show yet.
+    shown that is no longer ticked, one ticked that the proposal doesn't show yet, or one shown
+    whose title or response (the response or its plan) has changed in the risk register.
 
 Refreshing from the plan clears every flag but the stray money and dates, which the project manager
 fixes in the text.
@@ -55,6 +58,8 @@ SECTION_MILESTONES = "milestones"
 SECTION_RISKS = "risks"
 # Risks that may no longer be shown to a client.
 GONE_STATUSES = ("closed", "rejected")
+# What a proposal shows of a risk; a change to any of them flags it until refreshed.
+RISK_SHOWN_FIELDS = ("title", "response", "response_plan")
 
 _MONEY = re.compile(
     r"(?<![\w.,])"
@@ -257,11 +262,20 @@ def check(values: dict[str, Any], facts: PlanFacts) -> list[Flag]:
             )
         )
 
-    shown_deliverables = {d["name"] for d in values["deliverables"]}
-    planned_deliverables = {d["name"] for d in facts.deliverables}
+    shown_deliverables = {d["name"]: d for d in values["deliverables"]}
+    planned_deliverables = {d["name"]: d for d in facts.deliverables}
     for d in facts.deliverables:
-        if d["name"] not in shown_deliverables:
+        shown = shown_deliverables.get(d["name"])
+        if shown is None:
             flags.append(Flag("missing_deliverable", SECTION_DELIVERABLES, d["name"]))
+        elif shown.get("description") != d["description"]:
+            flags.append(
+                Flag(
+                    "changed_deliverable",
+                    SECTION_DELIVERABLES,
+                    f"{d['name']} (description changed in the plan)",
+                )
+            )
     for d in values["deliverables"]:
         if d["name"] not in planned_deliverables:
             flags.append(Flag("removed_deliverable", SECTION_DELIVERABLES, d["name"]))
@@ -269,12 +283,21 @@ def check(values: dict[str, Any], facts: PlanFacts) -> list[Flag]:
     def key(m: dict[str, Any]) -> tuple[str, str]:
         return (m["name"], m["target_date"])
 
-    shown_milestones = {key(m) for m in values["milestones"]}
+    shown_milestones = {key(m): m for m in values["milestones"]}
     planned_milestones = {key(m) for m in facts.milestones}
     for m in facts.milestones:
-        if key(m) not in shown_milestones:
+        shown = shown_milestones.get(key(m))
+        if shown is None:
             flags.append(
                 Flag("missing_milestone", SECTION_MILESTONES, f"{m['name']} ({m['target_date']})")
+            )
+        elif shown.get("description") != m["description"]:
+            flags.append(
+                Flag(
+                    "changed_milestone",
+                    SECTION_MILESTONES,
+                    f"{m['name']} ({m['target_date']}): description changed in the plan",
+                )
             )
     for m in values["milestones"]:
         if key(m) not in planned_milestones:
@@ -283,13 +306,25 @@ def check(values: dict[str, Any], facts: PlanFacts) -> list[Flag]:
             )
 
     shown_risks = {r["risk_id"] for r in values["risks"]}
+    current_risks = {r["risk_id"]: r for r in facts.shown_risks}
     for r in values["risks"]:
         status, ticked = facts.risk_states.get(r["risk_id"], ("closed", False))
+        current = current_risks.get(r["risk_id"])
         if status in GONE_STATUSES:
             flags.append(Flag("closed_risk", SECTION_RISKS, f"{r['title']} ({status})"))
         elif not ticked:
             flags.append(
                 Flag("risk_changed", SECTION_RISKS, f"{r['title']} (no longer ticked to show)")
+            )
+        elif current is not None and any(
+            r.get(field) != current[field] for field in RISK_SHOWN_FIELDS
+        ):
+            flags.append(
+                Flag(
+                    "risk_changed",
+                    SECTION_RISKS,
+                    f"{r['title']} (title or response changed in the risk register)",
+                )
             )
     for r in facts.shown_risks:
         if r["risk_id"] not in shown_risks:

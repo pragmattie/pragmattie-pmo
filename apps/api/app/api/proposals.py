@@ -28,10 +28,12 @@ A project with a client has at most one proposal; a project with no client has n
   people did with it.
 
 Every write carries the proposal's `version`; a stale one is a 409. Each change is one audit row
-(agent `proposal`, trigger `human`, the person's id). Every refused change of status (a role
-without the right, the caller's own submission, a stale version, a wrong status or open flags) is
-one audit row too (`status: rejected`), and changes nothing. These routes need a signed-in person,
-so no agent can submit, approve, mark sent or record an answer.
+(agent `proposal`, trigger `human`, the person's id). Every refused attempt, edits included (a
+role without the right, the caller's own submission, a stale version, a wrong status, open flags
+or a second create), is one audit row too (`status: rejected`), and changes nothing. A refusal
+before the project has a proposal is recorded against the project (subject type `project`).
+These routes need a signed-in person, so no agent can submit, approve, mark sent or record an
+answer.
 """
 
 from typing import Annotated, Any
@@ -41,7 +43,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.intake import _commit, _names, _save
-from app.api.projects import Db, Reader, Writer, _project
+from app.api.projects import Db, Reader, _project
 from app.audit import next_attempt, record_decision, record_refusal
 from app.authz import Action, not_own_submission, require_audited
 from app.models import (
@@ -72,6 +74,8 @@ router = APIRouter(prefix="/projects", tags=["proposals"])
 
 AUDIT_AGENT = "proposal"
 SUBJECT_TYPE = "proposal"
+# A refusal before the project has a proposal names the project instead.
+PROJECT_SUBJECT = "project"
 
 NO_CLIENT = "this project has no client, so it has no proposal"
 NO_PROPOSAL = "this project has no proposal yet"
@@ -228,7 +232,7 @@ def _refuse(
     detail: Any,
     **extra: Any,
 ) -> HTTPException:
-    """Record a refused change of status, commit the row, and give the error to raise."""
+    """Record a refused attempt, commit the row, and give the error to raise."""
     record_refusal(
         db,
         agent=AUDIT_AGENT,
@@ -250,29 +254,35 @@ def _refuse(
 
 
 def _refusal_recorder(action: str):
-    """The guard's refusal row for a role without the right. A project with no proposal has
-    nothing to name, so it gets the 403 without a row."""
+    """The guard's refusal row for a role without the right. Before the project has a proposal
+    (a refused create), the row names the project; an unknown project gets the 403 without one."""
 
     def record(db: Session, user: User, path_params: dict[str, str]) -> None:
         try:
-            proposal = _find(db, int(path_params["project_id"]))
+            project_id = int(path_params["project_id"])
         except (KeyError, ValueError):
             return
-        if proposal is None:
+        proposal = _find(db, project_id)
+        if proposal is not None:
+            subject = (SUBJECT_TYPE, str(proposal.id), proposal.version, _snapshot(proposal))
+        elif db.get(Project, project_id) is not None:
+            subject = (PROJECT_SUBJECT, str(project_id), 1, None)
+        else:
             return
+        subject_type, subject_id, version, output = subject
         record_refusal(
             db,
             agent=AUDIT_AGENT,
-            subject_type=SUBJECT_TYPE,
-            subject_id=str(proposal.id),
-            version=proposal.version,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            version=version,
             actor_user_id=user.id,
-            output=_snapshot(proposal),
+            output=output,
             action_taken={
                 "action": f"{action}_refused",
                 "refusal": "no_permission",
                 "actor_role": user.role,
-                "project_id": proposal.project_id,
+                "project_id": project_id,
             },
         )
 
@@ -283,6 +293,9 @@ def _person(action: Action, name: str):
     return Annotated[User, Depends(require_audited(action, _refusal_recorder(name)))]
 
 
+Creator = _person(Action.PROJECT_WRITE, "create")
+Editor = _person(Action.PROJECT_WRITE, "update")
+Refresher = _person(Action.PROJECT_WRITE, "refresh")
 Submitter = _person(Action.PROJECT_WRITE, "submit")
 Approver = _person(Action.PROPOSAL_APPROVE, "approve")
 Returner = _person(Action.PROPOSAL_APPROVE, "return")
@@ -302,11 +315,14 @@ def get_proposal(project_id: int, _user: Reader, db: Db) -> ProposalOut:
 @router.post(
     "/{project_id}/proposal", response_model=ProposalOut, status_code=status.HTTP_201_CREATED
 )
-def create_proposal(project_id: int, user: Writer, db: Db) -> ProposalOut:
+def create_proposal(project_id: int, user: Creator, db: Db) -> ProposalOut:
     _client_project(db, project_id)
     plan = _plan(db, project_id)
-    if _find(db, project_id) is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, EXISTS)
+    existing = _find(db, project_id)
+    if existing is not None:
+        raise _refuse(
+            db, existing, user, action="create", refusal="exists", code=409, detail=EXISTS
+        )
     proposal = ProjectProposal(
         project_id=project_id,
         status="draft",
@@ -322,12 +338,25 @@ def create_proposal(project_id: int, user: Writer, db: Db) -> ProposalOut:
     return _proposal_out(db, proposal)
 
 
-def _editable(db: Session, project_id: int, version: int) -> ProjectProposal:
+def _editable(
+    db: Session, project_id: int, version: int, user: User, action: str
+) -> ProjectProposal:
+    """The proposal, locked, if it is at `version` and can still change; a stale version or a
+    sent, answered or withdrawn proposal is a refusal, recorded."""
     proposal = _proposal(db, project_id, for_update=True)
     if proposal.version != version:
-        raise HTTPException(status.HTTP_409_CONFLICT, STALE)
+        raise _refuse(db, proposal, user, action=action, refusal="stale", code=409, detail=STALE)
     if proposal.status not in EDITABLE:
-        raise HTTPException(status.HTTP_409_CONFLICT, FINAL)
+        raise _refuse(
+            db,
+            proposal,
+            user,
+            action=action,
+            refusal="wrong_status",
+            code=409,
+            detail=FINAL,
+            status=proposal.status,
+        )
     return proposal
 
 
@@ -346,8 +375,8 @@ def _edited(
 
 
 @router.patch("/{project_id}/proposal", response_model=ProposalOut)
-def update_proposal(project_id: int, body: ProposalUpdate, user: Writer, db: Db) -> ProposalOut:
-    proposal = _editable(db, project_id, body.version)
+def update_proposal(project_id: int, body: ProposalUpdate, user: Editor, db: Db) -> ProposalOut:
+    proposal = _editable(db, project_id, body.version, user, "update")
     before = _snapshot(proposal)
     changes = body.model_dump(exclude={"version"}, exclude_unset=True)
     changed = False
@@ -361,8 +390,8 @@ def update_proposal(project_id: int, body: ProposalUpdate, user: Writer, db: Db)
 
 
 @router.post("/{project_id}/proposal/refresh", response_model=ProposalOut)
-def refresh_proposal(project_id: int, body: ProposalWrite, user: Writer, db: Db) -> ProposalOut:
-    proposal = _editable(db, project_id, body.version)
+def refresh_proposal(project_id: int, body: ProposalWrite, user: Refresher, db: Db) -> ProposalOut:
+    proposal = _editable(db, project_id, body.version, user, "refresh")
     before = _snapshot(proposal)
     plan_version_seen = proposal.plan_version_seen
     refresh_from_plan(proposal, plan_facts(db, _plan(db, project_id)))
