@@ -12,6 +12,11 @@
   or someone withdrew it. Marking sent records what a person did outside the product; nothing
   is sent from here.
 
+`section_sources` says who wrote each text section (item 5.3): `{"source": "agent" | "person",
+"reviewed_by": user id or null, "reviewed_at": ISO time or null}` by section name. An agent's
+section with no `reviewed_by` is an unreviewed draft, which blocks submit. A section with no entry
+was prefilled from the plan, or is empty.
+
 `version` guards concurrent edits as on the plan: SQLAlchemy adds it to every UPDATE.
 """
 
@@ -45,6 +50,7 @@ STATUSES = ("draft", "submitted", "approved", "sent", "accepted", "declined", "w
 EVENT_KINDS = ("approve", "return", "sent", "answer", "withdraw")
 ANSWERS = ("accepted", "declined")
 TEXT_SECTIONS = ("summary", "scope_in", "scope_out", "assumptions", "terms")
+SECTION_SOURCES = ("agent", "person")
 SHORT_TEXT_MAX = 200
 
 
@@ -73,6 +79,8 @@ class ProjectProposal(Base):
     deliverables: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
     risks: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
     plan_version_seen: Mapped[int] = mapped_column()
+    # Who wrote each text section, and who reviewed an agent's draft (see the module docstring).
+    section_sources: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_by: Mapped[int] = mapped_column(
         ForeignKey(f"{USERS_TABLE}.id", name="fk_project_proposals_created_by"), index=True
     )
