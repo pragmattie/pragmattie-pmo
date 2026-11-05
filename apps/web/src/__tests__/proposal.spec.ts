@@ -232,6 +232,20 @@ describe('the proposal helpers', () => {
     )
   })
 
+  it.each([
+    ['draft', true],
+    ['submitted', true],
+    ['approved', true],
+    ['sent', true],
+    ['accepted', false],
+    ['declined', false],
+    ['withdrawn', false],
+  ])('offers withdraw on a %s proposal: %s', (status, shown) => {
+    const row = proposal({ status: status as Proposal['status'] })
+    expect(buttonsFor(row, can('project_manager'), PM_ID).withdraw).toBe(shown)
+    expect(buttonsFor(row, can('admin'), PM_ID).withdraw).toBe(false)
+  })
+
   it('says when an approval was for an earlier version', () => {
     expect(approvalText(proposal())).toBeNull()
     expect(approvalText(proposal({ approved_version: 2, approval_current: true }))).toBe(
@@ -391,6 +405,10 @@ describe('the proposal section', () => {
       body: null,
     })
     await click('proposal-edit')
+    const forms = find('proposal-date-forms')?.textContent ?? ''
+    for (const form of ['2027-01-15', '15 January 2027', 'January 15, 2027', 'not read']) {
+      expect(forms).toContain(form)
+    }
     await type(find('proposal-field-scope_out'), 'Stores')
     await click('proposal-save')
     expect(posts(fetchMock)[1]).toEqual({

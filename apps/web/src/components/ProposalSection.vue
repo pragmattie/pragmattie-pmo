@@ -255,6 +255,10 @@ const withdraw = () => act(() => proposalApi.withdraw(id(), version(), reason.va
       </p>
 
       <v-card v-if="open === 'edit'" variant="outlined" class="pa-4 mb-4" data-test="proposal-edit-form">
+        <p class="text-caption mb-2" data-test="proposal-date-forms">
+          The checker reads dates written as 2027-01-15, 15 January 2027 or January 15, 2027.
+          Other forms, such as 15/01/2027, are not read, so write milestone dates in one of these.
+        </p>
         <v-textarea
           v-for="section in TEXT_SECTIONS"
           :key="section.key"
