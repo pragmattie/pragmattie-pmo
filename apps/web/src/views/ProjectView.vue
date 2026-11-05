@@ -2,8 +2,11 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
+import GateSection from '../components/GateSection.vue'
 import PlanSection from '../components/PlanSection.vue'
 import ProposalSection from '../components/ProposalSection.vue'
+import type { AnyGate, Baseline } from '../lib/gates'
+import { moneyText } from '../lib/intake'
 import {
   type Assumption,
   type Brief,
@@ -17,8 +20,9 @@ import {
 } from '../lib/projects'
 
 // Projects (item 4.6). Without an id, the list of projects; with one, the project: its brief,
-// plan (item 5.1), proposal (item 5.2), stakeholders and assumptions, a link to its risks and one back to the request it came from.
-// Reading only: the API guards every route.
+// plan (item 5.1), proposal (item 5.2), the go-ahead gate and its baseline (item 5.4),
+// stakeholders and assumptions, a link to its risks and one back to the request it came from.
+// The API guards every route; the baseline is read-only.
 const route = useRoute()
 const projectId = computed(() => (route.params.id ? Number(route.params.id) : null))
 
@@ -29,6 +33,32 @@ const stakeholders = ref<Stakeholder[]>([])
 const assumptions = ref<Assumption[]>([])
 const loadError = ref('')
 const briefError = ref('')
+const baseline = ref<Baseline | null>(null)
+const message = ref('')
+const messageType = ref<'success' | 'warning'>('success')
+const missing = ref<string[]>([])
+
+function gateLoaded(gate: AnyGate) {
+  baseline.value = 'baseline' in gate ? gate.baseline : null
+}
+
+function show(text: string, type: 'success' | 'warning', items: string[] = []) {
+  message.value = text
+  messageType.value = type
+  missing.value = items
+}
+
+// A gate decision changes the project's stage or status, and whether its plan and proposal can
+// change: reload the page.
+async function gateDecided(text: string) {
+  await load()
+  show(text, 'success')
+}
+
+async function gateConflict(text: string, items: string[] = []) {
+  await load()
+  show(text, 'warning', items)
+}
 
 async function loadProject(id: number) {
   project.value = await projectApi.get(id)
@@ -52,6 +82,8 @@ async function load() {
   briefError.value = ''
   project.value = null
   brief.value = null
+  baseline.value = null
+  message.value = ''
   try {
     if (projectId.value === null) projects.value = (await projectApi.list()).items
     else await loadProject(projectId.value)
@@ -67,6 +99,21 @@ watch(projectId, load, { immediate: true })
   <v-container class="py-8">
     <v-alert v-if="loadError" type="error" variant="tonal" class="mb-4" data-test="load-error">
       {{ loadError }}
+    </v-alert>
+
+    <v-alert
+      v-if="message"
+      :type="messageType"
+      variant="tonal"
+      class="mb-4"
+      closable
+      data-test="message"
+      @click:close="message = ''"
+    >
+      {{ message }}
+      <ul v-if="missing.length" class="mt-2 pl-4" data-test="missing">
+        <li v-for="item in missing" :key="item">{{ item }}</li>
+      </ul>
     </v-alert>
 
     <template v-if="projectId === null">
@@ -155,6 +202,77 @@ watch(projectId, load, { immediate: true })
 
       <PlanSection :project-id="project.id" />
       <ProposalSection :project-id="project.id" :client-name="project.client_name" />
+
+      <GateSection
+        subject="project"
+        :subject-id="project.id"
+        class="mb-6"
+        @loaded="gateLoaded"
+        @decided="gateDecided"
+        @conflict="gateConflict"
+      />
+
+      <section v-if="baseline" class="mb-6" data-test="baseline">
+        <h2 class="text-subtitle-1 mb-2">Baseline {{ baseline.number }}</h2>
+        <p class="text-caption text-medium-emphasis mb-2">
+          The plan as it stood when the go-ahead gate was passed on
+          {{ new Date(baseline.created_at).toLocaleDateString() }}. It doesn't change; change
+          requests are measured against it.
+        </p>
+        <v-table density="compact">
+          <tbody>
+            <tr>
+              <th scope="row">Scope in</th>
+              <td class="pre">{{ baseline.plan.scope_in ?? 'Not set' }}</td>
+            </tr>
+            <tr>
+              <th scope="row">Scope out</th>
+              <td class="pre">{{ baseline.plan.scope_out ?? 'Not set' }}</td>
+            </tr>
+            <tr>
+              <th scope="row">Milestones</th>
+              <td>
+                <ul class="pl-4" data-test="baseline-milestones">
+                  <li v-for="item in baseline.plan.milestones" :key="item.id">
+                    {{ item.name }}, {{ item.target_date }}
+                  </li>
+                </ul>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Deliverables</th>
+              <td>
+                <ul class="pl-4" data-test="baseline-deliverables">
+                  <li v-for="item in baseline.plan.deliverables" :key="item.id">
+                    {{ item.name }}<span v-if="item.milestone_name"> ({{ item.milestone_name }})</span>
+                  </li>
+                </ul>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Estimate</th>
+              <td>
+                <ul class="pl-4" data-test="baseline-lines">
+                  <li v-for="line in baseline.plan.estimate_lines" :key="line.id">
+                    {{ line.description }} ({{ label(line.category) }}): {{ moneyText(line.amount) }}
+                  </li>
+                </ul>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Contingency</th>
+              <td>
+                {{ baseline.plan.contingency_pct }}%:
+                {{ moneyText(baseline.plan.contingency_amount) }}
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Total</th>
+              <td data-test="baseline-total">{{ moneyText(baseline.total) }}</td>
+            </tr>
+          </tbody>
+        </v-table>
+      </section>
 
       <section id="stakeholders" class="mb-6" data-test="stakeholders">
         <h2 class="text-subtitle-1 mb-2">Stakeholders</h2>

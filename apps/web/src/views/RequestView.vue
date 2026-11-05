@@ -301,7 +301,13 @@ function describe(entry: HistoryEntry): string {
         @conflict="sectionConflict"
       />
 
-      <GateSection :request="request" @decided="gateDecided" @conflict="sectionConflict" />
+      <GateSection
+        subject="request"
+        :subject-id="request.id"
+        :version="request.version"
+        @decided="gateDecided"
+        @conflict="sectionConflict"
+      />
 
       <h2 class="text-subtitle-1 mt-4 mb-2">History</h2>
       <p v-if="!history.length" class="text-body-2">No recorded changes.</p>
