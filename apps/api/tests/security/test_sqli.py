@@ -60,7 +60,7 @@ def seeded(db, sign_in) -> TestClient:
             stage="intake",
             sponsor="Sam Sponsor",
             pm="Pat Manager",
-            status="green",
+            status="on_track",
         )
     )
     for n in range(3):

@@ -467,6 +467,64 @@ def _proposal_sample(
 DECISION = {"version": 1, "reason": "Matches the plan and the client's brief"}
 
 
+def _go_ahead_sample(body: dict | None = None):
+    """A project in planning, managed by the target project manager (so a sponsor deciding it is
+    not deciding their own), with no client and a complete plan within the brief's top budget, so
+    every go-ahead check is met."""
+
+    def sample(target: int) -> dict:
+        with Session(engine) as session:
+            project = Project(
+                name="Go",
+                stage="planning",
+                sponsor="S",
+                pm="P",
+                pm_user_id=target,
+                status="on_track",
+            )
+            session.add(project)
+            session.flush()
+            session.add(
+                ProjectBrief(
+                    project_id=project.id,
+                    purpose="Why",
+                    objectives="What",
+                    decision_rights=[],
+                    budget_high=100,
+                )
+            )
+            plan = ProjectPlan(
+                project_id=project.id,
+                scope_in="The pilot",
+                contingency_pct=0,
+                report_period="weekly",
+                report_due_day=1,
+            )
+            session.add(plan)
+            session.flush()
+            milestone = PlanMilestone(
+                plan_id=plan.id, name="Pilot", target_date=date(2027, 1, 1), owner_user_id=target
+            )
+            session.add_all(
+                [
+                    milestone,
+                    PlanEstimateLine(
+                        plan_id=plan.id, description="Team", category="people", amount=1
+                    ),
+                ]
+            )
+            session.flush()
+            session.add(PlanDeliverable(plan_id=plan.id, name="Model", milestone_id=milestone.id))
+            session.commit()
+            url = f"/api/v1/projects/{project.id}/gate"
+        return {"url": url, "json": body} if body is not None else {"url": url}
+
+    return sample
+
+
+GO_AHEAD = "/api/v1/projects/{project_id}/gate"
+
+
 # Routes with path parameters or a body need a sample request that succeeds when allowed. Each
 # takes the id of a project-manager user that the caller may act on.
 SAMPLES = {
@@ -657,6 +715,18 @@ SAMPLES = {
     ("POST", f"{PROPOSAL}/sections/{{section}}/confirm"): _proposal_sample(
         "/sections/summary/confirm", body={"version": 1}, agent_summary=True
     ),
+    ("GET", GO_AHEAD): _go_ahead_sample(),
+    ("POST", GO_AHEAD): _go_ahead_sample(
+        {
+            "version": 1,
+            "outcome": "pass",
+            "reason": "The plan is complete and inside the budget",
+            "criteria": [
+                {"id": "team_and_dates_realistic", "met": True, "note": "Owners agreed dates"},
+                {"id": "risks_acceptable", "met": True, "note": "Nothing open we can't carry"},
+            ],
+        }
+    ),
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -707,7 +777,10 @@ REFUSED = {
 }
 
 # Routes that also need a role the gates policy lists: other roles holding the action get 403.
-GATE_DECIDERS = {("POST", "/api/v1/requests/{request_id}/gate"): {Role.SPONSOR}}
+GATE_DECIDERS = {
+    ("POST", "/api/v1/requests/{request_id}/gate"): {Role.SPONSOR},
+    ("POST", GO_AHEAD): {Role.SPONSOR},
+}
 
 
 def _expected(guard, role: Role, method: str = "GET", path: str = "") -> int:
@@ -771,6 +844,8 @@ def test_matrix_covers_the_existing_routes():
         ("POST", "/api/v1/projects/{project_id}/assumptions"),
         ("PATCH", "/api/v1/projects/{project_id}/assumptions/{assumption_id}"),
         ("DELETE", "/api/v1/projects/{project_id}/assumptions/{assumption_id}"),
+        ("GET", GO_AHEAD),
+        ("POST", GO_AHEAD),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -847,6 +922,8 @@ def test_matrix_covers_the_existing_routes():
     assert by_method[("POST", f"{PROPOSAL}/sections/{{section}}/confirm")] == Action.PROJECT_WRITE
     for name in ("approve", "return"):
         assert by_method[("POST", f"{PROPOSAL}/{name}")] == Action.PROPOSAL_APPROVE
+    assert by_method[("GET", GO_AHEAD)] == Action.PROJECT_READ
+    assert by_method[("POST", GO_AHEAD)] == Action.GATE_DECIDE
 
 
 @pytest.mark.parametrize("role", list(Role))

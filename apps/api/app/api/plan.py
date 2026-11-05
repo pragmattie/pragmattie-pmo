@@ -12,8 +12,9 @@ holding `project:write` may edit any project's plan; the audit row records who a
   by target date, the others oldest first; every list is paged.
 
 Writes work only while the project is in `planning` (afterwards changes go through change
-requests): a 409 otherwise. Each write carries a `version`: the item's for an edit or delete (a
-DELETE as `?version=`), the plan's for a PATCH of the plan or an addition. Every write moves the
+requests) and not `cancelled` (declined at the go-ahead gate, item 5.4): a 409 otherwise. Each
+write carries a `version`: the item's for an edit or delete (a DELETE as `?version=`), the plan's
+for a PATCH of the plan or an addition. Every write moves the
 plan's version on, so the plan's version changes whenever anything in it does. A stale version is
 a 409. Each write is one audit row (agent `project`, subject the plan or item, its new version)
 with the values before and after.
@@ -54,6 +55,7 @@ from app.models import (
 )
 from app.models.base import utcnow
 from app.models.plan import DUE_DAY_MAX
+from app.models.portfolio import CANCELLED
 from app.plans import budget_fit, compute_total, missing, subtotal
 from app.projects import STAGE
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
@@ -82,6 +84,7 @@ NOT_PLANNING = (
     "the plan can be changed only while the project is in planning; after that, changes go "
     "through change requests"
 )
+CANCELLED_PROJECT = "this project is cancelled, so its plan can't change"
 BAD_OWNER = "owner_user_id must be an active user"
 BAD_MILESTONE = "milestone_id must be a milestone of this plan"
 PERIOD_NEEDS_DAY = "changing report_period needs a report_due_day that fits it in the same change"
@@ -145,8 +148,11 @@ def _plan(db: Session, project_id: int, *, for_update: bool = False) -> ProjectP
 
 
 def _writable_plan(db: Session, project_id: int) -> ProjectPlan:
-    """The plan, locked until commit on MySQL, if its project is still in planning."""
+    """The plan, locked until commit on MySQL, if its project is still in planning and not
+    cancelled."""
     project = _project(db, project_id)
+    if project.status == CANCELLED:
+        raise HTTPException(status.HTTP_409_CONFLICT, CANCELLED_PROJECT)
     if project.stage != STAGE:
         raise HTTPException(status.HTTP_409_CONFLICT, NOT_PLANNING)
     return _plan(db, project_id, for_update=True)
@@ -208,7 +214,7 @@ def _plan_out(db: Session, plan: ProjectPlan) -> PlanOut:
         budget_high=high,
         budget_fit=budget_fit(total, low, high),
         missing=missing(db, plan),
-        editable=project.stage == STAGE,
+        editable=project.stage == STAGE and project.status != CANCELLED,
     )
 
 
