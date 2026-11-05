@@ -117,8 +117,12 @@ Code: `apps/api/app/agents/proposal_agent.py`. Run by `POST /api/v1/projects/{id
 **What it reads.** One proposal's project: its name, its client's name, its brief (purpose,
 objectives, scope in and out), its assumptions that aren't known to be wrong, its plan (scope in
 and out, estimate line labels, milestones and deliverables) and the risks the proposal shows
-(title and response only). Amounts and dates reach it only as tokens, never as values; it never
-sees people's names or email addresses, a risk's score or band, or the brief's budget and dates.
+(title and response only). The plan's structured values (the total, estimate line amounts and
+milestone dates) reach it only as tokens, never as values. Free text from the brief and the plan
+(purpose, objectives, scope, assumptions, descriptions) goes to it as written, so it may contain a
+figure or a date; anything of that kind the agent copies into its draft is removed by the rule in
+"Figures through tokens" below. It never sees people's names or email addresses, a risk's score
+or band, or the brief's budget and dates.
 All of it goes to the model inside one `<project>` data block that the prompt marks as data, not
 instructions; it is JSON-encoded and `<`, `>` and `&` anywhere in it (the brief, the client's
 name, risk titles, estimate line labels) are escaped so it can't close the block.
@@ -134,9 +138,14 @@ section. In `shadow` it saves nothing.
 
 **Figures through tokens.** The agent writes `{total}`, `{line:N:amount}`, `{milestone:N:name}`,
 `{milestone:N:date}` or `{deliverable:N}`, and code puts in the plan's value (`$1,650.00`,
-`1 March 2027`). Any other token, and any money figure or date the agent wrote itself (as the
-proposal checker reads them), is removed and recorded, even one that matches the plan. Counts such
-as "3 workshops" stay. The checker then runs on the result and its flags come back with the draft.
+`1 March 2027`); a token in doubled braces, such as `{{total}}`, is filled in the same way with no
+braces left over. Any other token, and every date or amount in the agent's own text, is removed and
+recorded, even one that matches the plan. That is wider than the proposal checker reads: as well
+as its forms, a month and year ("March 2027"), a day and month ("30 June", "June 30"), a numeric
+date ("15/03/2027", "03-15-2027"), a quarter ("Q3 2027", "Q3"), a year on its own ("in 2027"), and
+a number next to a currency word, code or sign either way round ("50000 dollars", "USD 50000",
+"$40k", "40k"). Counts such as "3 workshops" or "2 phases" stay. The checker itself is unchanged;
+it then runs on the result and its flags come back with the draft.
 
 **What it never does.** Change the price, the estimate lines, the milestones, the deliverables or
 the risks shown; write about risks (the proposal shows them from the register, so it can't restate
