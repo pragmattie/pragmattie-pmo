@@ -8,6 +8,7 @@ import {
   approvedCopy,
   buttonsFor,
   flagsFor,
+  outOfDateText,
   type Proposal,
   type ProposalVersion,
 } from '../lib/proposals'
@@ -120,6 +121,8 @@ interface FakeOptions {
   versions?: ProposalVersion[]
   // What a POST or PATCH answers: the new proposal, or an error.
   answer?: Proposal | { status: number; detail: unknown }
+  // At most this many versions per page, whatever limit is asked for.
+  pageSize?: number
 }
 
 function fakeApi(options: FakeOptions = {}) {
@@ -136,8 +139,10 @@ function fakeApi(options: FakeOptions = {}) {
       return stored ? json(stored) : json({ detail: 'this project has no proposal yet' }, 404)
     }
     if (url.pathname === '/api/v1/projects/5/proposal/versions') {
-      const items = options.versions ?? []
-      return json({ items, total: items.length, limit: 100, offset: 0 })
+      const all = options.versions ?? []
+      const offset = Number(url.searchParams.get('offset') ?? 0)
+      const limit = Math.min(Number(url.searchParams.get('limit') ?? 100), options.pageSize ?? 100)
+      return json({ items: all.slice(offset, offset + limit), total: all.length, limit, offset })
     }
     return json({ detail: `unexpected ${method} ${url.pathname}` }, 404)
   })
@@ -252,6 +257,20 @@ describe('the proposal helpers', () => {
       'Approved as version 2.',
     )
     expect(approvalText(proposal({ approved_version: 1 }))).toContain('an earlier version')
+    const withdrawn = approvalText(proposal({ status: 'withdrawn', approved_version: 1 }))
+    expect(withdrawn).toContain('was withdrawn')
+    expect(withdrawn).not.toContain('changed')
+  })
+
+  it('says why an approved copy is out of date, and only when it is', () => {
+    expect(outOfDateText(proposal())).toBeNull()
+    expect(
+      outOfDateText(proposal({ status: 'sent', approved_version: 1, approval_current: true })),
+    ).toBeNull()
+    expect(outOfDateText(proposal({ approved_version: 1 }))).toContain('edited since')
+    const withdrawn = outOfDateText(proposal({ status: 'withdrawn', approved_version: 1 }))
+    expect(withdrawn).toContain('withdrawn')
+    expect(withdrawn).toContain('must not be sent')
   })
 
   it('finds the flags of a section and the approved copy', () => {
@@ -426,8 +445,17 @@ describe('the proposal section', () => {
 })
 
 describe('the print view', () => {
-  async function mountPrint(versions: ProposalVersion[]) {
-    vi.stubGlobal('fetch', fakeApi({ versions }))
+  async function mountPrint(
+    versions: ProposalVersion[],
+    stored: Proposal = proposal({
+      status: 'approved',
+      latest_version: 1,
+      approved_version: 1,
+      approval_current: true,
+    }),
+    pageSize?: number,
+  ) {
+    vi.stubGlobal('fetch', fakeApi({ versions, stored, pageSize }))
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore()
@@ -453,6 +481,41 @@ describe('the print view', () => {
       'Late data: Reduce. Agree a data date',
     ])
     expect(find('proposal-print')?.textContent).not.toMatch(/score|band/i)
+  })
+
+  it('reads every page of versions to find the approved copy', async () => {
+    const versions = [5, 4, 3, 2].map((number) => version(number))
+    await mountPrint([...versions, version(1, ['approve'])], undefined, 2)
+    expect(find('proposal-print-title')).not.toBeNull()
+    expect(find('proposal-print')?.textContent).toContain('Version 1.')
+  })
+
+  it('shows no warning while the approved copy is current', async () => {
+    await mountPrint([version(1, ['approve'])])
+    expect(find('proposal-print-out-of-date')).toBeNull()
+  })
+
+  it('warns at the top when the proposal was edited after approval', async () => {
+    await mountPrint(
+      [version(2), version(1, ['approve'])],
+      proposal({ status: 'draft', latest_version: 2, approved_version: 1 }),
+    )
+    const warning = find('proposal-print-out-of-date')
+    expect(warning?.textContent).toContain('out of date')
+    expect(warning?.textContent).toContain('must not be sent')
+    expect(warning?.textContent).toContain('edited since')
+    const article = find('proposal-print')?.querySelector('article')
+    expect(article?.firstElementChild).toBe(warning)
+  })
+
+  it('warns at the top when the approved proposal was withdrawn', async () => {
+    await mountPrint(
+      [version(1, ['approve', 'withdraw'])],
+      proposal({ status: 'withdrawn', latest_version: 1, approved_version: 1 }),
+    )
+    const warning = find('proposal-print-out-of-date')
+    expect(warning?.textContent).toContain('was withdrawn')
+    expect(warning?.textContent).toContain('must not be sent')
   })
 
   it('says when nothing has been approved', async () => {

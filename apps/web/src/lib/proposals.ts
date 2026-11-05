@@ -106,9 +106,11 @@ const RULE_TEXT: Record<string, string> = {
   missing_milestone: 'A milestone in the plan that the proposal lacks',
   removed_deliverable: 'A deliverable the plan no longer has',
   removed_milestone: 'A milestone the plan no longer has',
+  changed_deliverable: 'A deliverable whose description has changed in the plan',
+  changed_milestone: 'A milestone whose description has changed in the plan',
   stale_price: 'The price no longer matches the plan',
   closed_risk: 'A risk shown that has since been closed or rejected',
-  risk_changed: 'The risks ticked to show have changed',
+  risk_changed: 'A risk shown, or ticked to show, has changed in the risk register',
 }
 
 export function ruleText(rule: string): string {
@@ -153,6 +155,9 @@ export function buttonsFor(
 export function approvalText(proposal: Proposal): string | null {
   if (proposal.approved_version === null) return null
   if (proposal.approval_current) return `Approved as version ${proposal.approved_version}.`
+  if (proposal.status === 'withdrawn') {
+    return `The sponsor approved version ${proposal.approved_version}, but the proposal was withdrawn.`
+  }
   return (
     `The sponsor approved version ${proposal.approved_version}, an earlier version: ` +
     'the proposal has changed since.'
@@ -184,6 +189,19 @@ export function approvedCopy(versions: ProposalVersion[]): ProposalVersion | nul
   return approved.reduce<ProposalVersion | null>(
     (best, v) => (best === null || v.number > best.number ? v : best),
     null,
+  )
+}
+
+// Why the approved copy may no longer be sent, or null while it is current. Only a proposal that
+// is approved, sent or answered with no edit since its approval is current.
+export function outOfDateText(proposal: Proposal): string | null {
+  if (proposal.approved_version === null || proposal.approval_current) return null
+  if (proposal.status === 'withdrawn') {
+    return 'This proposal was withdrawn. This approved copy is out of date and must not be sent.'
+  }
+  return (
+    'The proposal has been edited since this copy was approved. This approved copy is out of ' +
+    'date and must not be sent.'
   )
 }
 

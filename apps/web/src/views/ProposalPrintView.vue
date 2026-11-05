@@ -3,14 +3,23 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { label } from '../lib/projects'
-import { approvedCopy, proposalApi, type ProposalVersion, TEXT_SECTIONS } from '../lib/proposals'
+import {
+  approvedCopy,
+  outOfDateText,
+  proposalApi,
+  type ProposalVersion,
+  TEXT_SECTIONS,
+} from '../lib/proposals'
 
 // A print view of the approved version of a project's proposal (item 5.2): the frozen copy the
-// sponsor approved, as the client sees it. Printing is done by the browser; nothing is sent.
+// sponsor approved, as the client sees it. Printing is done by the browser; nothing is sent. It
+// reads every page of the versions, and warns at the top when the approved copy is no longer
+// current (the proposal was edited since, or withdrawn), so it must not be sent.
 const route = useRoute()
 const projectId = computed(() => Number(route.params.id))
 
 const copy = ref<ProposalVersion | null>(null)
+const outOfDate = ref<string | null>(null)
 const loaded = ref(false)
 const error = ref('')
 
@@ -18,8 +27,11 @@ async function load(id: number) {
   loaded.value = false
   error.value = ''
   copy.value = null
+  outOfDate.value = null
   try {
-    copy.value = approvedCopy(await proposalApi.versions(id))
+    const [proposal, versions] = await Promise.all([proposalApi.get(id), proposalApi.versions(id)])
+    copy.value = approvedCopy(versions)
+    outOfDate.value = outOfDateText(proposal)
   } catch (failure) {
     error.value = (failure as Error).message
   }
@@ -49,6 +61,17 @@ function print() {
       No version of this proposal has been approved yet.
     </p>
     <article v-else-if="copy">
+      <v-alert
+        v-if="outOfDate"
+        type="warning"
+        variant="elevated"
+        prominent
+        class="mb-4"
+        title="Out of date: do not send"
+        data-test="proposal-print-out-of-date"
+      >
+        {{ outOfDate }}
+      </v-alert>
       <h1 class="text-h4 text-primary mb-1" data-test="proposal-print-title">
         Proposal: {{ copy.content.project_name }}
       </h1>
