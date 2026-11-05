@@ -7,13 +7,14 @@
 - `check`: rules in code, no model. A pure function of the proposal's values and the plan's facts
   that returns one `Flag` for each problem, naming the rule, the section and the text:
 
-  - `stray_money`: a money figure in a text section that is neither the total nor an estimate
-    line. A money figure is an amount with a currency sign (`$`, `£`, `€`), a thousands separator
-    or exactly 2 decimal places. It matches when its value is exactly equal at 2 decimal places,
-    with or without the sign, separators or a trailing `.00`, so `$12,500`, `12,500.00` and
-    `$12500` all match `12500.00`. A shorthand figure (`$40k`, `40k`, `£1.2m`, `$2 million`) is
-    never an exact amount, so it is always flagged. A bare whole number with none of these marks
-    (`3 workshops`, `12500`) is not read as money, nor is a percentage.
+  - `stray_money`: a money figure in a text section that is neither the plan's current total nor one
+    of its current estimate lines (the plan's, not the proposal's copy, so a figure the plan has
+    since dropped is flagged). A money figure is an amount with a currency sign (`$`, `£`, `€`), a
+    thousands separator or exactly 2 decimal places. It matches when its value is exactly equal at 2
+    decimal places, with or without the sign, separators or a trailing `.00`, so `$12,500`,
+    `12,500.00` and `$12500` all match `12500.00`. A shorthand figure (`$40k`, `40k`, `£1.2m`, `$2
+    million`) is never an exact amount, so it is always flagged. A bare whole number with none of
+    these marks (`3 workshops`, `12500`) is not read as money, nor is a percentage.
   - `stray_date`: a date in a text section that isn't a milestone date. Only three forms are read:
     ISO `2027-01-15`, `15 January 2027` and `January 15, 2027` (month names may be short, as
     `Jan`, and a day may have an ordinal, as `15th`). Other forms are not read, so they are never
@@ -25,6 +26,10 @@
     `changed_deliverable` and `changed_milestone`: one in both whose description the plan has
     since changed.
   - `stale_price`: the proposal's price is not the plan's total.
+  - `changed_estimate_line`, `missing_estimate_line` and `removed_estimate_line`: the proposal's
+    copied estimate lines compared with the plan's line by line, in order (description, category
+    and amount). A line that differs, one the plan has added, or one the plan no longer has is
+    flagged, even when the total is unchanged.
   - `closed_risk`: a risk shown that has since been closed or rejected. `risk_changed`: a risk
     shown that is no longer ticked, one ticked that the proposal doesn't show yet, or one shown
     whose title or response (the response or its plan) has changed in the risk register.
@@ -37,6 +42,7 @@ import re
 from dataclasses import asdict, dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from itertools import zip_longest
 from typing import Any
 
 from sqlalchemy import select
@@ -236,12 +242,27 @@ def _without_dates(text: str) -> str:
     return text
 
 
+def _line_text(line: dict[str, Any]) -> str:
+    return f"{line['description']} ({line['category']}) {_money(Decimal(line['amount']))}"
+
+
+def _same_line(shown: dict[str, Any], planned: dict[str, Any]) -> bool:
+    return (
+        shown["description"] == planned["description"]
+        and shown["category"] == planned["category"]
+        and Decimal(shown["amount"]) == Decimal(planned["amount"])
+    )
+
+
 def check(values: dict[str, Any], facts: PlanFacts) -> list[Flag]:
     """The checker's flags for a proposal's `values` (its text sections and what it copied from
     the plan) against the plan's `facts`, in a fixed order."""
     flags: list[Flag] = []
     price = Decimal(values["price"]).quantize(CENT)
-    allowed_money = {price} | {Decimal(line["amount"]) for line in values["estimate_lines"]}
+    # The figures the text may quote are the plan's current ones, never the proposal's copy.
+    allowed_money = {Decimal(facts.total).quantize(CENT)} | {
+        Decimal(line["amount"]).quantize(CENT) for line in facts.estimate_lines
+    }
     allowed_dates = {date.fromisoformat(m["target_date"]) for m in values["milestones"]}
     for section in TEXT_SECTIONS:
         text = values.get(section) or ""
@@ -261,6 +282,36 @@ def check(values: dict[str, Any], facts: PlanFacts) -> list[Flag]:
                 f"{_money(facts.total)}",
             )
         )
+
+    for number, (shown, planned) in enumerate(
+        zip_longest(values["estimate_lines"], facts.estimate_lines), start=1
+    ):
+        if shown is None:
+            flags.append(
+                Flag(
+                    "missing_estimate_line",
+                    SECTION_PRICE,
+                    f"Estimate line {number}: {_line_text(planned)} is in the plan, "
+                    "not the proposal",
+                )
+            )
+        elif planned is None:
+            flags.append(
+                Flag(
+                    "removed_estimate_line",
+                    SECTION_PRICE,
+                    f"Estimate line {number}: {_line_text(shown)} is no longer in the plan",
+                )
+            )
+        elif not _same_line(shown, planned):
+            flags.append(
+                Flag(
+                    "changed_estimate_line",
+                    SECTION_PRICE,
+                    f"Estimate line {number}: {_line_text(shown)} is now "
+                    f"{_line_text(planned)} in the plan",
+                )
+            )
 
     shown_deliverables = {d["name"]: d for d in values["deliverables"]}
     planned_deliverables = {d["name"]: d for d in facts.deliverables}

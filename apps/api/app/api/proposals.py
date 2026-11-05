@@ -17,10 +17,11 @@ A project with a client has at most one proposal; a project with no client has n
   are the sponsor's decision on a submitted proposal. Returning sends it back to draft. Nobody
   decides on a copy they submitted themselves (`app.authz.not_own_submission`, 403).
 - `POST .../sent` (`project:write`) records that a person sent the approved copy: to whom, on what
-  date, by what means. Nothing is sent from here. `POST .../answer` (`project:write`) records the
-  client's answer (accepted or declined), the day it came and a note. The steps go in order:
-  sent only from `approved`, the answer only from `sent`; anything else is a 409, audited.
-  Admin has no `project:write`, so admin can do neither.
+  date, by what means. Nothing is sent from here. Like submit, it is refused (409, with the flags)
+  while the checker has any flag open, for example after the plan changed. `POST .../answer`
+  (`project:write`) records the client's answer (accepted or declined), the day it came and a note.
+  The steps go in order: sent only from `approved`, the answer only from `sent`; anything else is a
+  409, audited. Admin has no `project:write`, so admin can do neither.
 - `POST .../withdraw` (`project:write`, a reason of at least 20 characters) withdraws a proposal
   from draft, submitted, approved or sent. An accepted or declined one can't be withdrawn, and a
   withdrawn one is already final (409, audited).
@@ -84,6 +85,7 @@ EXISTS = "this project already has a proposal"
 STALE = "This proposal has changed since you loaded it. Reload and try again."
 FINAL = "a proposal that has been sent, answered or withdrawn can't change"
 HAS_FLAGS = "the proposal can't be submitted while the checker has flags open"
+SENT_HAS_FLAGS = "the proposal can't be marked sent while the checker has flags open"
 NOT_DRAFT = "only a draft proposal can be submitted"
 NOT_SUBMITTED = "only a submitted proposal can be approved or returned"
 OWN = "you cannot decide on your own submission"
@@ -468,22 +470,29 @@ def _move(
     return _proposal_out(db, proposal)
 
 
-@router.post("/{project_id}/proposal/submit", response_model=ProposalOut)
-def submit_proposal(project_id: int, body: ProposalWrite, user: Submitter, db: Db) -> ProposalOut:
-    proposal = _for_decision(db, project_id, body.version, user, "submit", ("draft",))
-    flags = check(values_of(proposal), plan_facts(db, _plan(db, project_id)))
+def _refuse_open_flags(
+    db: Session, proposal: ProjectProposal, user: User, action: str, message: str
+) -> None:
+    """Run the checker; any open flag refuses the step (409, with the flags), recorded."""
+    flags = check(values_of(proposal), plan_facts(db, _plan(db, proposal.project_id)))
     if flags:
         found = [flag.as_dict() for flag in flags]
         raise _refuse(
             db,
             proposal,
             user,
-            action="submit",
+            action=action,
             refusal="flags_open",
             code=409,
-            detail={"message": HAS_FLAGS, "flags": found},
+            detail={"message": message, "flags": found},
             flags=found,
         )
+
+
+@router.post("/{project_id}/proposal/submit", response_model=ProposalOut)
+def submit_proposal(project_id: int, body: ProposalWrite, user: Submitter, db: Db) -> ProposalOut:
+    proposal = _for_decision(db, project_id, body.version, user, "submit", ("draft",))
+    _refuse_open_flags(db, proposal, user, "submit", HAS_FLAGS)
     project, client = _client_project(db, project_id)
     number = (
         db.scalar(
@@ -538,6 +547,7 @@ def return_proposal(project_id: int, body: ProposalDecision, user: Returner, db:
 @router.post("/{project_id}/proposal/sent", response_model=ProposalOut)
 def mark_sent(project_id: int, body: ProposalSent, user: SentRecorder, db: Db) -> ProposalOut:
     proposal = _for_decision(db, project_id, body.version, user, "sent", ("approved",))
+    _refuse_open_flags(db, proposal, user, "sent", SENT_HAS_FLAGS)
     latest = _latest_version(db, proposal.id)
     event = ProposalEvent(
         proposal_id=proposal.id,

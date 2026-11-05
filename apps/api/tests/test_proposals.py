@@ -13,7 +13,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.proposals import EXISTS, FINAL, HAS_FLAGS, NO_CLIENT, OWN, STALE
+from app.api.proposals import (
+    EXISTS,
+    FINAL,
+    HAS_FLAGS,
+    NO_CLIENT,
+    OWN,
+    SENT_HAS_FLAGS,
+    STALE,
+)
 from app.db import engine
 from app.main import app
 from app.models import (
@@ -295,6 +303,52 @@ def test_missing_milestone_and_a_moved_date():
     ]
 
 
+LINE = {"description": "Team", "category": "people", "amount": "1000.00"}
+
+
+@pytest.mark.parametrize(
+    "change", [{"description": "Analysts"}, {"category": "other"}, {"amount": "900.00"}]
+)
+def test_an_estimate_line_changed_in_the_plan_is_flagged_even_with_the_same_total(change):
+    facts = _facts(estimate_lines=[{**LINE, **change}])
+    flags = check(_values(), facts)
+    assert [(f.rule, f.section) for f in flags] == [("changed_estimate_line", "price")]
+    assert flags[0].text.startswith("Estimate line 1: Team (people) 1000.00 is now")
+
+
+def test_an_estimate_line_added_or_dropped_in_the_plan_is_flagged():
+    extra = {"description": "Travel", "category": "other", "amount": "100.00"}
+    flags = check(_values(), _facts(estimate_lines=[LINE, extra]))
+    assert [(f.rule, f.section, f.text) for f in flags] == [
+        (
+            "missing_estimate_line",
+            "price",
+            "Estimate line 2: Travel (other) 100.00 is in the plan, not the proposal",
+        )
+    ]
+    flags = check(_values(estimate_lines=[LINE, extra]), _facts())
+    assert [(f.rule, f.text) for f in flags] == [
+        ("removed_estimate_line", "Estimate line 2: Travel (other) 100.00 is no longer in the plan")
+    ]
+
+
+def test_stray_money_reads_the_plans_figures_not_the_proposals_copy():
+    # The plan's line is now 900.00: the text may quote it, and the copy's 1000.00 is stray.
+    facts = _facts(estimate_lines=[{**LINE, "amount": "900.00"}])
+    flags = check(_values(summary="The team costs $900.00, not $1,000.00."), facts)
+    assert [(f.rule, f.text) for f in flags if f.rule == "stray_money"] == [
+        ("stray_money", "$1,000.00")
+    ]
+    assert [f.rule for f in flags] == ["stray_money", "changed_estimate_line"]
+    # The same holds for the total: the plan's new total may be quoted, the copy's may not.
+    facts = _facts(total=Decimal("2000.00"))
+    flags = check(_values(summary="In all $2,000.00, once $1,650.00."), facts)
+    assert [(f.rule, f.text) for f in flags] == [
+        ("stray_money", "$1,650.00"),
+        ("stale_price", flags[1].text),
+    ]
+
+
 def test_stale_price():
     flags = check(_values(), _facts(total=Decimal("2000.00")))
     assert [(f.rule, f.section) for f in flags] == [("stale_price", "price")]
@@ -412,7 +466,7 @@ def test_a_plan_change_flags_the_proposal_until_it_is_refreshed(web, db, project
     db.commit()
 
     body = _get(web, project)
-    assert set(_rules(body)) == {"stale_price", "missing_deliverable"}
+    assert set(_rules(body)) == {"stale_price", "missing_estimate_line", "missing_deliverable"}
     assert body["plan_changed"] is True
 
     refreshed = _post(web, project, "/refresh").json()
@@ -432,6 +486,24 @@ def test_every_save_runs_the_checker(web, project):
     assert response.json()["flags"] == [
         {"rule": "stray_date", "section": "terms", "text": "2027-02-01"}
     ]
+
+
+def test_an_estimate_line_change_with_the_same_total_flags_until_refreshed(web, db, project):
+    proposal = _create(web, project)
+    plan = _plan(db, project)
+    first, second = db.scalars(
+        select(PlanEstimateLine)
+        .where(PlanEstimateLine.plan_id == plan.id)
+        .order_by(PlanEstimateLine.id)
+    ).all()[:2]
+    # Move 100.00 from one line to the other: the total doesn't change.
+    first.amount, second.amount = first.amount - 100, second.amount + 100
+    db.commit()
+    body = _get(web, project)
+    assert body["price"] == proposal["price"]
+    assert _rules(body) == ["changed_estimate_line", "changed_estimate_line"]
+    assert _post(web, project, "/submit").status_code == 409
+    assert _post(web, project, "/refresh").json()["flags"] == []
 
 
 def test_a_description_change_in_the_plan_flags_until_refreshed(web, db, project):
@@ -799,6 +871,24 @@ def test_sent_needs_an_approved_proposal_and_a_past_date(web, db, sign_in, proje
         _post(web, project, "/sent", sent_to="Dana", sent_on=future, means="Post").status_code
         == 422
     )
+
+
+def test_sent_with_an_open_flag_is_a_409_naming_the_flags(web, db, sign_in, project, pm):
+    _approved(web, db, sign_in, project, pm)
+    plan = _plan(db, project)
+    db.add(PlanDeliverable(plan_id=plan.id, name="Handbook"))
+    db.commit()
+    response = _post(web, project, "/sent", **SENT)
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "message": SENT_HAS_FLAGS,
+        "flags": [{"rule": "missing_deliverable", "section": "deliverables", "text": "Handbook"}],
+    }
+    assert _get(web, project)["status"] == "approved"
+    refused = _refusal(db, "sent", "flags_open")
+    assert refused.action_taken["flags"] == response.json()["detail"]["flags"]
+    db.expire_all()
+    assert db.scalar(select(ProposalEvent).where(ProposalEvent.kind == "sent")) is None
 
 
 @pytest.mark.parametrize("role", ["sponsor", "auditor", "ethics_reviewer", "admin"])
