@@ -46,6 +46,7 @@ from app.models import (
     Project,
     ProjectBrief,
     ProjectPlan,
+    ProjectProposal,
     Risk,
     User,
 )
@@ -327,21 +328,23 @@ def _upsert[T: (Client, Project)](db: Session, model: type[T], values: dict[str,
 
 
 def clear_seeded(db: Session) -> tuple[int, int]:
-    """Delete seeded risks, then seeded projects that no person's risk is on, then seeded clients
-    that no remaining project uses. A seeded project or client that a person's row refers to is
-    kept (it is reset to its seed values on the next seed). A deleted project's plan (which the
-    plans migration gave every project) goes with it. Their audit rows stay. Returns
+    """Delete seeded risks, then seeded projects that no person's risk or proposal is on, then
+    seeded clients that no remaining project uses. A seeded project or client that a person's row
+    refers to is kept (it is reset to its seed values on the next seed). A deleted project's plan
+    (which the plans migration gave every project) goes with it. Their audit rows stay. Returns
     (clients, projects) deleted. The caller commits."""
     db.execute(delete(Risk).where(Risk.seed_key.is_not(None)))
     has_risk = exists().where(Risk.project_id == Project.id)
-    doomed = select(Project.id).where(Project.seed_key.is_not(None), ~has_risk)
+    has_proposal = exists().where(ProjectProposal.project_id == Project.id)
+    kept = has_risk | has_proposal
+    doomed = select(Project.id).where(Project.seed_key.is_not(None), ~kept)
     # Read the ids first: MySQL can't delete from a table that its own subquery reads.
     plans = list(db.scalars(select(ProjectPlan.id).where(ProjectPlan.project_id.in_(doomed))))
     if plans:
         for model in (PlanDeliverable, PlanEstimateLine, PlanMilestone):
             db.execute(delete(model).where(model.plan_id.in_(plans)))
         db.execute(delete(ProjectPlan).where(ProjectPlan.id.in_(plans)))
-    projects = db.execute(delete(Project).where(Project.seed_key.is_not(None), ~has_risk)).rowcount
+    projects = db.execute(delete(Project).where(Project.seed_key.is_not(None), ~kept)).rowcount
     in_use = exists().where(Project.client_id == Client.id)
     clients = db.execute(delete(Client).where(Client.seed_key.is_not(None), ~in_use)).rowcount
     return clients, projects
@@ -361,6 +364,7 @@ def _seed_risk(db: Session, policy: RiskPolicy, values: dict[str, Any], project_
     risk.status = "open"
     risk.source = "person"
     risk.needs_judgement = False
+    risk.show_in_proposal = False
     risk.owner_user_id = None
     risk.created_at = SEEDED_AT
     apply_score(risk, policy)
