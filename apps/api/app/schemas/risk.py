@@ -49,6 +49,7 @@ class RiskFields(BaseModel):
     response_plan: LongText
     owner_user_id: int | None = None
     needs_judgement: bool = False
+    show_in_proposal: bool = False
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
@@ -87,6 +88,7 @@ class RiskUpdate(BaseModel):
     response_plan: LongText | None = None
     owner_user_id: int | None = None
     needs_judgement: bool | None = None
+    show_in_proposal: bool | None = None
     status: EditableStatus | None = None
 
 
@@ -137,6 +139,7 @@ class RiskOut(BaseModel):
     owner_user_id: int | None
     status: str
     needs_judgement: bool
+    show_in_proposal: bool
     source: str
     escalated_to: str | None
     escalated_band: str | None

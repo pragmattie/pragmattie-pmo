@@ -58,6 +58,7 @@ SNAPSHOT_FIELDS = (
     "owner_user_id",
     "status",
     "needs_judgement",
+    "show_in_proposal",
     "source",
     "escalated_to",
     "escalated_band",

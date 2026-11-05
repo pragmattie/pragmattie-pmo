@@ -93,6 +93,9 @@ class Risk(Base):
     )
     status: Mapped[str] = mapped_column(String(16))
     needs_judgement: Mapped[bool] = mapped_column(default=False)
+    # Ticked by the project manager to show the risk (its title and response) in the client's
+    # proposal (item 5.2). Off by default.
+    show_in_proposal: Mapped[bool] = mapped_column(default=False)
     source: Mapped[str] = mapped_column(String(16))
     # The role an open risk is escalated to, and the band that sent it there; empty once that
     # role acts (accepts it) or the risk leaves open. See `app.risks.settle_escalation`.

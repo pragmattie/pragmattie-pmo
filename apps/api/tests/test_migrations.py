@@ -217,8 +217,60 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
                     f"SELECT sql FROM sqlite_master WHERE name = '{table}'"
                 ).scalar_one()
                 assert "AUTOINCREMENT" in table_sql, table
+        # 0017: the proposal, its frozen versions and events, and the risk's tick.
+        assert {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("project_proposals")
+        } == {
+            "fk_project_proposals_project": "projects",
+            "fk_project_proposals_created_by": "users",
+        }
+        assert {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("project_proposals")
+        } == {"uq_project_proposals_project": ["project_id"]}
+        assert {ck["name"] for ck in inspector.get_check_constraints("project_proposals")} == {
+            "ck_project_proposals_status"
+        }
+        assert {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("proposal_versions")
+        } == {
+            "fk_proposal_versions_proposal": "project_proposals",
+            "fk_proposal_versions_submitted_by": "users",
+        }
+        assert {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("proposal_versions")
+        } == {"uq_proposal_versions_number": ["proposal_id", "number"]}
+        assert {
+            fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("proposal_events")
+        } == {
+            "fk_proposal_events_proposal": "project_proposals",
+            "fk_proposal_events_version": "proposal_versions",
+            "fk_proposal_events_actor": "users",
+        }
+        assert {ck["name"] for ck in inspector.get_check_constraints("proposal_events")} == {
+            "ck_proposal_events_kind",
+            "ck_proposal_events_answer",
+        }
+        risk_columns = {c["name"]: c for c in inspector.get_columns("risks")}
+        assert risk_columns["show_in_proposal"]["nullable"] is False
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0016")
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert not set(inspector.get_table_names()) & {
+            "project_proposals",
+            "proposal_versions",
+            "proposal_events",
+        }
+        assert "show_in_proposal" not in {c["name"] for c in inspector.get_columns("risks")}
+        with create_engine(get_settings().database_url).connect() as conn:
+            risks_sql = conn.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE name = 'risks'"
+            ).scalar_one()
+            assert "AUTOINCREMENT" in risks_sql
         command.downgrade(config, "0015")
         tables = set(inspect(create_engine(get_settings().database_url)).get_table_names())
         assert not tables & {

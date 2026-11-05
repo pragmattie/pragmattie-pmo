@@ -125,8 +125,8 @@ features:
     notes: People write scope, milestones, estimate and reporting; the total is computed, never typed; each change is one audit row.
   - id: P5-client-proposals
     title: Client proposal workflow
-    rules: [R1]
-    notes: An agent may draft; a person commits the price and sends the document.
+    rules: [R1, R5, R9, R12]
+    notes: Price, dates and deliverables come from the plan by code; a checker blocks submit and sent; the sponsor approves; a person records sending; no risk score shown; all audited.
   # --- P6 Delivery and closure
   - id: P6-status-reports
     title: Status reports

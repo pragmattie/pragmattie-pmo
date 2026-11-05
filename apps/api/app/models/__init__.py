@@ -14,6 +14,7 @@ from app.models.intake import (
 from app.models.plan import PlanDeliverable, PlanEstimateLine, PlanMilestone, ProjectPlan
 from app.models.planning import ProjectAssumption, ProjectBrief, ProjectStakeholder
 from app.models.portfolio import Client, Project
+from app.models.proposal import ProjectProposal, ProposalEvent, ProposalVersion
 from app.models.risk import Risk
 
 __all__ = [
@@ -29,8 +30,11 @@ __all__ = [
     "ProjectAssumption",
     "ProjectBrief",
     "ProjectPlan",
+    "ProjectProposal",
     "ProjectRequest",
     "ProjectStakeholder",
+    "ProposalEvent",
+    "ProposalVersion",
     "ReadinessAction",
     "ReadinessCheck",
     "RevokedToken",

@@ -26,6 +26,8 @@ export interface Risk {
   owner_user_id: number | null
   status: Status
   needs_judgement: boolean
+  // Ticked to show the risk (its title and response, never its score) in the client's proposal.
+  show_in_proposal: boolean
   source: string
   // The role an open risk is escalated to and the band that sent it there; empty once it is
   // accepted, rejected or closed.
@@ -108,6 +110,7 @@ export interface RiskInput {
   response_plan: string
   owner_user_id: number | null
   needs_judgement: boolean
+  show_in_proposal: boolean
 }
 
 export interface Filters {
@@ -340,6 +343,12 @@ async function apiError(response: Response): Promise<ApiError> {
     }
     if (detail && typeof detail.message === 'string') {
       const missing = Array.isArray(detail.missing) ? detail.missing.map(String) : []
+      // The proposal checker's open flags (submitting a proposal): each one's section and text.
+      if (Array.isArray(detail.flags)) {
+        for (const item of detail.flags as { section?: string; text?: string }[]) {
+          missing.push(`${item.section}: ${item.text}`)
+        }
+      }
       // A gate's unmet criteria (passing the approval gate): each one's text and why.
       if (Array.isArray(detail.unmet)) {
         for (const item of detail.unmet as { text?: string; detail?: string | null }[]) {

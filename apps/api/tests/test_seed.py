@@ -293,6 +293,31 @@ def test_reset_also_removes_the_plans_of_the_projects_it_deletes(db):
         assert db.scalar(select(func.count()).select_from(model)) == 0, model.__name__
 
 
+def test_reset_keeps_a_seeded_project_that_a_persons_proposal_is_on(db):
+    """A proposal (item 5.2) is a person's row: the reset keeps its project and plan."""
+    from app.models import ProjectPlan, ProjectProposal, User
+    from app.proposals import plan_facts, refresh_from_plan
+
+    seed(db)
+    db.flush()
+    person = User(email="pm@pmo.example", display_name="PM", password_hash="x", role="sponsor")
+    project = db.scalars(
+        select(Project).where(Project.client_id.is_not(None)).order_by(Project.id)
+    ).first()
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    db.add(person)
+    db.flush()
+    proposal = ProjectProposal(project_id=project.id, status="draft", created_by=person.id)
+    refresh_from_plan(proposal, plan_facts(db, plan))
+    db.add(proposal)
+    db.commit()
+
+    clear_seeded(db)
+    db.commit()
+    assert db.scalars(select(Project.id)).all() == [project.id]
+    assert db.get(ProjectPlan, plan.id) is not None
+
+
 def test_reset_keeps_a_seeded_client_that_a_persons_project_uses(db):
     seed(db)
     db.commit()

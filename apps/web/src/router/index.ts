@@ -10,6 +10,7 @@ import IntakeView from '../views/IntakeView.vue'
 import LoginView from '../views/LoginView.vue'
 import PlaceholderView from '../views/PlaceholderView.vue'
 import ProjectView from '../views/ProjectView.vue'
+import ProposalPrintView from '../views/ProposalPrintView.vue'
 import RequestView from '../views/RequestView.vue'
 import RisksView from '../views/RisksView.vue'
 
@@ -45,6 +46,13 @@ export function makeRouter(memory = false) {
         path: '/projects/:id(\\d+)',
         name: 'project',
         component: ProjectView,
+        meta: { action: 'project:read' },
+      },
+      // A print view of the approved version of a project's proposal.
+      {
+        path: '/projects/:id(\\d+)/proposal/print',
+        name: 'proposal-print',
+        component: ProposalPrintView,
         meta: { action: 'project:read' },
       },
     ],
