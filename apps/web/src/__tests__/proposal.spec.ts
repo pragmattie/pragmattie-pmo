@@ -336,7 +336,7 @@ describe('the proposal helpers', () => {
       }),
     )
     expect(text).toContain('drafted: Summary, Terms.')
-    expect(text).toContain('Kept as a person wrote or confirmed them: Scope in.')
+    expect(text).toContain('Kept: Scope in (a person has edited or confirmed it).')
     expect(text).toContain('Code removed 2 figures, dates or tokens')
     expect(draftText(draftResult({ mode: 'shadow', replaced: [] }))).toContain('nothing was saved')
   })

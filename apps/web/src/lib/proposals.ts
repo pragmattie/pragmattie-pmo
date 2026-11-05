@@ -167,7 +167,8 @@ export function draftText(result: DraftResult): string {
     parts.push('The agent changed no section.')
   }
   if (result.kept.length) {
-    parts.push(`Kept as a person wrote or confirmed them: ${titles(result.kept.map((k) => k.section))}.`)
+    const kept = result.kept.map((k) => `${titles([k.section])} (${k.reason})`)
+    parts.push(`Kept: ${kept.join('; ')}.`)
   }
   if (result.removed.length) {
     const n = result.removed.length

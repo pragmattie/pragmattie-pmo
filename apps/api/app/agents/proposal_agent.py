@@ -85,6 +85,7 @@ PROMPT_VERSION = "proposal-agent-2026-11-05.1"
 ASSUMPTIONS_MAX = 30
 NOT_DRAFT = "the proposal is no longer a draft"
 PERSON_OWNS = "a person has edited or confirmed it"
+FROM_PLAN = "it was copied from the plan; clear it to let the agent draft it"
 
 _SECTION = {
     "type": ["string", "null"],
@@ -373,7 +374,9 @@ def sort_sections(
         if may_replace(proposal, name):
             replaced.append(name)
         else:
-            kept.append({"section": name, "reason": PERSON_OWNS})
+            # A non-empty section with no source was copied from the plan when it was created.
+            owned = (proposal.section_sources or {}).get(name)
+            kept.append({"section": name, "reason": PERSON_OWNS if owned else FROM_PLAN})
     return replaced, kept
 
 

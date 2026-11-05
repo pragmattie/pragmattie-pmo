@@ -529,8 +529,10 @@ def test_a_redraft_replaces_only_empty_and_unreviewed_sections(
     body = _draft(web, project).json()
     assert body["replaced"] == ["terms"]
     assert body["kept"] == [
-        {"section": name, "reason": proposal_agent.PERSON_OWNS}
-        for name in ("summary", "scope_in", "scope_out", "assumptions")
+        {"section": "summary", "reason": proposal_agent.PERSON_OWNS},
+        {"section": "scope_in", "reason": proposal_agent.FROM_PLAN},
+        {"section": "scope_out", "reason": proposal_agent.FROM_PLAN},
+        {"section": "assumptions", "reason": proposal_agent.PERSON_OWNS},
     ]
     after = _get(web, project)
     assert after["summary"] == "Mine."
