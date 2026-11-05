@@ -9,9 +9,16 @@
 
   - `stray_money`: a money figure in a text section that is neither the total nor an estimate
     line. A money figure is an amount with a currency sign (`$`, `£`, `€`), a thousands separator
-    or exactly 2 decimal places; it is compared by value, so `$12,500` matches `12500.00`.
-  - `stray_date`: a date in a text section that isn't a milestone date. Dates are read as
-    `2027-03-01`, `1 March 2027` or `March 1, 2027` (month names may be short).
+    or exactly 2 decimal places. It matches when its value is exactly equal at 2 decimal places,
+    with or without the sign, separators or a trailing `.00`, so `$12,500`, `12,500.00` and
+    `$12500` all match `12500.00`. A shorthand figure (`$40k`, `40k`, `£1.2m`, `$2 million`) is
+    never an exact amount, so it is always flagged. A bare whole number with none of these marks
+    (`3 workshops`, `12500`) is not read as money, nor is a percentage.
+  - `stray_date`: a date in a text section that isn't a milestone date. Only three forms are read:
+    ISO `2027-01-15`, `15 January 2027` and `January 15, 2027` (month names may be short, as
+    `Jan`, and a day may have an ordinal, as `15th`). Other forms are not read, so they are never
+    flagged: numeric dates such as `15/01/2027` or `01/15/2027`, a month without a day
+    (`January 2027`), a day without a year, and words such as `mid-January` or `Q1 2027`.
   - `missing_deliverable` and `missing_milestone`: one in the plan that the proposal lacks (a
     milestone counts as missing when its date moved). `removed_deliverable` and
     `removed_milestone`: one in the proposal that the plan no longer has.
@@ -53,7 +60,9 @@ _MONEY = re.compile(
     r"(?<![\w.,])"
     r"(?:(?P<sign>[$£€])\s?)?"
     r"(?P<number>\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
-    r"(?![\w.,]\d|\w|\s?%)"
+    r"(?P<scale>k|m|bn|\s(?:thousand|million|billion))?"
+    r"(?![\w.,]\d|\w|\s?%)",
+    re.I,
 )
 _MONTHS = {
     name: number
@@ -177,16 +186,22 @@ def refresh_from_plan(proposal: ProjectProposal, facts: PlanFacts) -> None:
     proposal.plan_version_seen = facts.version
 
 
-def _amounts(text: str) -> list[tuple[str, Decimal]]:
-    """Each money figure in `text`, as written and as a value."""
-    found = []
+def _amounts(text: str) -> list[tuple[str, Decimal | None]]:
+    """Each money figure in `text`, as written and as a value at 2 decimal places (None for a
+    shorthand figure such as `$40k`, which is never an exact amount)."""
+    found: list[tuple[str, Decimal | None]] = []
     for match in _MONEY.finditer(text):
-        number = match.group("number")
-        is_money = match.group("sign") or "," in number or re.search(r"\.\d{2}$", number)
-        if not is_money:
+        number, sign, scale = match.group("number"), match.group("sign"), match.group("scale")
+        written = match.group(0).strip()
+        if scale:
+            # `$40k`, `40k` or `$2 million`; a bare `5m` or `3 million` may not be money.
+            if sign or scale.lower() == "k":
+                found.append((written, None))
+            continue
+        if not (sign or "," in number or re.search(r"\.\d{2}$", number)):
             continue
         try:
-            found.append((match.group(0).strip(), Decimal(number.replace(",", ""))))
+            found.append((written, Decimal(number.replace(",", "")).quantize(CENT)))
         except InvalidOperation:  # pragma: no cover - the pattern only matches numbers
             continue
     return found

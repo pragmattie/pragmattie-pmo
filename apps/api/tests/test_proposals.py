@@ -25,6 +25,7 @@ from app.models import (
     PlanMilestone,
     Project,
     ProjectPlan,
+    ProjectProposal,
     ProposalEvent,
     Risk,
     User,
@@ -219,6 +220,55 @@ def test_stray_date_names_the_section_and_the_date():
     ]
 
 
+@pytest.mark.parametrize(
+    "written", ["$1,650.00", "$1,650", "$1650", "1,650.00", "1650.00", "1,650", "£1,650", "€1650"]
+)
+def test_the_total_matches_with_or_without_sign_separators_or_cents(written):
+    assert check(_values(summary=f"The price is {written}."), _facts()) == []
+
+
+@pytest.mark.parametrize("written", ["$1,650.01", "$1,649", "1,600.00", "$16.50"])
+def test_an_amount_matches_only_exactly_at_2_decimal_places(written):
+    flags = check(_values(summary=f"The price is {written}."), _facts())
+    assert [f.as_dict() for f in flags] == [
+        {"rule": "stray_money", "section": "summary", "text": written}
+    ]
+
+
+@pytest.mark.parametrize("written", ["$40k", "40k", "$1.65k", "£1.2m", "$2bn", "$2 million"])
+def test_a_shorthand_money_figure_is_always_flagged(written):
+    flags = check(_values(terms=f"A budget of {written} for the work."), _facts())
+    assert [f.as_dict() for f in flags] == [
+        {"rule": "stray_money", "section": "terms", "text": written}
+    ]
+
+
+@pytest.mark.parametrize("text", ["3 workshops over 12 weeks", "50% on signing", "3 months", "5m"])
+def test_numbers_that_are_not_money_are_not_flagged(text):
+    assert check(_values(terms=text), _facts()) == []
+
+
+@pytest.mark.parametrize(
+    "written",
+    ["2027-01-15", "15 January 2027", "January 15, 2027", "15th Jan 2027", "Jan 15 2027"],
+)
+def test_each_date_form_is_read(written):
+    flags = check(_values(summary=f"Kick-off on {written}."), _facts())
+    assert [(f.rule, f.text) for f in flags] == [("stray_date", written)]
+
+
+@pytest.mark.parametrize("written", ["2027-03-01", "1 March 2027", "March 1, 2027"])
+def test_each_date_form_matches_a_milestone_date(written):
+    assert check(_values(summary=f"The pilot ends {written}."), _facts()) == []
+
+
+@pytest.mark.parametrize(
+    "written", ["15/01/2027", "01/15/2027", "January 2027", "15 January", "mid-January", "Q1 2027"]
+)
+def test_other_date_forms_are_not_read(written):
+    assert check(_values(summary=f"Kick-off in {written}."), _facts()) == []
+
+
 def test_a_date_is_not_read_as_money():
     assert check(_values(summary="Pilot ends 2027-03-01"), _facts()) == []
 
@@ -376,8 +426,15 @@ def test_only_ticked_risks_appear_and_never_their_score(web, db, project):
     ]
     assert _post(web, project, "/submit").status_code == 200
     versions = web.get(_url(project, "/versions")).json()["items"]
+    assert set(versions[0]["content"]["risks"][0]) == {
+        "risk_id",
+        "title",
+        "response",
+        "response_plan",
+    }
     for text in (str(body), str(versions)):
-        assert "score" not in text and "band" not in text and "High" not in text
+        for hidden in ("score", "band", "High", "probability", "impact"):
+            assert hidden not in text
         assert "Internal staffing" not in text
 
 
@@ -603,10 +660,102 @@ def test_without_a_session_nothing_moves(web, db, sign_in, project, pm):
     assert response.status_code == 401
 
 
-def test_withdrawing(web, db, project):
-    _create(web, project)
-    response = _post(web, project, "/withdraw", reason="The client has paused the work")
+WITHDRAW_REASON = "The client has paused the work"
+TODAY = date.today().isoformat()
+SENT = {"sent_to": "Dana", "sent_on": TODAY, "means": "Email"}
+ANSWER = {"answer": "accepted", "answered_on": TODAY, "note": "Signed"}
+
+
+def _to_status(web, db, sign_in, project, pm, wanted: str) -> None:
+    """Take a fresh proposal to `wanted`, ending signed in as a project manager who didn't
+    submit it."""
+    if wanted == "draft":
+        _create(web, project)
+        return
+    if wanted == "submitted":
+        _submitted(web, db, sign_in, project)
+        sign_in(web, db, "project_manager", email="pm2@pmo.example")
+        return
+    _approved(web, db, sign_in, project, pm)
+    if wanted in ("sent", "accepted", "declined"):
+        assert _post(web, project, "/sent", **SENT).status_code == 200
+    if wanted in ("accepted", "declined"):
+        response = _post(web, project, "/answer", **{**ANSWER, "answer": wanted})
+        assert response.status_code == 200
+
+
+@pytest.mark.parametrize("start", ["draft", "submitted", "approved", "sent"])
+def test_withdrawing_from_each_open_status(web, db, sign_in, project, pm, start):
+    _to_status(web, db, sign_in, project, pm, start)
+    before = len(_audit(db))
+    response = _post(web, project, "/withdraw", reason=WITHDRAW_REASON)
+    assert response.status_code == 200, response.text
     assert response.json()["status"] == "withdrawn"
-    assert (
-        _post(web, project, "/withdraw", reason="The client has paused the work").status_code == 409
-    )
+    [row] = _audit(db)[before:]
+    assert (row.status, row.trigger) == ("ok", "human")
+    assert row.action_taken["action"] == "withdraw"
+    assert (row.action_taken["from"], row.action_taken["to"]) == (start, "withdrawn")
+    db.expire_all()
+    event = db.scalar(select(ProposalEvent).where(ProposalEvent.kind == "withdraw"))
+    assert event.reason == WITHDRAW_REASON
+
+
+@pytest.mark.parametrize("final", ["accepted", "declined", "withdrawn"])
+def test_an_answered_or_withdrawn_proposal_cannot_be_withdrawn(
+    web, db, sign_in, project, pm, final
+):
+    if final == "withdrawn":
+        _create(web, project)
+        assert _post(web, project, "/withdraw", reason=WITHDRAW_REASON).status_code == 200
+    else:
+        _to_status(web, db, sign_in, project, pm, final)
+    response = _post(web, project, "/withdraw", reason=WITHDRAW_REASON)
+    assert response.status_code == 409
+    row = _audit(db)[-1]
+    assert (row.status, row.action_taken["action"]) == ("rejected", "withdraw_refused")
+    assert row.action_taken["refusal"] == "wrong_status"
+    assert _get(web, project)["status"] == final
+
+
+def test_withdrawing_needs_a_reason(web, project):
+    _create(web, project)
+    for body in ({}, {"reason": ""}, {"reason": "Paused"}):
+        assert _post(web, project, "/withdraw", **body).status_code == 422
+    assert _get(web, project)["status"] == "draft"
+
+
+@pytest.mark.parametrize(
+    ("start", "step"),
+    [
+        ("draft", "sent"),
+        ("submitted", "sent"),
+        ("sent", "sent"),
+        ("accepted", "sent"),
+        ("draft", "answer"),
+        ("submitted", "answer"),
+        ("approved", "answer"),
+        ("declined", "answer"),
+    ],
+)
+def test_the_steps_go_in_order(web, db, sign_in, project, pm, start, step):
+    _to_status(web, db, sign_in, project, pm, start)
+    response = _post(web, project, f"/{step}", **(SENT if step == "sent" else ANSWER))
+    assert response.status_code == 409
+    row = _audit(db)[-1]
+    assert (row.status, row.action_taken["action"]) == ("rejected", f"{step}_refused")
+    assert row.action_taken["refusal"] == "wrong_status"
+    assert row.action_taken["status"] == start
+    assert _get(web, project)["status"] == start
+
+
+def test_the_read_returns_the_current_flags_without_a_save(web, db, project):
+    # Text that reached the database without a save through the API still shows its flags.
+    _create(web, project)
+    db.expire_all()
+    proposal = db.scalar(select(ProjectProposal).where(ProjectProposal.project_id == project.id))
+    proposal.terms = "A deposit of $40k by 2027-02-01"
+    db.commit()
+    assert _get(web, project)["flags"] == [
+        {"rule": "stray_money", "section": "terms", "text": "$40k"},
+        {"rule": "stray_date", "section": "terms", "text": "2027-02-01"},
+    ]

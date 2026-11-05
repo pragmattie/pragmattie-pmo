@@ -15,11 +15,15 @@ A project with a client has at most one proposal; a project with no client has n
   refused (409, with the flags) while the checker has any flag open.
 - `POST .../approve` and `.../return` (`proposal:approve`, a reason of at least 20 characters)
   are the sponsor's decision on a submitted proposal. Returning sends it back to draft. Nobody
-  decides on a copy they submitted themselves.
+  decides on a copy they submitted themselves (`app.authz.not_own_submission`, 403).
 - `POST .../sent` (`project:write`) records that a person sent the approved copy: to whom, on what
   date, by what means. Nothing is sent from here. `POST .../answer` (`project:write`) records the
-  client's answer (accepted or declined), the day it came and a note.
-- `POST .../withdraw` (`project:write`, with a reason) withdraws a proposal that has no answer.
+  client's answer (accepted or declined), the day it came and a note. The steps go in order:
+  sent only from `approved`, the answer only from `sent`; anything else is a 409, audited.
+  Admin has no `project:write`, so admin can do neither.
+- `POST .../withdraw` (`project:write`, a reason of at least 20 characters) withdraws a proposal
+  from draft, submitted, approved or sent. An accepted or declined one can't be withdrawn, and a
+  withdrawn one is already final (409, audited).
 - `GET .../versions` (`project:read`) lists the frozen copies, newest first, each with what
   people did with it.
 
@@ -39,7 +43,7 @@ from sqlalchemy.orm import Session
 from app.api.intake import _commit, _names, _save
 from app.api.projects import Db, Reader, Writer, _project
 from app.audit import next_attempt, record_decision, record_refusal
-from app.authz import Action, require_audited
+from app.authz import Action, not_own_submission, require_audited
 from app.models import (
     Client,
     Project,
@@ -477,9 +481,8 @@ def _decide(
     proposal = _for_decision(db, project_id, body.version, user, action, ("submitted",))
     latest = _latest_version(db, proposal.id)
     if latest is not None and latest.submitted_by == user.id:
-        raise _refuse(
-            db, proposal, user, action=action, refusal="own_submission", code=403, detail=OWN
-        )
+        _refuse(db, proposal, user, action=action, refusal="own_submission", code=403, detail=OWN)
+        not_own_submission(user.id, latest.submitted_by)
     event = ProposalEvent(
         proposal_id=proposal.id,
         version_id=latest.id if latest else None,
