@@ -349,6 +349,10 @@ async function apiError(response: Response): Promise<ApiError> {
           missing.push(`${item.section}: ${item.text}`)
         }
       }
+      // The agent's sections no person has reviewed yet (submitting a proposal).
+      if (Array.isArray(detail.sections)) {
+        for (const item of detail.sections) missing.push(`${item}: agent draft, not reviewed`)
+      }
       // A gate's unmet criteria (passing the approval gate): each one's text and why.
       if (Array.isArray(detail.unmet)) {
         for (const item of detail.unmet as { text?: string; detail?: string | null }[]) {

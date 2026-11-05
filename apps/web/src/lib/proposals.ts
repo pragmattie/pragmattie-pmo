@@ -38,6 +38,16 @@ export interface ProposalContent {
   risks: { risk_id: number; title: string; response: string; response_plan: string }[]
 }
 
+// Who wrote a text section (item 5.3): the agent, a person, or nobody yet (empty, or prefilled
+// from the plan). `unreviewed` is an agent's draft no person has edited or confirmed: it shows
+// "Agent draft, not reviewed", and the API refuses submit while any section is one.
+export interface SectionState {
+  source: 'agent' | 'person' | null
+  reviewed_by: number | null
+  reviewed_at: string | null
+  unreviewed: boolean
+}
+
 export interface Proposal extends ProposalContent {
   id: number
   project_id: number
@@ -47,6 +57,8 @@ export interface Proposal extends ProposalContent {
   plan_version_seen: number
   plan_changed: boolean
   flags: Flag[]
+  sections: Record<TextSection, SectionState>
+  unreviewed_sections: TextSection[]
   latest_version: number | null
   submitted_by: number | null
   submitted_by_name: string | null
@@ -79,6 +91,18 @@ export interface ProposalVersion {
   submitted_by_name: string | null
   submitted_at: string
   events: ProposalEvent[]
+}
+
+// The answer of a proposal agent run. A shadow run saves nothing; `replaced` is then empty.
+export interface DraftResult {
+  mode: 'shadow' | 'enforce'
+  dry_run: boolean
+  sections: Partial<Record<TextSection, string>>
+  removed: { section: TextSection; kind: 'money' | 'date' | 'token'; text: string }[]
+  dropped: { part: string; reason: string }[]
+  replaced: TextSection[]
+  kept: { section: TextSection; reason: string }[]
+  flags: Flag[]
 }
 
 export const TEXT_SECTIONS: { key: TextSection; title: string }[] = [
@@ -125,8 +149,38 @@ export function flagsFor(flags: Flag[], section: string): Flag[] {
   return flags.filter((flag) => flag.section === section)
 }
 
+// The sections' titles, in the order the proposal shows them.
+function titles(keys: TextSection[]): string {
+  return TEXT_SECTIONS.filter((s) => keys.includes(s.key))
+    .map((s) => s.title)
+    .join(', ')
+}
+
+// What an agent run did, in a sentence or two for the project manager.
+export function draftText(result: DraftResult): string {
+  const parts: string[] = []
+  if (result.mode === 'shadow') {
+    parts.push('Shadow mode: the agent drafted the text but nothing was saved.')
+  } else if (result.replaced.length) {
+    parts.push(`The agent drafted: ${titles(result.replaced)}. Review or edit each one.`)
+  } else {
+    parts.push('The agent changed no section.')
+  }
+  if (result.kept.length) {
+    const kept = result.kept.map((k) => `${titles([k.section])} (${k.reason})`)
+    parts.push(`Kept: ${kept.join('; ')}.`)
+  }
+  if (result.removed.length) {
+    const n = result.removed.length
+    parts.push(`Code removed ${n} ${n === 1 ? 'figure, date or token' : 'figures, dates or tokens'} the agent wrote.`)
+  }
+  return parts.join(' ')
+}
+
 export interface ProposalButtons {
   edit: boolean
+  // Drafting with the agent and confirming its sections: only on a draft.
+  agent: boolean
   submit: boolean
   decide: boolean
   sent: boolean
@@ -145,6 +199,7 @@ export function buttonsFor(
   const status = proposal.status
   return {
     edit: writer && ['draft', 'submitted', 'approved'].includes(status),
+    agent: writer && status === 'draft',
     submit: writer && status === 'draft',
     decide:
       can('proposal:approve') && status === 'submitted' && proposal.submitted_by !== userId,
@@ -217,6 +272,9 @@ export const proposalApi = {
   create: (id: number) => call<Proposal>(base(id), { method: 'POST' }),
   update: (id: number, version: number, changes: Partial<Record<TextSection, string | null>>) =>
     call<Proposal>(base(id), { method: 'PATCH', body: JSON.stringify({ version, ...changes }) }),
+  draft: (id: number) => call<DraftResult>(`${base(id)}/draft`, { method: 'POST' }),
+  confirm: (id: number, version: number, section: TextSection) =>
+    post<Proposal>(`${base(id)}/sections/${section}/confirm`, { version }),
   refresh: (id: number, version: number) => post<Proposal>(`${base(id)}/refresh`, { version }),
   submit: (id: number, version: number) => post<Proposal>(`${base(id)}/submit`, { version }),
   approve: (id: number, version: number, reason: string) =>

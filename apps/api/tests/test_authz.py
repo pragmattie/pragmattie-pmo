@@ -402,11 +402,13 @@ PLAN = "/api/v1/projects/{project_id}/plan"
 PROPOSAL = "/api/v1/projects/{project_id}/proposal"
 
 
-def _proposal_sample(suffix: str, proposal_status: str | None = "draft", body=None):
+def _proposal_sample(
+    suffix: str, proposal_status: str | None = "draft", body=None, agent_summary: bool = False
+):
     """A client project with a plan and, unless `proposal_status` is None, a proposal in that
     status refreshed from the plan, so the checker has no flags. A proposal past draft has a
     frozen copy submitted by the target project manager, so a sponsor deciding it is not
-    deciding their own."""
+    deciding their own. With `agent_summary`, its summary is an unreviewed agent draft."""
 
     def sample(target: int) -> dict:
         with Session(engine) as session:
@@ -439,6 +441,11 @@ def _proposal_sample(suffix: str, proposal_status: str | None = "draft", body=No
                     project_id=project.id, status=proposal_status, created_by=target
                 )
                 refresh_from_plan(proposal, plan_facts(session, plan))
+                if agent_summary:
+                    proposal.summary = "A pilot"
+                    proposal.section_sources = {
+                        "summary": {"source": "agent", "reviewed_by": None, "reviewed_at": None}
+                    }
                 session.add(proposal)
                 session.flush()
                 if proposal_status != "draft":
@@ -646,6 +653,10 @@ SAMPLES = {
     ),
     ("POST", f"{PROPOSAL}/withdraw"): _proposal_sample("/withdraw", body=DECISION),
     ("GET", f"{PROPOSAL}/versions"): _proposal_sample("/versions", "submitted"),
+    ("POST", f"{PROPOSAL}/draft"): _proposal_sample("/draft?dry_run=true"),
+    ("POST", f"{PROPOSAL}/sections/{{section}}/confirm"): _proposal_sample(
+        "/sections/summary/confirm", body={"version": 1}, agent_summary=True
+    ),
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -687,10 +698,12 @@ DELETED = {
 }
 
 
-# Allowed requests refused for another reason: the risk and intake agents are off in tests.
+# Allowed requests refused for another reason: the risk, intake and proposal agents are off in
+# tests.
 REFUSED = {
     ("POST", "/api/v1/projects/{project_id}/risks/suggest"),
     ("POST", "/api/v1/requests/{request_id}/draft"),
+    ("POST", f"{PROPOSAL}/draft"),
 }
 
 # Routes that also need a role the gates policy lists: other roles holding the action get 403.
@@ -829,8 +842,9 @@ def test_matrix_covers_the_existing_routes():
     for path in (PROPOSAL, f"{PROPOSAL}/versions"):
         assert by_method[("GET", path)] == Action.PROJECT_READ
     assert by_method[("POST", PROPOSAL)] == by_method[("PATCH", PROPOSAL)] == Action.PROJECT_WRITE
-    for name in ("refresh", "submit", "sent", "answer", "withdraw"):
+    for name in ("refresh", "submit", "sent", "answer", "withdraw", "draft"):
         assert by_method[("POST", f"{PROPOSAL}/{name}")] == Action.PROJECT_WRITE
+    assert by_method[("POST", f"{PROPOSAL}/sections/{{section}}/confirm")] == Action.PROJECT_WRITE
     for name in ("approve", "return"):
         assert by_method[("POST", f"{PROPOSAL}/{name}")] == Action.PROPOSAL_APPROVE
 

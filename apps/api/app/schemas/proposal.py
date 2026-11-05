@@ -4,6 +4,10 @@ Every input refuses unknown fields, so a client can never send a price, a milest
 deliverable or a risk: code copies them from the plan. Each write carries the proposal's
 `version`; a stale one is a 409. Money is a JSON string with 2 decimal places. A risk appears as
 its title and response only, never its score or band.
+
+Each text section has a state (item 5.3): who wrote it (`agent`, `person`, or null for one prefilled
+from the plan or empty) and, for an agent's draft, who reviewed it and when. `unreviewed` is true
+for an agent's draft no person has edited or confirmed; while any is, submit is refused.
 """
 
 from datetime import date, datetime
@@ -13,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from app.models.intake import LONG_TEXT_MAX
 from app.models.proposal import SHORT_TEXT_MAX
+from app.schemas.audit import CostStr
 from app.schemas.common import MoneyStr
 
 # A decision on a proposal needs a written reason of at least this many characters.
@@ -29,6 +34,7 @@ Reason = Annotated[
 ]
 Version = Annotated[int, Field(ge=1)]
 Status = Literal["draft", "submitted", "approved", "sent", "accepted", "declined", "withdrawn"]
+Section = Literal["summary", "scope_in", "scope_out", "assumptions", "terms"]
 
 
 def _not_future(day: date, name: str) -> None:
@@ -121,6 +127,13 @@ class RiskCopy(BaseModel):
     response_plan: str
 
 
+class SectionState(BaseModel):
+    source: Literal["agent", "person"] | None = None
+    reviewed_by: int | None = None
+    reviewed_at: datetime | None = None
+    unreviewed: bool = False
+
+
 class ProposalOut(BaseModel):
     id: int
     project_id: int
@@ -140,6 +153,8 @@ class ProposalOut(BaseModel):
     plan_version_seen: int
     plan_changed: bool
     flags: list[FlagOut]
+    sections: dict[Section, SectionState]
+    unreviewed_sections: list[Section]
     # The number of the latest frozen copy, who submitted it, and the number of the copy the
     # sponsor last approved. `approval_current` is false once the proposal changed after it.
     latest_version: int | None
@@ -176,3 +191,60 @@ class VersionOut(BaseModel):
     submitted_by_name: str | None
     submitted_at: datetime
     events: list[EventOut]
+
+
+class DraftRemoved(BaseModel):
+    """Something code removed from the agent's text: a money figure, a date or an unknown token."""
+
+    section: Section
+    kind: Literal["money", "date", "token"]
+    text: str
+
+
+class DraftFilled(BaseModel):
+    """A token code replaced with the plan's value."""
+
+    section: Section
+    token: str
+    value: str
+
+
+class DraftDropped(BaseModel):
+    part: str
+    reason: str
+
+
+class DraftKept(BaseModel):
+    section: Section
+    reason: str
+
+
+class ProposalDraftResult(BaseModel):
+    """The answer of `POST /projects/{id}/proposal/draft`.
+
+    A dry run has `request` (the exact request that would be sent) and `cost_ceiling_usd` (the
+    most it can cost, rounded up to the cent), and nothing is called or saved. A real run has the
+    drafted sections with the plan's values filled in, what code removed, filled in or dropped,
+    its tokens and cost and its audit row, and the checker's flags on the proposal as it is (in
+    `enforce`) or as it would be (in `shadow`). `replaced` names the sections saved as unreviewed
+    agent drafts (empty in `shadow`); `kept` the ones a person edited or confirmed, which the
+    agent leaves alone."""
+
+    mode: Literal["shadow", "enforce"]
+    dry_run: bool
+    model: str
+    prompt_version: str
+    request: dict[str, Any] | None = None
+    cost_ceiling_usd: MoneyStr | None = None
+    sections: dict[Section, str] = {}
+    removed: list[DraftRemoved] = []
+    filled: list[DraftFilled] = []
+    dropped: list[DraftDropped] = []
+    replaced: list[Section] = []
+    kept: list[DraftKept] = []
+    flags: list[FlagOut] = []
+    proposal_version: int | None = None
+    audit_id: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: CostStr | None = None

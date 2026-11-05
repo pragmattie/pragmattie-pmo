@@ -7,6 +7,8 @@ import {
   approvalText,
   approvedCopy,
   buttonsFor,
+  type DraftResult,
+  draftText,
   flagsFor,
   outOfDateText,
   type Proposal,
@@ -36,6 +38,30 @@ const USER_ID = 7
 const PM_ID = 11
 const REASON = 'Matches the plan and what the client asked for'
 
+const NOBODY = { source: null, reviewed_by: null, reviewed_at: null, unreviewed: false } as const
+const PERSON = { source: 'person', reviewed_by: PM_ID, reviewed_at: '2026-11-05T09:00:00', unreviewed: false } as const
+const AGENT = { source: 'agent', reviewed_by: null, reviewed_at: null, unreviewed: true } as const
+
+// A proposal whose summary is the agent's draft, not yet reviewed.
+function agentDrafted(): Proposal {
+  const row = proposal({ summary: 'We build Forecast model for $1,650.00.' })
+  return { ...row, sections: { ...row.sections, summary: AGENT }, unreviewed_sections: ['summary'] }
+}
+
+function draftResult(changes: Partial<DraftResult> = {}): DraftResult {
+  return {
+    mode: 'enforce',
+    dry_run: false,
+    sections: { summary: 'We build Forecast model for $1,650.00.' },
+    removed: [],
+    dropped: [],
+    replaced: ['summary'],
+    kept: [],
+    flags: [],
+    ...changes,
+  }
+}
+
 function proposal(changes: Partial<Proposal> = {}): Proposal {
   return {
     id: 1,
@@ -58,6 +84,14 @@ function proposal(changes: Partial<Proposal> = {}): Proposal {
     plan_version_seen: 4,
     plan_changed: false,
     flags: [],
+    sections: {
+      summary: PERSON,
+      scope_in: NOBODY,
+      scope_out: NOBODY,
+      assumptions: NOBODY,
+      terms: PERSON,
+    },
+    unreviewed_sections: [],
     latest_version: null,
     submitted_by: null,
     submitted_by_name: null,
@@ -121,15 +155,23 @@ interface FakeOptions {
   versions?: ProposalVersion[]
   // What a POST or PATCH answers: the new proposal, or an error.
   answer?: Proposal | { status: number; detail: unknown }
+  // What the agent's draft answers, and the proposal the next GET then returns.
+  draft?: DraftResult | { status: number; detail: unknown }
+  afterDraft?: Proposal
   // At most this many versions per page, whatever limit is asked for.
   pageSize?: number
 }
 
 function fakeApi(options: FakeOptions = {}) {
-  const stored = options.stored === undefined ? proposal() : options.stored
+  let stored = options.stored === undefined ? proposal() : options.stored
   return vi.fn(async (input: string, init: RequestInit = {}) => {
     const url = new URL(input, 'http://localhost')
     const method = init.method ?? 'GET'
+    if (method === 'POST' && url.pathname.endsWith('/draft') && options.draft) {
+      if ('detail' in options.draft) return json({ detail: options.draft.detail }, options.draft.status)
+      if (options.afterDraft) stored = options.afterDraft
+      return json(options.draft)
+    }
     if (method !== 'GET') {
       const answer = options.answer ?? proposal()
       if ('detail' in answer) return json({ detail: answer.detail }, answer.status)
@@ -215,6 +257,7 @@ describe('the proposal helpers', () => {
     const draft = proposal()
     expect(buttonsFor(draft, can('project_manager'), PM_ID)).toEqual({
       edit: true,
+      agent: true,
       submit: true,
       decide: false,
       sent: false,
@@ -233,7 +276,7 @@ describe('the proposal helpers', () => {
     expect(buttonsFor(approved, can('sponsor'), USER_ID).sent).toBe(false)
     expect(buttonsFor(proposal({ status: 'sent' }), can('project_manager'), PM_ID).answer).toBe(true)
     expect(Object.values(buttonsFor(proposal({ status: 'accepted' }), can('project_manager'), PM_ID))).toEqual(
-      [false, false, false, false, false, false],
+      [false, false, false, false, false, false, false],
     )
   })
 
@@ -273,6 +316,31 @@ describe('the proposal helpers', () => {
     expect(withdrawn).toContain('must not be sent')
   })
 
+  it('offers the agent only to a writer, on a draft', () => {
+    expect(buttonsFor(proposal(), can('sponsor'), USER_ID).agent).toBe(false)
+    expect(buttonsFor(proposal({ status: 'submitted' }), can('project_manager'), PM_ID).agent).toBe(
+      false,
+    )
+  })
+
+  it('says what an agent run did', () => {
+    expect(draftText(draftResult())).toBe('The agent drafted: Summary. Review or edit each one.')
+    const text = draftText(
+      draftResult({
+        replaced: ['terms', 'summary'],
+        kept: [{ section: 'scope_in', reason: 'a person has edited or confirmed it' }],
+        removed: [
+          { section: 'summary', kind: 'money', text: '$9,999.00' },
+          { section: 'terms', kind: 'token', text: '{price}' },
+        ],
+      }),
+    )
+    expect(text).toContain('drafted: Summary, Terms.')
+    expect(text).toContain('Kept: Scope in (a person has edited or confirmed it).')
+    expect(text).toContain('Code removed 2 figures, dates or tokens')
+    expect(draftText(draftResult({ mode: 'shadow', replaced: [] }))).toContain('nothing was saved')
+  })
+
   it('finds the flags of a section and the approved copy', () => {
     const flags = [
       { rule: 'stray_money', section: 'summary', text: '$99' },
@@ -285,6 +353,72 @@ describe('the proposal helpers', () => {
 })
 
 describe('the proposal section', () => {
+  it('drafts with the agent and shows each agent section as not reviewed', async () => {
+    const { fetchMock } = await mountAs('project_manager', {
+      draft: draftResult(),
+      afterDraft: agentDrafted(),
+    })
+    expect(find('proposal-agent-chip')).toBeNull()
+    await click('proposal-agent-draft')
+    expect(posts(fetchMock)).toEqual([
+      { path: '/api/v1/projects/5/proposal/draft', method: 'POST', body: null },
+    ])
+    expect(find('proposal-agent-note')?.textContent).toContain('The agent drafted: Summary.')
+    const summary = find('proposal-section-summary')
+    expect(summary?.querySelector('[data-test="proposal-agent-chip"]')?.textContent).toContain(
+      'Agent draft, not reviewed',
+    )
+    expect(find('proposal-section-terms')?.querySelector('[data-test="proposal-agent-chip"]')).toBeNull()
+  })
+
+  it('says why the agent was refused', async () => {
+    await mountAs('project_manager', {
+      draft: { status: 409, detail: 'the proposal agent is off (AGENT_MODE=off)' },
+    })
+    await click('proposal-agent-draft')
+    expect(find('proposal-action-error')?.textContent).toContain('AGENT_MODE=off')
+    expect(find('proposal-agent-note')).toBeNull()
+  })
+
+  it('confirms an agent section as it is', async () => {
+    const { fetchMock } = await mountAs('project_manager', {
+      stored: agentDrafted(),
+      answer: proposal(),
+    })
+    expect(find('proposal-confirm-terms')).toBeNull()
+    await click('proposal-confirm-summary')
+    expect(posts(fetchMock)).toEqual([
+      {
+        path: '/api/v1/projects/5/proposal/sections/summary/confirm',
+        method: 'POST',
+        body: { version: 2 },
+      },
+    ])
+    expect(find('proposal-agent-chip')).toBeNull()
+  })
+
+  it('shows the chip but no agent buttons to a role without project:write', async () => {
+    await mountAs('sponsor', { stored: agentDrafted() })
+    expect(find('proposal-agent-chip')).not.toBeNull()
+    expect(find('proposal-agent-draft')).toBeNull()
+    expect(find('proposal-confirm-summary')).toBeNull()
+  })
+
+  it('names the unreviewed sections when the API refuses a submit', async () => {
+    await mountAs('project_manager', {
+      stored: agentDrafted(),
+      answer: {
+        status: 409,
+        detail: {
+          message: "the proposal can't be submitted while a section is an agent draft",
+          sections: ['summary'],
+        },
+      },
+    })
+    await click('proposal-submit')
+    expect(find('proposal-action-error')?.textContent).toContain('summary: agent draft, not reviewed')
+  })
+
   it('shows the sections, what came from the plan and the risks without a score', async () => {
     await mountAs('project_manager')
     expect(find('proposal-status')?.textContent).toContain('Draft')
@@ -365,7 +499,16 @@ describe('the proposal section', () => {
   })
 
   it.each([
-    ['project_manager', ['proposal-edit', 'proposal-refresh', 'proposal-submit', 'proposal-withdraw']],
+    [
+      'project_manager',
+      [
+        'proposal-edit',
+        'proposal-agent-draft',
+        'proposal-refresh',
+        'proposal-submit',
+        'proposal-withdraw',
+      ],
+    ],
     ['sponsor', []],
     ['auditor', []],
     ['ethics_reviewer', []],

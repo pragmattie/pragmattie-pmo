@@ -35,7 +35,12 @@
     whose title or response (the response or its plan) has changed in the risk register.
 
 Refreshing from the plan clears every flag but the stray money and dates, which the project manager
-fixes in the text.
+fixes in the text. It never changes who wrote a section.
+
+Who wrote each text section (item 5.3) is in `proposal.section_sources`. `unreviewed_sections`
+names the agent's drafts no person has edited or confirmed yet (they block submit), and
+`may_replace` says whether the proposal agent may write a section: only when it is empty or still
+an unreviewed agent draft.
 """
 
 import re
@@ -383,6 +388,38 @@ def check(values: dict[str, Any], facts: PlanFacts) -> list[Flag]:
                 Flag("risk_changed", SECTION_RISKS, f"{r['title']} (ticked to show, not yet shown)")
             )
     return flags
+
+
+def _source(proposal: ProjectProposal, name: str) -> dict[str, Any]:
+    return (proposal.section_sources or {}).get(name) or {}
+
+
+def is_unreviewed(proposal: ProjectProposal, name: str) -> bool:
+    """Whether the section is an agent's draft that no person has edited or confirmed."""
+    entry = _source(proposal, name)
+    return entry.get("source") == "agent" and entry.get("reviewed_by") is None
+
+
+def unreviewed_sections(proposal: ProjectProposal) -> list[str]:
+    return [
+        name
+        for name in TEXT_SECTIONS
+        if (getattr(proposal, name) or "").strip() and is_unreviewed(proposal, name)
+    ]
+
+
+def may_replace(proposal: ProjectProposal, name: str) -> bool:
+    """Whether the proposal agent may write the section: it is empty or an unreviewed draft."""
+    return not (getattr(proposal, name) or "").strip() or is_unreviewed(proposal, name)
+
+
+def mark_section(
+    proposal: ProjectProposal, name: str, *, source: str, reviewed_by: int, reviewed_at: str
+) -> None:
+    """Record who wrote, or who reviewed, a section. The dict is replaced, so it is saved."""
+    sources = dict(proposal.section_sources or {})
+    sources[name] = {"source": source, "reviewed_by": reviewed_by, "reviewed_at": reviewed_at}
+    proposal.section_sources = sources
 
 
 def values_of(proposal: ProjectProposal) -> dict[str, Any]:

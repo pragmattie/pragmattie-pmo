@@ -256,8 +256,21 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         }
         risk_columns = {c["name"]: c for c in inspector.get_columns("risks")}
         assert risk_columns["show_in_proposal"]["nullable"] is False
+        # 0018: who wrote each proposal section.
+        proposal_columns = {c["name"]: c for c in inspector.get_columns("project_proposals")}
+        assert proposal_columns["section_sources"]["nullable"] is False
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0017")
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert "section_sources" not in {
+            c["name"] for c in inspector.get_columns("project_proposals")
+        }
+        with create_engine(get_settings().database_url).connect() as conn:
+            proposals_sql = conn.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE name = 'project_proposals'"
+            ).scalar_one()
+            assert "AUTOINCREMENT" in proposals_sql
         command.downgrade(config, "0016")
         inspector = inspect(create_engine(get_settings().database_url))
         assert not set(inspector.get_table_names()) & {
@@ -290,5 +303,45 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         assert action_columns["owner_id"]["nullable"] is False
         assert action_columns["due_date"]["nullable"] is False
         command.downgrade(config, "base")
+    finally:
+        get_settings.cache_clear()
+
+
+def test_0018_marks_existing_sections_as_a_persons(tmp_path, monkeypatch):
+    """Nothing written before the proposal agent counts as an agent's draft."""
+    import json
+
+    from app.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'migrate.db'}")
+    get_settings.cache_clear()
+    try:
+        config = Config(str(API_DIR / "alembic.ini"))
+        command.upgrade(config, "0017")
+        engine = create_engine(get_settings().database_url)
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO users (id, email, display_name, password_hash, role, is_active, "
+                "failed_logins, created_at) VALUES (1, 'pm@pmo.example', 'P', 'x', "
+                "'project_manager', 1, 0, '2026-11-05')"
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO projects (id, name, stage, sponsor, pm, status, created_at) "
+                "VALUES (1, 'F', 'planning', 'S', 'P', 'on_track', '2026-11-05')"
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO project_proposals (id, project_id, status, summary, scope_in, "
+                "terms, price, estimate_lines, milestones, deliverables, risks, "
+                "plan_version_seen, created_by, version, created_at, updated_at) VALUES "
+                "(1, 1, 'draft', 'Our offer', 'Two sites', '  ', 10, '[]', '[]', '[]', '[]', 1, "
+                "1, 1, '2026-11-05', '2026-11-05')"
+            )
+        command.upgrade(config, "0018")
+        with engine.connect() as conn:
+            stored = conn.exec_driver_sql(
+                "SELECT section_sources FROM project_proposals WHERE id = 1"
+            ).scalar_one()
+        person = {"source": "person", "reviewed_by": None, "reviewed_at": None}
+        assert json.loads(stored) == {"summary": person, "scope_in": person}
     finally:
         get_settings.cache_clear()

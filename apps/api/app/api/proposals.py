@@ -27,6 +27,16 @@ A project with a client has at most one proposal; a project with no client has n
   withdrawn one is already final (409, audited).
 - `GET .../versions` (`project:read`) lists the frozen copies, newest first, each with what
   people did with it.
+- `POST .../draft` (`project:write`, item 5.3) runs the proposal agent
+  (`app.agents.proposal_agent`) on a draft proposal, gated by `AGENT_MODE`: `off` refuses (409,
+  audited) and calls nothing; `shadow` returns the draft and saves nothing; `enforce` saves each
+  section that is empty or still an unreviewed agent draft as an unreviewed agent draft, and keeps
+  every section a person edited or confirmed. With `?dry_run=true` it returns the exact request
+  and a cost ceiling and calls nothing. The checker's flags come back with the draft.
+- `POST .../sections/{section}/confirm` (`project:write`) is a person accepting an agent's draft
+  section as it is, in `draft` only: who and when are recorded. A PATCH that changes a section
+  marks it a person's. Submit is refused (409, naming the sections) while any section is still an
+  unreviewed agent draft.
 
 Every write carries the proposal's `version`; a stale one is a 409. Each change is one audit row
 (agent `proposal`, trigger `human`, the person's id). Every refused attempt, edits included (a
@@ -37,16 +47,20 @@ These routes need a signed-in person, so no agent can submit, approve, mark sent
 answer.
 """
 
+import logging
+from decimal import ROUND_UP, Decimal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.agents import proposal_agent, risk_agent
 from app.api.intake import _commit, _names, _save
 from app.api.projects import Db, Reader, _project
 from app.audit import next_attempt, record_decision, record_refusal
 from app.authz import Action, not_own_submission, require_audited
+from app.config import get_settings
 from app.models import (
     Client,
     Project,
@@ -58,18 +72,30 @@ from app.models import (
 )
 from app.models.base import utcnow
 from app.models.proposal import TEXT_SECTIONS
-from app.proposals import check, plan_facts, refresh_from_plan, values_of
+from app.proposals import (
+    check,
+    mark_section,
+    plan_facts,
+    refresh_from_plan,
+    unreviewed_sections,
+    values_of,
+)
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
 from app.schemas.proposal import (
     EventOut,
     ProposalAnswer,
     ProposalDecision,
+    ProposalDraftResult,
     ProposalOut,
     ProposalSent,
     ProposalUpdate,
     ProposalWrite,
+    Section,
+    SectionState,
     VersionOut,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["proposals"])
 
@@ -92,6 +118,14 @@ OWN = "you cannot decide on your own submission"
 NOT_APPROVED = "only an approved proposal can be marked sent"
 NOT_SENT = "the client's answer can be recorded only for a proposal that has been sent"
 CANT_WITHDRAW = "this proposal has already been answered or withdrawn"
+UNREVIEWED = (
+    "the proposal can't be submitted while a section is an agent draft no person has reviewed"
+)
+AGENT_OFF = "the proposal agent is off (AGENT_MODE=off); a person can write the proposal by hand"
+NOT_DRAFT_AGENT = "the proposal agent drafts only for a draft proposal"
+AGENT_FAILED = "the proposal agent could not finish; the failed run is recorded in the audit trail"
+CONFIRM_NOT_DRAFT = "a section can be confirmed only on a draft proposal"
+NOT_AGENT_DRAFT = "this section is not an agent draft waiting for review"
 
 EDITABLE = ("draft", "submitted", "approved")
 WITHDRAWABLE = ("draft", "submitted", "approved", "sent")
@@ -150,6 +184,17 @@ def _latest_approval(db: Session, proposal_id: int) -> ProposalEvent | None:
 # --- Output
 
 
+def _section_states(proposal: ProjectProposal) -> dict[str, SectionState]:
+    sources = proposal.section_sources or {}
+    return {
+        name: SectionState(
+            **(sources.get(name) or {}),
+            unreviewed=name in unreviewed_sections(proposal),
+        )
+        for name in TEXT_SECTIONS
+    }
+
+
 def _proposal_out(db: Session, proposal: ProjectProposal) -> ProposalOut:
     project, client = _client_project(db, proposal.project_id)
     plan = _plan(db, proposal.project_id)
@@ -173,6 +218,8 @@ def _proposal_out(db: Session, proposal: ProjectProposal) -> ProposalOut:
         plan_version_seen=proposal.plan_version_seen,
         plan_changed=plan.version != proposal.plan_version_seen,
         flags=[flag.as_dict() for flag in check(values, facts)],
+        sections=_section_states(proposal),
+        unreviewed_sections=unreviewed_sections(proposal),
         latest_version=latest.number if latest else None,
         submitted_by=latest.submitted_by if latest else None,
         submitted_by_name=submitter,
@@ -189,7 +236,12 @@ def _proposal_out(db: Session, proposal: ProjectProposal) -> ProposalOut:
 
 
 def _snapshot(proposal: ProjectProposal) -> dict[str, Any]:
-    return {"status": proposal.status, "version": proposal.version, **values_of(proposal)}
+    return {
+        "status": proposal.status,
+        "version": proposal.version,
+        **values_of(proposal),
+        "section_sources": dict(proposal.section_sources or {}),
+    }
 
 
 def _record(
@@ -304,6 +356,8 @@ Returner = _person(Action.PROPOSAL_APPROVE, "return")
 SentRecorder = _person(Action.PROJECT_WRITE, "sent")
 AnswerRecorder = _person(Action.PROJECT_WRITE, "answer")
 Withdrawer = _person(Action.PROJECT_WRITE, "withdraw")
+Drafter = _person(Action.PROJECT_WRITE, "draft")
+Confirmer = _person(Action.PROJECT_WRITE, "confirm")
 
 
 # --- The proposal
@@ -382,9 +436,12 @@ def update_proposal(project_id: int, body: ProposalUpdate, user: Editor, db: Db)
     before = _snapshot(proposal)
     changes = body.model_dump(exclude={"version"}, exclude_unset=True)
     changed = False
+    now = utcnow().isoformat()
     for name in TEXT_SECTIONS:
         if name in changes and getattr(proposal, name) != changes[name]:
             setattr(proposal, name, changes[name])
+            # A person's edit makes the section theirs, whoever drafted it.
+            mark_section(proposal, name, source="person", reviewed_by=user.id, reviewed_at=now)
             changed = True
     if changed:
         _edited(db, proposal, user, "update", before)
@@ -492,6 +549,18 @@ def _refuse_open_flags(
 @router.post("/{project_id}/proposal/submit", response_model=ProposalOut)
 def submit_proposal(project_id: int, body: ProposalWrite, user: Submitter, db: Db) -> ProposalOut:
     proposal = _for_decision(db, project_id, body.version, user, "submit", ("draft",))
+    unreviewed = unreviewed_sections(proposal)
+    if unreviewed:
+        raise _refuse(
+            db,
+            proposal,
+            user,
+            action="submit",
+            refusal="unreviewed_agent_sections",
+            code=409,
+            detail={"message": UNREVIEWED, "sections": unreviewed},
+            sections=unreviewed,
+        )
     _refuse_open_flags(db, proposal, user, "submit", HAS_FLAGS)
     project, client = _client_project(db, project_id)
     number = (
@@ -593,6 +662,128 @@ def withdraw_proposal(
         reason=body.reason,
     )
     return _move(db, proposal, user, action="withdraw", to="withdrawn", event=event, version=latest)
+
+
+# --- The proposal agent (item 5.3)
+
+
+def get_claude_client() -> risk_agent.ClaudeClient:
+    """The proposal agent's Claude client; tests replace it through `dependency_overrides`."""
+    return risk_agent.AnthropicClient(get_settings())
+
+
+@router.post("/{project_id}/proposal/draft", response_model=ProposalDraftResult)
+def draft_proposal(
+    project_id: int,
+    user: Drafter,
+    db: Db,
+    claude: Annotated[risk_agent.ClaudeClient, Depends(get_claude_client)],
+    dry_run: bool = False,
+) -> ProposalDraftResult:
+    settings = get_settings()
+    proposal = _proposal(db, project_id)
+    if settings.agent_mode == "off":
+        raise _refuse(
+            db, proposal, user, action="draft", refusal="agent_off", code=409, detail=AGENT_OFF
+        )
+    if proposal.status != "draft":
+        raise _refuse(
+            db,
+            proposal,
+            user,
+            action="draft",
+            refusal="wrong_status",
+            code=409,
+            detail=NOT_DRAFT_AGENT,
+            status=proposal.status,
+        )
+    facts = plan_facts(db, _plan(db, project_id))
+    common = {
+        "mode": settings.agent_mode,
+        "dry_run": dry_run,
+        "model": settings.proposal_agent_model,
+        "prompt_version": proposal_agent.PROMPT_VERSION,
+    }
+    if dry_run:
+        data = proposal_agent.request_data(db, proposal, facts)
+        api_request = proposal_agent.build_request(data, settings)
+        ceiling = proposal_agent.cost_ceiling(api_request, settings)
+        return ProposalDraftResult(
+            **common,
+            request=api_request,
+            cost_ceiling_usd=ceiling.quantize(Decimal("0.01"), rounding=ROUND_UP),
+        )
+    save_it = settings.agent_mode == "enforce"
+    try:
+        result = proposal_agent.run(
+            db, claude, proposal, facts, settings=settings, save_it=save_it, actor_user_id=user.id
+        )
+    except risk_agent.AgentError:
+        logger.exception("proposal agent run failed for project %s", project_id)
+        _commit(db)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, AGENT_FAILED) from None
+    _commit(db)
+    checked = result.checked
+    # The checker runs on the result: the saved proposal, or in shadow the one it would be.
+    values = values_of(proposal)
+    values.update({name: checked.sections[name] for name in result.replaced})
+    return ProposalDraftResult(
+        **common,
+        sections=checked.sections,
+        removed=checked.removed,
+        filled=checked.filled,
+        dropped=checked.dropped,
+        replaced=result.replaced if save_it else [],
+        kept=result.kept,
+        flags=[flag.as_dict() for flag in check(values, facts)],
+        proposal_version=proposal.version,
+        audit_id=result.audit_id,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cost_usd=result.cost_usd,
+    )
+
+
+@router.post("/{project_id}/proposal/sections/{section}/confirm", response_model=ProposalOut)
+def confirm_section(
+    project_id: int, section: Section, body: ProposalWrite, user: Confirmer, db: Db
+) -> ProposalOut:
+    """A person accepts an agent's draft section as it is."""
+    proposal = _proposal(db, project_id, for_update=True)
+    if proposal.version != body.version:
+        raise _refuse(db, proposal, user, action="confirm", refusal="stale", code=409, detail=STALE)
+    if proposal.status != "draft":
+        raise _refuse(
+            db,
+            proposal,
+            user,
+            action="confirm",
+            refusal="wrong_status",
+            code=409,
+            detail=CONFIRM_NOT_DRAFT,
+            status=proposal.status,
+            section=section,
+        )
+    if section not in unreviewed_sections(proposal):
+        raise _refuse(
+            db,
+            proposal,
+            user,
+            action="confirm",
+            refusal="not_agent_draft",
+            code=409,
+            detail=NOT_AGENT_DRAFT,
+            section=section,
+        )
+    before = _snapshot(proposal)
+    mark_section(
+        proposal, section, source="agent", reviewed_by=user.id, reviewed_at=utcnow().isoformat()
+    )
+    proposal.updated_at = utcnow()
+    _save(db)
+    _record(db, proposal, user, action="confirm", before=before, section=section)
+    _commit(db)
+    return _proposal_out(db, proposal)
 
 
 # --- Versions

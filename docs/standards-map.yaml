@@ -127,6 +127,10 @@ features:
     title: Client proposal workflow
     rules: [R1, R5, R9, R12]
     notes: Price, dates and deliverables come from the plan by code; a checker blocks submit and sent; the sponsor approves; a person records sending; no risk score shown; all audited.
+  - id: P5-proposal-agent
+    title: Proposal agent
+    rules: [R1, R2, R4, R5, R9]
+    notes: Drafts proposal text only; code fills figures and dates from tokens and removes any it wrote; never replaces a person's section; unreviewed drafts block submit; each run audited.
   # --- P6 Delivery and closure
   - id: P6-status-reports
     title: Status reports
