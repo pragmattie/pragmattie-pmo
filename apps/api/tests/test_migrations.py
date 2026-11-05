@@ -259,8 +259,32 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         # 0018: who wrote each proposal section.
         proposal_columns = {c["name"]: c for c in inspector.get_columns("project_proposals")}
         assert proposal_columns["section_sources"]["nullable"] is False
+        # 0019: the go-ahead gate's baselines, and a project's version and status values.
+        project_columns = {c["name"]: c for c in inspector.get_columns("projects")}
+        assert project_columns["version"]["nullable"] is False
+        assert "ck_projects_status" in {
+            ck["name"] for ck in inspector.get_check_constraints("projects")
+        }
+        assert {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("project_baselines")
+        } == {
+            "fk_project_baselines_project": "projects",
+            "fk_project_baselines_gate_decision": "gate_decisions",
+        }
+        assert {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("project_baselines")
+        } == {"uq_project_baselines_number": ["project_id", "number"]}
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0018")
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert "project_baselines" not in inspector.get_table_names()
+        assert "version" not in {c["name"] for c in inspector.get_columns("projects")}
+        assert "ck_projects_status" not in {
+            ck["name"] for ck in inspector.get_check_constraints("projects")
+        }
         command.downgrade(config, "0017")
         inspector = inspect(create_engine(get_settings().database_url))
         assert "section_sources" not in {

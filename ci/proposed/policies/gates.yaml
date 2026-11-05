@@ -1,0 +1,70 @@
+# Stage gates (items 4.4 and 5.4). Each gate sits between two stages and lists what must be true
+# before it is passed, and which roles may decide it. Drafted by an agent; a person applies it over
+# policies/gates.yaml.
+#
+# - from_stage and to_stage are one of: intake, planning, delivery, closure, closed.
+# - applies_to is `request` (a project request) or `project`.
+# - deciders are roles; a person with one of them decides the gate, never an agent.
+# - Each criterion has an id, plain text, and either `check` (a check the code knows) or
+#   `person: true` (a person ticks it with a note when they decide).
+version: 1
+gates:
+  - id: approval
+    name: Approval gate
+    from_stage: intake
+    to_stage: planning
+    applies_to: request
+    deciders: [sponsor]
+    criteria:
+      - id: value_case_confirmed
+        text: The value case is complete and a person has confirmed it
+        check: value_case_confirmed
+      - id: readiness_confirmed
+        text: For a request that uses AI, a person has completed and confirmed the readiness check
+        check: readiness_confirmed
+      - id: readiness_not_red
+        text: For a request that uses AI, no readiness area is rated red
+        check: readiness_not_red
+      - id: yellow_actions_owned
+        text: For a request that uses AI, every yellow readiness area has an action with an active owner
+        check: yellow_actions_owned
+      - id: value_justifies_cost
+        text: The expected value justifies the cost
+        person: true
+      - id: people_available
+        text: We have, or can get, the people to do it
+        person: true
+
+  # The go-ahead gate (item 5.4): a project in planning moves to delivery, and its plan becomes
+  # baseline 1, which change requests are measured against.
+  - id: go_ahead
+    name: Go-ahead gate
+    from_stage: planning
+    to_stage: delivery
+    applies_to: project
+    deciders: [sponsor]
+    criteria:
+      - id: plan_complete
+        text: The plan is complete
+        check: plan_complete
+      - id: estimate_within_budget
+        text: The plan's total is at or below the brief's top budget
+        check: estimate_within_budget
+      - id: proposal_accepted
+        text: For a client project, the client has accepted the latest proposal
+        check: proposal_accepted
+      - id: no_unreviewed_risks
+        text: No risk on the project is still waiting to be reviewed
+        check: no_unreviewed_risks
+      - id: escalations_settled
+        text: No open risk is waiting on its escalation owner
+        check: escalations_settled
+      - id: readiness_not_red
+        text: For a project from a request that uses AI, no readiness area is rated red
+        check: readiness_not_red
+      - id: team_and_dates_realistic
+        text: The team and dates in the plan are realistic
+        person: true
+      - id: risks_acceptable
+        text: The project's risks are acceptable to start
+        person: true

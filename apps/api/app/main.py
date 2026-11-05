@@ -69,6 +69,7 @@ def create_app() -> FastAPI:
     api.include_router(audit.router)
     api.include_router(intake.router)
     api.include_router(gates.router)
+    api.include_router(gates.project_router)
     api.include_router(portfolio.router)
     api.include_router(projects.router)
     api.include_router(plan.router)

@@ -1,18 +1,21 @@
-"""API shapes of stage gates and their decisions (item 4.4).
+"""API shapes of stage gates and their decisions (items 4.4 and 5.4).
 
-A `pass` names the project manager of the project it creates (item 4.6).
+A request's `pass` names the project manager of the project it creates (item 4.6). A project's
+gate (the go-ahead gate) takes the same decision without one, and shows the project's latest
+baseline once passing the gate has made one.
 
 A decision carries the person criteria's ticks and notes with it: nothing is saved before the
 decision is sent, so a `GET` shows them unticked (`met` is null). Inputs refuse unknown fields.
 """
 
 from datetime import datetime
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.models.gate import MIN_REASON, NOTE_MAX
 from app.models.intake import LONG_TEXT_MAX
+from app.schemas.common import MoneyStr
 
 Outcome = Literal["pass", "return", "decline"]
 Reason = Annotated[
@@ -39,8 +42,9 @@ class PersonTick(BaseModel):
         return self
 
 
-class GateDecisionIn(BaseModel):
-    """`version` is the request's version the client read; a stale one is a 409."""
+class ProjectGateDecisionIn(BaseModel):
+    """A decision at a project's gate. `version` is the subject's version the client read; a
+    stale one is a 409."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -48,9 +52,6 @@ class GateDecisionIn(BaseModel):
     outcome: Outcome
     reason: Reason
     criteria: list[PersonTick] = Field(default_factory=list, max_length=20)
-    # The project manager of the project a `pass` creates (item 4.6): needed for `pass`, refused
-    # for `return` and `decline`, which create nothing.
-    project_manager_id: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _ids_unique(self) -> Self:
@@ -58,6 +59,14 @@ class GateDecisionIn(BaseModel):
         if len(set(ids)) != len(ids):
             raise ValueError("each criterion may be answered once")
         return self
+
+
+class GateDecisionIn(ProjectGateDecisionIn):
+    """A decision at a request's gate (the approval gate)."""
+
+    # The project manager of the project a `pass` creates (item 4.6): needed for `pass`, refused
+    # for `return` and `decline`, which create nothing.
+    project_manager_id: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _project_manager_only_on_pass(self) -> Self:
@@ -102,14 +111,40 @@ class GateDecisionOut(BaseModel):
     created_at: datetime
 
 
-class GateOut(BaseModel):
+class GateOutBase(BaseModel):
     gate: GateInfo
+    criteria: list[CriterionOut]
+    checks_met: bool  # every automatic check is met now
+    policy_version: str
+    latest_decision: GateDecisionOut | None
+
+
+class GateOut(GateOutBase):
     request_id: int
     request_version: int
     request_status: str
     requested_by: int
     project_id: int | None  # the project a pass made
-    criteria: list[CriterionOut]
-    checks_met: bool  # every automatic check is met now
-    policy_version: str
-    latest_decision: GateDecisionOut | None
+
+
+class BaselineOut(BaseModel):
+    """A frozen copy of the plan; `plan` keeps money as 2-decimal strings."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    number: int
+    gate_decision_id: int
+    plan: dict[str, Any]
+    total: MoneyStr
+    created_at: datetime
+
+
+class ProjectGateOut(GateOutBase):
+    project_id: int
+    project_version: int
+    project_stage: str
+    project_status: str
+    pm_user_id: int | None
+    baseline: BaselineOut | None  # the latest baseline, once there is one

@@ -2,11 +2,23 @@
 
 `seed_key` marks a row made by `python -m app.seed`; rows people create leave it empty. That is
 how `--reset` clears only seeded rows. A project with no client is internal to the practice.
+
+A project's `version` guards gate decisions (item 5.4): SQLAlchemy adds it to every UPDATE
+(`version_id_col`), so a decision that lost a race fails. A project declined at the go-ahead gate
+is `cancelled`, and takes no further plan, proposal or gate writes.
 """
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    column,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.migrations_filter import table_name
@@ -18,7 +30,8 @@ USERS_TABLE = table_name("users")
 
 # Working value sets until the stage gates (milestone P4) and status reports define them.
 STAGES = ("intake", "planning", "delivery", "closure", "closed")
-STATUSES = ("on_track", "at_risk", "off_track", "on_hold", "complete")
+STATUSES = ("on_track", "at_risk", "off_track", "on_hold", "complete", "cancelled")
+CANCELLED = "cancelled"
 
 
 class Client(Base):
@@ -40,6 +53,7 @@ class Project(Base):
     __table_args__ = (
         UniqueConstraint("seed_key", name="uq_projects_seed_key"),
         Index("ix_projects_created_at", "created_at"),
+        CheckConstraint(column("status").in_(STATUSES), name="ck_projects_status"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -62,4 +76,7 @@ class Project(Base):
         ForeignKey(f"{USERS_TABLE}.id", name="fk_projects_pm_user"), index=True
     )
     seed_key: Mapped[str | None] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    __mapper_args__ = {"version_id_col": version}
