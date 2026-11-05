@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.db import engine
@@ -206,6 +206,91 @@ def test_reset_clears_only_seeded_rows(db):
     db.commit()
     assert db.scalars(select(Client.name)).all() == ["A Person's Client Ltd"]
     assert db.scalars(select(Project.name)).all() == ["Own"]
+
+
+def _plans_per_project(db: Session) -> dict[int, int]:
+    from app.models import ProjectPlan
+
+    counts = dict(
+        db.execute(
+            select(ProjectPlan.project_id, func.count()).group_by(ProjectPlan.project_id)
+        ).all()
+    )
+    return {project_id: counts.get(project_id, 0) for project_id in db.scalars(select(Project.id))}
+
+
+def test_every_seeded_project_has_exactly_one_empty_plan(db):
+    """The seed gives each project its plan through `new_plan`, as for any new project (5.1)."""
+    from app.models import ProjectPlan
+
+    seed(db)
+    db.commit()
+    counts = _plans_per_project(db)
+    assert len(counts) == len(PROJECTS)
+    assert set(counts.values()) == {1}
+    for plan in db.scalars(select(ProjectPlan)):
+        # No seeded project has a brief, so the scope starts empty.
+        assert (plan.scope_in, plan.contingency_pct, plan.report_period) == (None, 0, None)
+
+    seed(db)  # Seeding again adds no second plan.
+    db.commit()
+    assert set(_plans_per_project(db).values()) == {1}
+
+    seed(db, reset=True)
+    db.commit()
+    counts = _plans_per_project(db)
+    assert len(counts) == len(PROJECTS)
+    assert set(counts.values()) == {1}
+
+
+def test_a_seeded_projects_plan_is_prefilled_from_its_brief(db):
+    from app.models import ProjectBrief, ProjectPlan
+
+    seed(db)
+    db.flush()
+    project = db.scalars(select(Project).order_by(Project.id)).first()
+    db.execute(delete(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    db.add(
+        ProjectBrief(
+            project_id=project.id,
+            purpose="Plan better",
+            objectives="Forecast weekly",
+            scope_in="Forecasts",
+            scope_out="Billing",
+            decision_rights=[],
+        )
+    )
+    db.commit()
+    seed(db)
+    db.commit()
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    assert (plan.scope_in, plan.scope_out) == ("Forecasts", "Billing")
+
+
+def test_reset_also_removes_the_plans_of_the_projects_it_deletes(db):
+    """Every seeded project has a plan (item 5.1); a reset that deletes it deletes the plan."""
+    from datetime import date
+
+    from app.models import PlanDeliverable, PlanEstimateLine, PlanMilestone, ProjectPlan
+
+    seed(db)
+    db.flush()
+    plan = db.scalars(select(ProjectPlan).order_by(ProjectPlan.id)).first()
+    milestone = PlanMilestone(plan_id=plan.id, name="Pilot", target_date=date(2027, 3, 1))
+    db.add(milestone)
+    db.flush()
+    db.add_all(
+        [
+            PlanDeliverable(plan_id=plan.id, name="Forecast", milestone_id=milestone.id),
+            PlanEstimateLine(plan_id=plan.id, description="Team", category="people", amount=1),
+        ]
+    )
+    db.commit()
+
+    clear_seeded(db)
+    db.commit()
+    for model in (ProjectPlan, PlanMilestone, PlanDeliverable, PlanEstimateLine):
+        assert db.scalar(select(func.count()).select_from(model)) == 0, model.__name__
 
 
 def test_reset_keeps_a_seeded_client_that_a_persons_project_uses(db):

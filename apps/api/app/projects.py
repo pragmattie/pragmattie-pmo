@@ -6,6 +6,7 @@
   request's client, the deciding sponsor and the project manager the sponsor named;
 - its brief, prefilled from the request and its value case, with who decides what taken from the
   approvers file's roles and what each role may decide here;
+- its plan, empty but for scope in and out copied from the brief (item 5.1);
 - its stakeholder list: the sponsor, the project manager and the client's contact if it has one;
 - its first risks: one `proposed`, unscored AI risk for each readiness area rated yellow or red,
   and one `proposed` project risk for the request's own risks text, if any.
@@ -33,6 +34,7 @@ from app.models import (
     Client,
     Project,
     ProjectBrief,
+    ProjectPlan,
     ProjectRequest,
     ProjectStakeholder,
     Risk,
@@ -40,6 +42,7 @@ from app.models import (
     ValueCaseBenefit,
 )
 from app.models.intake import LONG_TEXT_MAX, READINESS_AREAS
+from app.plans import new_plan
 from app.policy import get_policies
 from app.roles import Role
 
@@ -78,6 +81,7 @@ class Created:
 
     project: Project
     brief: ProjectBrief
+    plan: ProjectPlan
     stakeholders: list[ProjectStakeholder] = field(default_factory=list)
     risks: list[Risk] = field(default_factory=list)
 
@@ -85,6 +89,7 @@ class Created:
         return {
             "project_id": self.project.id,
             "brief_id": self.brief.id,
+            "plan_id": self.plan.id,
             "stakeholder_ids": [s.id for s in self.stakeholders],
             "assumption_ids": [],
             "risk_ids": [r.id for r in self.risks],
@@ -243,12 +248,14 @@ def create_from_request(db: Session, request: ProjectRequest, sponsor: User, pm:
     )
     db.add(project)
     db.flush()
+    brief = _brief(db, request, project)
     created = Created(
         project=project,
-        brief=_brief(db, request, project),
+        brief=brief,
+        plan=new_plan(project.id, brief),
         stakeholders=_stakeholders(db, project, sponsor, pm),
         risks=_first_risks(db, request, project),
     )
-    db.add_all([created.brief, *created.stakeholders, *created.risks])
+    db.add_all([created.brief, created.plan, *created.stakeholders, *created.risks])
     db.flush()
     return created
