@@ -31,6 +31,7 @@ from app.main import app, create_app
 from app.models import (
     AuditDecision,
     Base,
+    Client,
     PlanDeliverable,
     PlanEstimateLine,
     PlanMilestone,
@@ -38,11 +39,14 @@ from app.models import (
     ProjectAssumption,
     ProjectBrief,
     ProjectPlan,
+    ProjectProposal,
     ProjectRequest,
     ProjectStakeholder,
+    ProposalVersion,
     Risk,
     User,
 )
+from app.proposals import plan_facts, refresh_from_plan, values_of
 from app.security import CSRF_COOKIE, SESSION_COOKIE, issue_token
 
 CSRF = {"X-CSRF-Token": "test-csrf-value"}
@@ -395,6 +399,65 @@ def _plan_sample(suffix: str, body: dict | None = None):
 
 
 PLAN = "/api/v1/projects/{project_id}/plan"
+PROPOSAL = "/api/v1/projects/{project_id}/proposal"
+
+
+def _proposal_sample(suffix: str, proposal_status: str | None = "draft", body=None):
+    """A client project with a plan and, unless `proposal_status` is None, a proposal in that
+    status refreshed from the plan, so the checker has no flags. A proposal past draft has a
+    frozen copy submitted by the target project manager, so a sponsor deciding it is not
+    deciding their own."""
+
+    def sample(target: int) -> dict:
+        with Session(engine) as session:
+            client = Client(name="Matrix client")
+            session.add(client)
+            session.flush()
+            project = Project(
+                name="Offer",
+                client_id=client.id,
+                stage="planning",
+                sponsor="S",
+                pm="P",
+                status="on_track",
+            )
+            session.add(project)
+            session.flush()
+            plan = ProjectPlan(project_id=project.id, contingency_pct=0)
+            session.add(plan)
+            session.flush()
+            milestone = PlanMilestone(plan_id=plan.id, name="Pilot", target_date=date(2027, 1, 1))
+            line = PlanEstimateLine(
+                plan_id=plan.id, description="Team", category="people", amount=1
+            )
+            session.add_all([milestone, line])
+            session.flush()
+            session.add(PlanDeliverable(plan_id=plan.id, name="Model", milestone_id=milestone.id))
+            session.flush()
+            if proposal_status is not None:
+                proposal = ProjectProposal(
+                    project_id=project.id, status=proposal_status, created_by=target
+                )
+                refresh_from_plan(proposal, plan_facts(session, plan))
+                session.add(proposal)
+                session.flush()
+                if proposal_status != "draft":
+                    session.add(
+                        ProposalVersion(
+                            proposal_id=proposal.id,
+                            number=1,
+                            content=values_of(proposal),
+                            submitted_by=target,
+                        )
+                    )
+            session.commit()
+            url = f"/api/v1/projects/{project.id}/proposal{suffix}"
+        return {"url": url, "json": body} if body is not None else {"url": url}
+
+    return sample
+
+
+DECISION = {"version": 1, "reason": "Matches the plan and the client's brief"}
 
 
 # Routes with path parameters or a body need a sample request that succeeds when allowed. Each
@@ -559,6 +622,30 @@ SAMPLES = {
     ("DELETE", f"{PLAN}/estimate-lines/{{line_id}}"): _plan_sample(
         "/estimate-lines/{line}?version=1"
     ),
+    ("GET", PROPOSAL): _proposal_sample(""),
+    ("POST", PROPOSAL): _proposal_sample("", None),
+    ("PATCH", PROPOSAL): _proposal_sample("", body={"version": 1, "summary": "A pilot"}),
+    ("POST", f"{PROPOSAL}/refresh"): _proposal_sample("/refresh", body={"version": 1}),
+    ("POST", f"{PROPOSAL}/submit"): _proposal_sample("/submit", body={"version": 1}),
+    ("POST", f"{PROPOSAL}/approve"): _proposal_sample("/approve", "submitted", DECISION),
+    ("POST", f"{PROPOSAL}/return"): _proposal_sample("/return", "submitted", DECISION),
+    ("POST", f"{PROPOSAL}/sent"): _proposal_sample(
+        "/sent",
+        "approved",
+        {
+            "version": 1,
+            "sent_to": "Client contact",
+            "sent_on": date.today().isoformat(),
+            "means": "Email",
+        },
+    ),
+    ("POST", f"{PROPOSAL}/answer"): _proposal_sample(
+        "/answer",
+        "sent",
+        {"version": 1, "answer": "accepted", "answered_on": date.today().isoformat()},
+    ),
+    ("POST", f"{PROPOSAL}/withdraw"): _proposal_sample("/withdraw", body=DECISION),
+    ("GET", f"{PROPOSAL}/versions"): _proposal_sample("/versions", "submitted"),
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -587,6 +674,7 @@ CREATED = {
     ("POST", f"{PLAN}/milestones"),
     ("POST", f"{PLAN}/deliverables"),
     ("POST", f"{PLAN}/estimate-lines"),
+    ("POST", PROPOSAL),
 }
 
 # Allowed deletes answer 204.
@@ -738,6 +826,13 @@ def test_matrix_covers_the_existing_routes():
         assert by_method[("POST", f"{PLAN}/{name}")] == Action.PROJECT_WRITE
         for method in ("PATCH", "DELETE"):
             assert by_method[(method, f"{PLAN}/{name}/{{{item}}}")] == Action.PROJECT_WRITE
+    for path in (PROPOSAL, f"{PROPOSAL}/versions"):
+        assert by_method[("GET", path)] == Action.PROJECT_READ
+    assert by_method[("POST", PROPOSAL)] == by_method[("PATCH", PROPOSAL)] == Action.PROJECT_WRITE
+    for name in ("refresh", "submit", "sent", "answer", "withdraw"):
+        assert by_method[("POST", f"{PROPOSAL}/{name}")] == Action.PROJECT_WRITE
+    for name in ("approve", "return"):
+        assert by_method[("POST", f"{PROPOSAL}/{name}")] == Action.PROPOSAL_APPROVE
 
 
 @pytest.mark.parametrize("role", list(Role))
