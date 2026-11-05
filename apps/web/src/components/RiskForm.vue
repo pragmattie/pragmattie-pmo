@@ -44,6 +44,7 @@ function blank(): RiskInput {
     response_plan: '',
     owner_user_id: null,
     needs_judgement: false,
+    show_in_proposal: false,
   }
 }
 
@@ -61,6 +62,7 @@ function fromRisk(risk: Risk): RiskInput {
     response_plan: risk.response_plan,
     owner_user_id: risk.owner_user_id,
     needs_judgement: risk.needs_judgement,
+    show_in_proposal: risk.show_in_proposal,
   }
 }
 
@@ -179,6 +181,15 @@ async function submit() {
                 label="Needs a person's judgement (for example ethical or reputational)"
                 hide-details
                 data-test="field-needs-judgement"
+              />
+            </v-col>
+            <v-col cols="12">
+              <v-switch
+                v-model="form.show_in_proposal"
+                color="secondary"
+                label="Show in the proposal (the client sees its title and response, never its score)"
+                hide-details
+                data-test="field-show-in-proposal"
               />
             </v-col>
             <v-col cols="6">

@@ -62,6 +62,7 @@ function risk(id: number, changes: Partial<Risk> = {}): Risk {
     owner_user_id: 11,
     status: 'open',
     needs_judgement: false,
+    show_in_proposal: false,
     source: 'person',
     escalated_to: 'sponsor',
     escalated_band: 'Medium',
