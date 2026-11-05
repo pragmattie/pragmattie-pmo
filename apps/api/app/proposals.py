@@ -35,7 +35,6 @@ from sqlalchemy.orm import Session
 from app.models import (
     PlanDeliverable,
     PlanEstimateLine,
-    PlanMilestone,
     ProjectPlan,
     ProjectProposal,
     Risk,
