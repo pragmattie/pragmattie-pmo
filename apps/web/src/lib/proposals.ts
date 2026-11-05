@@ -100,7 +100,7 @@ export const STATUS_TEXT: Record<ProposalStatus, string> = {
 }
 
 const RULE_TEXT: Record<string, string> = {
-  stray_money: 'A money figure that is neither the total nor an estimate line',
+  stray_money: "A money figure that is neither the plan's total nor one of its estimate lines",
   stray_date: 'A date that is not a milestone date',
   missing_deliverable: 'A deliverable in the plan that the proposal lacks',
   missing_milestone: 'A milestone in the plan that the proposal lacks',
@@ -109,6 +109,9 @@ const RULE_TEXT: Record<string, string> = {
   changed_deliverable: 'A deliverable whose description has changed in the plan',
   changed_milestone: 'A milestone whose description has changed in the plan',
   stale_price: 'The price no longer matches the plan',
+  changed_estimate_line: 'An estimate line that has changed in the plan',
+  missing_estimate_line: 'An estimate line in the plan that the proposal lacks',
+  removed_estimate_line: 'An estimate line the plan no longer has',
   closed_risk: 'A risk shown that has since been closed or rejected',
   risk_changed: 'A risk shown, or ticked to show, has changed in the risk register',
 }

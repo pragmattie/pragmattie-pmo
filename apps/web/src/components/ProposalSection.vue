@@ -201,7 +201,7 @@ const withdraw = () => act(() => proposalApi.withdraw(id(), version(), reason.va
       >
         The checker has {{ proposal.flags.length }} open
         {{ proposal.flags.length === 1 ? 'flag' : 'flags' }}; the proposal can't be submitted
-        until each is fixed. Each one is shown beside the section it concerns.
+        or marked sent until each is fixed. Each one is shown beside the section it concerns.
       </v-alert>
       <p v-else class="text-body-2 mb-4" data-test="proposal-clean">The checker has no flags.</p>
 

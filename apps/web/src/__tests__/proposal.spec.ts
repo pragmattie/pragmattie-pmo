@@ -334,6 +334,36 @@ describe('the proposal section', () => {
     expect(error).toContain('summary: $99')
   })
 
+  it('names the flags when the API refuses marking it sent', async () => {
+    const { fetchMock } = await mountAs('project_manager', {
+      stored: proposal({ status: 'approved', latest_version: 1, approved_version: 1, approval_current: true }),
+      versions: [version(1, ['approve'])],
+      answer: {
+        status: 409,
+        detail: {
+          message: "the proposal can't be marked sent while the checker has flags open",
+          flags: [
+            { rule: 'missing_deliverable', section: 'deliverables', text: 'Handbook' },
+            { rule: 'changed_estimate_line', section: 'price', text: 'Estimate line 1: Team' },
+          ],
+        },
+      },
+    })
+    await click('proposal-sent')
+    await type(find('proposal-sent-to'), 'Dana, Northwind buyer')
+    await type(find('proposal-sent-means'), 'Email')
+    await click('proposal-confirm')
+    expect(posts(fetchMock).map((post) => post.path)).toEqual(['/api/v1/projects/5/proposal/sent'])
+    const error = find('proposal-action-error')
+    expect(error?.textContent).toContain('marked sent while the checker has flags open')
+    expect(Array.from(error?.querySelectorAll('li') ?? []).map((item) => item.textContent)).toEqual([
+      'deliverables: Handbook',
+      'price: Estimate line 1: Team',
+    ])
+    // Nothing moved: the proposal is still approved.
+    expect(find('proposal-status')?.textContent).toContain('Approved')
+  })
+
   it.each([
     ['project_manager', ['proposal-edit', 'proposal-refresh', 'proposal-submit', 'proposal-withdraw']],
     ['sponsor', []],
