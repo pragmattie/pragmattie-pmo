@@ -252,10 +252,58 @@ def test_figures_and_dates_the_agent_wrote_are_removed_and_recorded():
         {"section": "summary", "kind": "date", "text": "2027-02-01"},
         {"section": "summary", "kind": "date", "text": "15 January 2027"},
         {"section": "summary", "kind": "money", "text": "$12,000"},
-        {"section": "summary", "kind": "money", "text": "9,500.00"},
         {"section": "summary", "kind": "money", "text": "$40k"},
+        {"section": "summary", "kind": "money", "text": "9,500.00"},
         {"section": "terms", "kind": "date", "text": "March 3, 2027"},
     ]
+
+
+@pytest.mark.parametrize(
+    ("written", "kind"),
+    [
+        ("March 2027", "date"),
+        ("30 June", "date"),
+        ("June 30", "date"),
+        ("15/03/2027", "date"),
+        ("03-15-2027", "date"),
+        ("Q3 2027", "date"),
+        ("Q3", "date"),
+        ("2027", "date"),
+        ("50000 dollars", "money"),
+        ("USD 50000", "money"),
+        ("12500 euros", "money"),
+        ("$40k", "money"),
+        ("40k", "money"),
+    ],
+)
+def test_every_date_or_amount_the_agent_wrote_is_removed_even_where_the_checker_reads_none(
+    written, kind
+):
+    checked = proposal_agent.validate(_output(summary=f"We agree on {written} here."), _facts())
+    assert checked.sections["summary"] == "We agree on here."
+    assert checked.removed == [{"section": "summary", "kind": kind, "text": written}]
+
+
+def test_counts_survive_the_removal():
+    text = (
+        "We run 3 workshops in 2 phases over 10 days with 4 interviews, 1.5 analysts, "
+        "a 20% sample, and it may 3 times need a review."
+    )
+    checked = proposal_agent.validate(_output(summary=text), _facts())
+    assert checked.sections["summary"] == text
+    assert checked.removed == []
+
+
+def test_a_token_in_doubled_braces_is_filled_with_no_braces_left():
+    checked = proposal_agent.validate(
+        _output(summary="The price is {{total}} by {{milestone:1:date}}{{price}}."), _facts()
+    )
+    assert checked.sections["summary"] == "The price is $1,650.00 by 1 March 2027."
+    assert [f["token"] for f in checked.filled if f["section"] == "summary"] == [
+        "{{total}}",
+        "{{milestone:1:date}}",
+    ]
+    assert checked.removed == [{"section": "summary", "kind": "token", "text": "{{price}}"}]
 
 
 def test_even_a_figure_that_matches_the_plan_is_removed_when_the_agent_wrote_it():

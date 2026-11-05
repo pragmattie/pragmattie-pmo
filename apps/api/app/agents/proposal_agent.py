@@ -5,7 +5,10 @@ Limits (also in docs/agents.md, "Proposal agent"):
 - **Reads** one draft proposal's project: its name, its client's name, its brief (purpose,
   objectives, scope in and out), its assumptions that aren't known to be wrong, its plan (scope in
   and out, estimate lines, milestones and deliverables) and the risks the proposal shows (title and
-  response only). Amounts and dates reach it only as tokens, never as values. It never sees
+  response only). The plan's structured values (the total, line amounts, milestone dates) reach
+  it only as tokens, never as values. Free text from the brief and the plan (purpose, objectives,
+  scope, assumptions, descriptions) goes to it as written, so it may hold a figure or date; any
+  the agent copies from there into its draft is removed by the rule below. It never sees
   people's names or emails, a risk's score, or the brief's budget and dates.
 - **May write**, only when `AGENT_MODE` is `enforce`: the proposal's text sections (summary, scope
   in, scope out, assumptions and terms), each marked `source = agent` and unreviewed; plus one
@@ -16,9 +19,11 @@ Limits (also in docs/agents.md, "Proposal agent"):
   confirms or marks anything sent.
 - **Figures through tokens:** the model writes `{total}`, `{line:N:amount}`,
   `{milestone:N:name}`, `{milestone:N:date}` or `{deliverable:N}`, and code puts in the plan's
-  value. An unknown token, and any money figure or date the model wrote itself (as the checker in
-  `app.proposals` reads them), is removed and recorded. Counts such as "3 workshops" stay. The
-  checker then runs on the result.
+  value (`{{total}}` counts as `{total}`). An unknown token, and every date or amount the model
+  wrote itself, is removed and recorded: the forms the checker in `app.proposals` reads, and also
+  a month and year, a day and month, a numeric date, a quarter, a year on its own, and a number
+  next to a currency word, code or sign either way round ("USD 50000", "12500 euros", "40k").
+  Counts such as "3 workshops" stay. The checker, unchanged, then runs on the result.
 - **Caps**, enforced here in code and never trusted from the model: one Claude call per run;
   `PROPOSAL_AGENT_MAX_TOKENS` output tokens; a section longer than `LONG_TEXT_MAX` characters once
   its tokens are filled in is dropped; anything outside the schema is dropped.
@@ -68,10 +73,8 @@ from app.models.intake import LONG_TEXT_MAX
 from app.models.planning import ProjectAssumption, ProjectBrief
 from app.models.proposal import TEXT_SECTIONS
 from app.proposals import (
-    _DAY_MONTH,
-    _ISO_DATE,
     _MONEY,
-    _MONTH_DAY,
+    _MONTH,
     PlanFacts,
     _amounts,
     may_replace,
@@ -277,18 +280,60 @@ def cost_ceiling(request: dict[str, Any], settings: Settings) -> Decimal:
 
 # --- Checking the output
 
-_TOKEN = re.compile(r"\{([^{}]{0,80})\}")
+# "{total}", and "{{total}}" with its doubled braces, are both one token.
+_TOKEN = re.compile(r"\{+([^{}]{0,80})\}+")
+
+# Wider than the checker on purpose: the agent may not write any date or amount, so its own
+# text loses forms the checker doesn't read. The checker itself is unchanged.
+_DAY = r"\d{1,2}(?:st|nd|rd|th)?"
+_YEAR = r"\d{4}"
+_AGENT_DATES = (
+    # 2027-03-15, 15/03/2027, 03-15-2027, 15.03.2027
+    re.compile(r"(?<![\w./-])\d{1,4}([/.-])\d{1,2}\1\d{1,4}(?![\w/-]|\.\d)"),
+    # 15 March 2027, 30 June, 30th of June
+    re.compile(rf"\b{_DAY}\s+(?:of\s+)?{_MONTH}(?:,?\s+{_YEAR}\b|(?!\w))", re.I),
+    # March 15, 2027, June 30, May 3 (but not the verb in "it may 3 times")
+    re.compile(
+        rf"\b(?!(?-i:may)\s+{_DAY}\b(?!,?\s+{_YEAR})){_MONTH}\s+{_DAY}(?:,?\s+{_YEAR})?\b", re.I
+    ),
+    # March 2027
+    re.compile(rf"\b{_MONTH}\s+(?:of\s+)?{_YEAR}\b", re.I),
+    # Q3 2027, Q3
+    re.compile(rf"\bQ[1-4](?:[\s/-]*{_YEAR})?\b", re.I),
+)
+_YEAR_ALONE = re.compile(r"(?<![\w.,])(?:19|20)\d{2}(?![\w.,]\d|\w|\s?%)")
+
+_SIGN = r"(?:\b(?:US|AU|A|C|NZ))?[$£€¥]"
+_CODE = r"(?:usd|eur|gbp|aud|cad|nzd|chf|jpy|dollars?|euros?|pounds?|sterling)"
+_NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+_SCALE = r"(?:\s?(?:k|m|mn|bn)|\s(?:thousand|million|billion))"
+_AGENT_MONEY = (
+    # $40k, USD 50000, EUR 12,500.00
+    re.compile(rf"(?:{_SIGN}|\b{_CODE}\b\.?)\s?(?:{_SIGN}\s?)?{_NUMBER}{_SCALE}?(?!\w)", re.I),
+    # 50000 dollars, 12500 euros, 300 €
+    re.compile(rf"(?<![\w.,]){_NUMBER}{_SCALE}?\s?(?:[$£€¥]|{_CODE}\b)", re.I),
+    # 40k, 2.5k
+    re.compile(r"(?<![\w.,])\d+(?:\.\d+)?\s?k\b", re.I),
+)
 
 
 def _strip_figures(text: str, section: str, checked: Checked) -> str:
-    """`text` without the dates and money figures the checker reads, each one recorded."""
+    """`text` without any date or amount the agent wrote, each one recorded: every form the
+    checker reads, and more (a month and year, a day and month, a numeric date, a quarter, a
+    year on its own, a number next to a currency word, code or sign). Counts such as
+    "3 workshops" stay."""
 
-    def cut_date(match: re.Match) -> str:
-        checked.remove(section, "date", match.group(0))
-        return " "
+    def cutter(kind: str):
+        def cut(match: re.Match) -> str:
+            checked.remove(section, kind, match.group(0).strip())
+            return " "
 
-    for pattern in (_ISO_DATE, _DAY_MONTH, _MONTH_DAY):
-        text = pattern.sub(cut_date, text)
+        return cut
+
+    for pattern in _AGENT_DATES:
+        text = pattern.sub(cutter("date"), text)
+    for pattern in _AGENT_MONEY:
+        text = pattern.sub(cutter("money"), text)
 
     def cut_money(match: re.Match) -> str:
         # The checker's own rule, so a count such as "3 workshops" is never cut.
@@ -297,7 +342,8 @@ def _strip_figures(text: str, section: str, checked: Checked) -> str:
         checked.remove(section, "money", match.group(0).strip())
         return " "
 
-    return _MONEY.sub(cut_money, text)
+    text = _MONEY.sub(cut_money, text)
+    return _YEAR_ALONE.sub(cutter("date"), text)
 
 
 def _tidy(text: str) -> str:
