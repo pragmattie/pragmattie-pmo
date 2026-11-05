@@ -6,6 +6,7 @@ import {
   approvalText,
   approvedCopy,
   buttonsFor,
+  draftText,
   eventText,
   flagsFor,
   type Proposal,
@@ -23,7 +24,8 @@ import { useAuthStore } from '../stores/auth'
 // concern, what the API copied from the plan (price, milestones, deliverables, risks shown), the
 // status with the buttons the signed-in role may use, and the version history. Marking it sent
 // records what a person did outside the product: nothing is sent from here. A project with no
-// client has no proposal.
+// client has no proposal. "Draft with agent" asks the proposal agent (item 5.3) for the text; each
+// section it wrote shows "Agent draft, not reviewed" until a person edits or confirms it.
 const props = defineProps<{ projectId: number; clientName: string | null }>()
 
 const auth = useAuthStore()
@@ -34,6 +36,7 @@ const error = ref('')
 const actionError = ref('')
 const actionDetails = ref<string[]>([])
 const busy = ref(false)
+const agentNote = ref('')
 // Which form is open: editing the text, a decision, marking sent, the answer or withdrawing.
 const open = ref<'edit' | 'approve' | 'return' | 'sent' | 'answer' | 'withdraw' | null>(null)
 const draft = reactive<Record<TextSection, string>>({
@@ -73,6 +76,7 @@ async function act(step: () => Promise<Proposal>) {
   busy.value = true
   actionError.value = ''
   actionDetails.value = []
+  agentNote.value = ''
   try {
     proposal.value = await step()
     versions.value = await proposalApi.versions(props.projectId)
@@ -134,6 +138,24 @@ const recordAnswer = () =>
   act(() =>
     proposalApi.answer(id(), version(), answer.value, answer.on, answer.note.trim() || null),
   )
+const confirmSection = (section: TextSection) =>
+  act(() => proposalApi.confirm(id(), version(), section))
+
+async function draftWithAgent() {
+  busy.value = true
+  actionError.value = ''
+  actionDetails.value = []
+  agentNote.value = ''
+  try {
+    const result = await proposalApi.draft(id())
+    agentNote.value = draftText(result)
+    proposal.value = await proposalApi.get(id())
+  } catch (failure) {
+    actionError.value = (failure as Error).message
+  } finally {
+    busy.value = false
+  }
+}
 const withdraw = () => act(() => proposalApi.withdraw(id(), version(), reason.value))
 </script>
 
@@ -212,9 +234,22 @@ const withdraw = () => act(() => proposalApi.withdraw(id(), version(), reason.va
         </ul>
       </v-alert>
 
+      <v-alert v-if="agentNote" type="info" variant="tonal" class="mb-4" data-test="proposal-agent-note">
+        {{ agentNote }}
+      </v-alert>
+
       <div class="d-flex flex-wrap ga-2 mb-4" data-test="proposal-buttons">
         <v-btn v-if="buttons.edit" variant="outlined" data-test="proposal-edit" @click="startEdit">
           Edit the text
+        </v-btn>
+        <v-btn
+          v-if="buttons.agent"
+          variant="outlined"
+          :loading="busy"
+          data-test="proposal-agent-draft"
+          @click="draftWithAgent"
+        >
+          Draft with agent
         </v-btn>
         <v-btn
           v-if="buttons.edit"
@@ -335,6 +370,21 @@ const withdraw = () => act(() => proposalApi.withdraw(id(), version(), reason.va
           <tr v-for="section in TEXT_SECTIONS" :key="section.key" :data-test="`proposal-section-${section.key}`">
             <th scope="row">{{ section.title }}</th>
             <td class="pre">
+              <div v-if="proposal.sections?.[section.key]?.unreviewed" class="d-flex align-center ga-2 mb-1">
+                <v-chip size="small" color="warning" variant="tonal" data-test="proposal-agent-chip">
+                  Agent draft, not reviewed
+                </v-chip>
+                <v-btn
+                  v-if="buttons.agent"
+                  size="small"
+                  variant="text"
+                  :loading="busy"
+                  :data-test="`proposal-confirm-${section.key}`"
+                  @click="confirmSection(section.key)"
+                >
+                  Confirm
+                </v-btn>
+              </div>
               {{ proposal[section.key] ?? 'Not written yet' }}
               <div
                 v-for="flag in flagsFor(proposal.flags, section.key)"
