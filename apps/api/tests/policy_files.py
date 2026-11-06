@@ -1,4 +1,4 @@
-"""Policy directories for tests that need the gates or changes file.
+"""Policy directories for tests that need the gates, changes or autonomy file.
 
 The gates file is drafted in ci/proposed/policies/ and applied to policies/ by a person. Tests load
 the real file from the repository (never a copy of its contents written into a test): the draft
@@ -33,3 +33,10 @@ def changes_dir() -> Path:
     if (APPLIED_POLICIES / "changes.yaml").exists():
         return APPLIED_POLICIES
     return DRAFT_POLICIES
+
+
+def autonomy_dir() -> Path:
+    """Where the autonomy policy is: the draft while it is pending, else policies/."""
+    if (DRAFT_POLICIES / "autonomy.yaml").exists():
+        return DRAFT_POLICIES
+    return APPLIED_POLICIES

@@ -144,6 +144,10 @@ features:
     title: Agents move the work, people decide
     rules: [R1, R2, R3, R4, R5]
     notes: autonomy.yaml says which steps an agent does, after a window or never; the orchestrator runs them; decisions in R1 stay a person's.
+  - id: P6-autonomy-policy
+    title: The autonomy policy
+    rules: [R1, R2, R3, R4, R9]
+    notes: autonomy.yaml sets each step to agent, window or person; five steps are person-only in code; off switches send steps to a person; needs_judgement risks are never agent-scored.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports

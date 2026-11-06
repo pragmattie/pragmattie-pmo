@@ -18,7 +18,16 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-Nothing.
+- **`policies/autonomy.yaml`** (item 6.1): for each of the 15 steps in a project's life, whether
+  an agent does it (`agent`), an agent does it after a 15-minute window the project manager may
+  hold (`window`), or a person does it (`person`), plus an off switch per agent. Starting values:
+  drafting steps and the simulated client's answer `agent`; `score_risk`, `open_low_risk` and
+  `submit_proposal` `window`; every other step `person`. The five person-only steps are enforced
+  in code, and each step's `who` must hold the permission its decision needs. `accept_risk` names
+  `project_manager`, but a risk's band still decides who may accept it, so a Medium or High risk
+  goes to the sponsor. No agent may decide a change (`decide_change_pm`) until a later item adds
+  one. Copy it to `policies/autonomy.yaml` as is; until then `GET /api/v1/autonomy` answers
+  503.
 
 ## Applied
 

@@ -895,6 +895,7 @@ def test_matrix_covers_the_existing_routes():
         ("GET", "/api/v1/clients"),
         ("GET", "/api/v1/projects"),
         ("GET", "/api/v1/standards"),
+        ("GET", "/api/v1/autonomy"),
         ("GET", "/api/v1/auth/me"),
         ("PATCH", "/api/v1/users/{user_id}/role"),
         ("POST", "/api/v1/users/{user_id}/unlock"),
@@ -950,6 +951,7 @@ def test_matrix_covers_the_existing_routes():
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
     assert guards["/api/v1/clients"] == guards["/api/v1/projects"] == Action.PROJECT_READ
     assert guards["/api/v1/standards"] == Action.STANDARDS_READ
+    assert guards["/api/v1/autonomy"] == Action.PROJECT_READ
     assert guards["/api/v1/users/{user_id}/role"] == Action.USER_ADMIN
     assert guards["/api/v1/users/{user_id}/unlock"] == Action.USER_ADMIN
     assert guards["/api/v1/auth/me"] == "signed_in"

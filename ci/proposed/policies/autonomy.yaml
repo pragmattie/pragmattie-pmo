@@ -1,0 +1,95 @@
+# The autonomy policy (item 6.1): for every step in a project's life, whether an agent does it
+# alone (`agent`), an agent does it after an objection window unless a person holds it
+# (`window`), or a person does it (`person`). Read and validated by apps/api/app/autonomy.py.
+#
+# Rules for editing (the loader refuses a file that breaks them):
+# - Every step is listed exactly once, by its fixed id; unknown keys are refused.
+# - `who` is required on every step: on a `person` step it is the role that decides; on a
+#   `window` step the role that may hold it; on an `agent` step the role that gets the step when
+#   the agent is switched off.
+# - `who` must hold the permission the step needs: gate:decide for pass_gate and
+#   decide_change_sponsor, proposal:approve for approve_proposal, risk:accept for accept_risk,
+#   project:write for every other step. Read-only roles (auditor, admin) can never be `who`.
+# - `agent` names the agent for `agent` and `window` steps only, and must be one the code allows
+#   for that step.
+# - `window_minutes` (a whole number from 1 to 1440) is required on `window` steps and allowed
+#   nowhere else.
+# - approve_proposal, send_proposal, accept_risk, pass_gate and decide_change_sponsor are always
+#   decided by a person. This is enforced in code, not by this file.
+# - score_risk never applies to a risk marked needs_judgement: a person scores it, whatever the
+#   mode here says.
+# - `agents.<name>.enabled: false` switches an agent off; its steps then go to `who`.
+version: 1
+steps:
+  draft_value_case:
+    mode: agent
+    agent: intake_agent
+    who: project_manager
+  draft_readiness:
+    mode: agent
+    agent: intake_agent
+    who: project_manager
+  draft_plan:
+    mode: agent
+    agent: planner_agent
+    who: project_manager
+  propose_risks:
+    mode: agent
+    agent: risk_agent
+    who: project_manager
+  score_risk:
+    mode: window
+    agent: risk_agent
+    who: project_manager
+    window_minutes: 15
+  open_low_risk:
+    mode: window
+    agent: risk_agent
+    who: project_manager
+    window_minutes: 15
+  draft_proposal:
+    mode: agent
+    agent: proposal_agent
+    who: project_manager
+  # Only once every section is reviewed; the orchestrator (6.2) enforces that.
+  submit_proposal:
+    mode: window
+    agent: proposal_agent
+    who: project_manager
+    window_minutes: 15
+  approve_proposal:
+    mode: person
+    who: sponsor
+  send_proposal:
+    mode: person
+    who: project_manager
+  client_answer:
+    mode: agent
+    agent: simulated_client
+    who: project_manager
+  # The project manager takes the step, but the risk's band still decides who may accept that
+  # risk: its escalation owner in policies/risk.yaml, so a Medium or High risk goes to the sponsor.
+  accept_risk:
+    mode: person
+    who: project_manager
+  pass_gate:
+    mode: person
+    who: sponsor
+  # Not a floor step, but no agent may decide a change until a later item adds one.
+  decide_change_pm:
+    mode: person
+    who: project_manager
+  decide_change_sponsor:
+    mode: person
+    who: sponsor
+agents:
+  intake_agent:
+    enabled: true
+  risk_agent:
+    enabled: true
+  proposal_agent:
+    enabled: true
+  planner_agent:
+    enabled: true
+  simulated_client:
+    enabled: true
