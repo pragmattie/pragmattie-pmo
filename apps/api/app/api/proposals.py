@@ -396,7 +396,7 @@ def create_proposal(project_id: int, user: Creator, db: Db) -> ProposalOut:
             agent=AUDIT_AGENT,
             subject_type=PROJECT_SUBJECT,
             subject_id=str(project_id),
-            version=1,
+            version=project.version,
             actor_user_id=user.id,
             output=None,
             action_taken={
