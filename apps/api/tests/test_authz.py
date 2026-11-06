@@ -25,13 +25,16 @@ from app.authz import (
     not_own_submission,
     require,
 )
+from app.baselines import freeze
 from app.config import get_settings
 from app.db import engine
 from app.main import app, create_app
 from app.models import (
     AuditDecision,
     Base,
+    ChangeRequest,
     Client,
+    GateDecision,
     PlanDeliverable,
     PlanEstimateLine,
     PlanMilestone,
@@ -523,6 +526,67 @@ def _go_ahead_sample(body: dict | None = None):
 
 
 GO_AHEAD = "/api/v1/projects/{project_id}/gate"
+CHANGES = "/api/v1/projects/{project_id}/changes"
+CHANGE = f"{CHANGES}/{{change_id}}"
+CHANGE_SET = {
+    "scope_in": None,
+    "scope_out": None,
+    "add_deliverables": [],
+    "remove_deliverables": [],
+    "move_milestones": [],
+    "add_lines": [{"description": "More", "category": "people", "amount": "500.00"}],
+    "remove_lines": [],
+    "change_lines": [],
+    "contingency_pct": None,
+}
+
+
+def _change_sample(suffix: str = "", body: dict | None = None, *, status: str | None = None):
+    """A project in delivery managed by the target project manager, with baseline 1 (total 1.00)
+    made at the go-ahead gate. With `status`, it has a sponsor-level change request in that status
+    raised by the caller (a draft or submitted one) or by the target (a submitted one to decide),
+    so whoever may act on it isn't acting on their own."""
+
+    def sample(target: int) -> dict:
+        _go_ahead_sample()(target)
+        with Session(engine) as session:
+            project = session.scalar(select(Project).order_by(Project.id.desc()).limit(1))
+            project.stage = "delivery"
+            plan = session.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+            decision = GateDecision(
+                gate_id="go_ahead",
+                subject_type="project",
+                subject_id=project.id,
+                outcome="pass",
+                decided_by=target,
+                reason="The plan is complete and inside the budget",
+                criteria=[],
+                policy_version="test",
+            )
+            session.add(decision)
+            session.flush()
+            freeze(session, plan, decision.id)
+            url = f"/api/v1/projects/{project.id}/changes"
+            if status is not None:
+                caller = session.scalar(select(User.id).order_by(User.id.desc()).limit(1))
+                change = ChangeRequest(
+                    project_id=project.id,
+                    title="More analysis",
+                    reason="The client asked for more",
+                    changes=CHANGE_SET,
+                    effect={"escalations": ["cost_above_limit"]},
+                    decider="sponsor",
+                    measured_baseline_number=1,
+                    status=status,
+                    raised_by=target if suffix == "/decide" else caller,
+                )
+                session.add(change)
+                session.flush()
+                url += f"/{change.id}{suffix}"
+            session.commit()
+        return {"url": url, "json": body} if body is not None else {"url": url}
+
+    return sample
 
 
 # Routes with path parameters or a body need a sample request that succeeds when allowed. Each
@@ -727,6 +791,23 @@ SAMPLES = {
             ],
         }
     ),
+    ("GET", CHANGES): _change_sample(),
+    ("POST", CHANGES): _change_sample(
+        "",
+        {
+            "title": "More analysis",
+            "reason": "The client asked for more",
+            "changes": {"contingency_pct": 5},
+        },
+    ),
+    ("PATCH", CHANGE): _change_sample("", {"version": 1, "title": "Renamed"}, status="draft"),
+    ("POST", f"{CHANGE}/submit"): _change_sample("/submit", {"version": 1}, status="draft"),
+    ("POST", f"{CHANGE}/withdraw"): _change_sample("/withdraw", {"version": 1}, status="submitted"),
+    ("POST", f"{CHANGE}/decide"): _change_sample(
+        "/decide",
+        {"version": 1, "outcome": "reject", "reason": "Not worth it for this pilot phase"},
+        status="submitted",
+    ),
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -756,6 +837,7 @@ CREATED = {
     ("POST", f"{PLAN}/deliverables"),
     ("POST", f"{PLAN}/estimate-lines"),
     ("POST", PROPOSAL),
+    ("POST", CHANGES),
 }
 
 # Allowed deletes answer 204.
@@ -777,14 +859,25 @@ REFUSED = {
 }
 
 # Routes that also need a role the gates policy lists: other roles holding the action get 403.
+# A sponsor-level change request is decided under the go-ahead gate's rules.
 GATE_DECIDERS = {
     ("POST", "/api/v1/requests/{request_id}/gate"): {Role.SPONSOR},
     ("POST", GO_AHEAD): {Role.SPONSOR},
+    ("POST", f"{CHANGE}/decide"): {Role.SPONSOR},
 }
 
 
+def _holds(guard, role: Role) -> bool:
+    """Whether `role` passes the guard: one action, or any of a set of them."""
+    if guard == "signed_in":
+        return True
+    if isinstance(guard, frozenset):
+        return bool(guard & PERMISSIONS[role])
+    return guard in PERMISSIONS[role]
+
+
 def _expected(guard, role: Role, method: str = "GET", path: str = "") -> int:
-    if guard != "signed_in" and guard not in PERMISSIONS[role]:
+    if not _holds(guard, role):
         return 403
     if role not in GATE_DECIDERS.get((method, path), set(Role)):
         return 403
@@ -846,6 +939,12 @@ def test_matrix_covers_the_existing_routes():
         ("DELETE", "/api/v1/projects/{project_id}/assumptions/{assumption_id}"),
         ("GET", GO_AHEAD),
         ("POST", GO_AHEAD),
+        ("GET", CHANGES),
+        ("POST", CHANGES),
+        ("PATCH", CHANGE),
+        ("POST", f"{CHANGE}/submit"),
+        ("POST", f"{CHANGE}/withdraw"),
+        ("POST", f"{CHANGE}/decide"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -924,6 +1023,18 @@ def test_matrix_covers_the_existing_routes():
         assert by_method[("POST", f"{PROPOSAL}/{name}")] == Action.PROPOSAL_APPROVE
     assert by_method[("GET", GO_AHEAD)] == Action.PROJECT_READ
     assert by_method[("POST", GO_AHEAD)] == Action.GATE_DECIDE
+    assert by_method[("GET", CHANGES)] == Action.PROJECT_READ
+    for method, path in (
+        ("POST", CHANGES),
+        ("PATCH", CHANGE),
+        ("POST", f"{CHANGE}/submit"),
+        ("POST", f"{CHANGE}/withdraw"),
+    ):
+        assert by_method[(method, path)] == Action.PROJECT_WRITE
+    # A project manager decides a small change and a sponsor a large one: the route checks which.
+    assert by_method[("POST", f"{CHANGE}/decide")] == frozenset(
+        {Action.GATE_DECIDE, Action.PROJECT_WRITE}
+    )
 
 
 @pytest.mark.parametrize("role", list(Role))
