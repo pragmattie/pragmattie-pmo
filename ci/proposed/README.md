@@ -18,13 +18,15 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
+Nothing.
+
+## Applied
+
 - **`policies/changes.yaml`** (item 5.5): who decides a change request, by its size against the
   current baseline. The project manager decides a change that adds at most 5% to the baseline
   total, moves no milestone later by more than 5 working days and changes no scope; everything
-  else goes to `sponsor`. Copy `ci/proposed/policies/changes.yaml` to `policies/changes.yaml`
-  unchanged. Until then the change request routes return 503; the tests load the draft.
-
-## Applied
+  else goes to `sponsor`. Applied with one comment corrected (the percentage is compared
+  unrounded, as the code does). The change request routes now answer instead of returning 503.
 
 - **`policies/gates.yaml`** (item 5.4): adds the go-ahead gate (planning to delivery, for
   projects, decided by `sponsor`) with its six automatic checks and two person criteria; the
