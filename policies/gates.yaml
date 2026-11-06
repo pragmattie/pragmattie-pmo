@@ -1,5 +1,5 @@
-# Stage gates (item 4.4). Each gate sits between two stages and lists what must be true before it
-# is passed, and which roles may decide it. Drafted by an agent; a person applies it over
+# Stage gates (items 4.4 and 5.4). Each gate sits between two stages and lists what must be true
+# before it is passed, and which roles may decide it. Drafted by an agent; a person applies it over
 # policies/gates.yaml.
 #
 # - from_stage and to_stage are one of: intake, planning, delivery, closure, closed.
@@ -33,4 +33,38 @@ gates:
         person: true
       - id: people_available
         text: We have, or can get, the people to do it
+        person: true
+
+  # The go-ahead gate (item 5.4): a project in planning moves to delivery, and its plan becomes
+  # baseline 1, which change requests are measured against.
+  - id: go_ahead
+    name: Go-ahead gate
+    from_stage: planning
+    to_stage: delivery
+    applies_to: project
+    deciders: [sponsor]
+    criteria:
+      - id: plan_complete
+        text: The plan is complete
+        check: plan_complete
+      - id: estimate_within_budget
+        text: The plan's total is at or below the brief's top budget
+        check: estimate_within_budget
+      - id: proposal_accepted
+        text: For a client project, the client has accepted the latest proposal
+        check: proposal_accepted
+      - id: no_unreviewed_risks
+        text: No risk on the project is still waiting to be reviewed
+        check: no_unreviewed_risks
+      - id: escalations_settled
+        text: No open risk escalated beyond the project manager is still waiting
+        check: escalations_settled
+      - id: readiness_not_red
+        text: For a project from a request that uses AI, no readiness area is rated red
+        check: readiness_not_red
+      - id: team_and_dates_realistic
+        text: The team and dates in the plan are realistic
+        person: true
+      - id: risks_acceptable
+        text: The project's risks are acceptable to start
         person: true
