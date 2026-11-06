@@ -22,7 +22,8 @@ import {
 
 // Projects (item 4.6). Without an id, the list of projects; with one, the project: its brief,
 // plan (item 5.1), proposal (item 5.2), the go-ahead gate and its latest baseline (item 5.4), its
-// change requests once in delivery (item 5.5), stakeholders and assumptions, a link to its risks and one back to the request it came from.
+// change requests once in delivery (item 5.5), stakeholders and assumptions, a link to its risks
+// and one back to the request it came from.
 // The API guards every route; the baseline is read-only.
 const route = useRoute()
 const projectId = computed(() => (route.params.id ? Number(route.params.id) : null))

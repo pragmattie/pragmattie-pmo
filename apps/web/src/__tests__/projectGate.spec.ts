@@ -68,6 +68,7 @@ const BASELINE: Baseline = {
   project_id: 5,
   number: 1,
   gate_decision_id: 1,
+  change_request_id: null,
   plan: {
     scope_in: 'A weekly forecast',
     scope_out: null,
