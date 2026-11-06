@@ -1,0 +1,252 @@
+"""The autonomy policy (item 6.1): the loader, the floors, the off switches, the R9 rule for
+`score_risk`, and the read-only route."""
+
+import copy
+import hashlib
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+import yaml
+from fastapi.testclient import TestClient
+from policy_files import autonomy_dir
+from sqlalchemy.orm import Session
+
+from app import autonomy
+from app.autonomy import (
+    AGENTS,
+    FLOOR_STEPS,
+    STEPS,
+    effective_mode,
+    load_autonomy,
+    parse_autonomy,
+)
+from app.db import engine
+from app.main import app
+from app.models import Base
+from app.policy import PolicyError
+
+
+@pytest.fixture
+def db():
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine, expire_on_commit=False) as session:
+            yield session
+    finally:
+        Base.metadata.drop_all(engine)
+
+
+def _proposed() -> dict:
+    return yaml.safe_load((autonomy_dir() / "autonomy.yaml").read_text())
+
+
+def _with(change) -> dict:
+    data = copy.deepcopy(_proposed())
+    change(data)
+    return data
+
+
+def _refused(data: dict, message: str) -> None:
+    with pytest.raises(PolicyError, match="autonomy.yaml") as raised:
+        parse_autonomy(data)
+    assert message in str(raised.value)
+
+
+# --- The proposed file
+
+
+def test_the_loader_accepts_the_proposed_file():
+    loaded = load_autonomy(autonomy_dir())
+    assert tuple(loaded.steps) == STEPS
+    raw = (autonomy_dir() / "autonomy.yaml").read_bytes()
+    assert loaded.digest == hashlib.sha256(raw).hexdigest()
+    steps = loaded.steps
+    for step in ("draft_value_case", "draft_readiness", "draft_plan", "draft_proposal"):
+        assert steps[step].mode == "agent"
+    for step in ("score_risk", "open_low_risk", "submit_proposal"):
+        assert steps[step].mode == "window"
+        assert steps[step].window_minutes == 15
+        assert steps[step].who == "project_manager"
+    assert steps["client_answer"].mode == "agent"
+    assert steps["client_answer"].agent == "simulated_client"
+    for step in FLOOR_STEPS:
+        assert steps[step].mode == "person"
+    assert dict(loaded.enabled) == dict.fromkeys(AGENTS, True)
+
+
+def test_floor_steps_are_fixed_in_code():
+    assert FLOOR_STEPS == {
+        "approve_proposal",
+        "send_proposal",
+        "accept_risk",
+        "pass_gate",
+        "decide_change_sponsor",
+    }
+
+
+# --- Refusing bad files
+
+
+@pytest.mark.parametrize("step", sorted(FLOOR_STEPS))
+@pytest.mark.parametrize("mode", ["agent", "window"])
+def test_a_floor_step_below_person_is_refused(step, mode):
+    def change(data):
+        data["steps"][step] = {"mode": mode, "agent": "risk_agent", "who": "sponsor"}
+        if mode == "window":
+            data["steps"][step]["window_minutes"] = 15
+
+    _refused(_with(change), f"{step} must be decided by a person")
+
+
+def _drop(data, *path):
+    *parents, last = path
+    for key in parents:
+        data = data[key]
+    del data[last]
+
+
+def _set(data, value, *path):
+    *parents, last = path
+    for key in parents:
+        data = data[key]
+    data[last] = value
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda d: _set(d, {"mode": "person", "who": "sponsor"}, "steps", "sing"), "unknown steps"),
+        (lambda d: _drop(d, "steps", "draft_plan"), "missing steps: draft_plan"),
+        (lambda d: _set(d, "robot", "steps", "draft_plan", "agent"), "unknown agent 'robot'"),
+        (lambda d: _set(d, "intern", "steps", "pass_gate", "who"), "unknown role 'intern'"),
+        (lambda d: _drop(d, "steps", "pass_gate", "who"), "missing keys: who"),
+        (lambda d: _drop(d, "steps", "score_risk", "window_minutes"), "needs its minutes"),
+        (lambda d: _set(d, 0, "steps", "score_risk", "window_minutes"), "from 1 to 1440"),
+        (lambda d: _set(d, 1441, "steps", "score_risk", "window_minutes"), "from 1 to 1440"),
+        (lambda d: _set(d, 1.5, "steps", "score_risk", "window_minutes"), "from 1 to 1440"),
+        (lambda d: _set(d, True, "steps", "score_risk", "window_minutes"), "from 1 to 1440"),
+        (
+            lambda d: _set(d, 15, "steps", "draft_plan", "window_minutes"),
+            "only a window step has minutes",
+        ),
+        (lambda d: _set(d, "sometimes", "steps", "draft_plan", "mode"), "unknown mode"),
+        (lambda d: _drop(d, "steps", "draft_plan", "agent"), "must name its agent"),
+        (
+            lambda d: _set(d, "risk_agent", "steps", "decide_change_pm", "agent"),
+            "only an agent or window step names an agent",
+        ),
+        (
+            lambda d: _set(d, "intake_agent", "steps", "score_risk", "agent"),
+            "intake_agent can't do score_risk; agents that may: risk_agent",
+        ),
+        (
+            lambda d: _set(
+                d,
+                {"mode": "agent", "agent": "risk_agent", "who": "project_manager"},
+                "steps",
+                "decide_change_pm",
+            ),
+            "risk_agent can't do decide_change_pm; agents that may: none",
+        ),
+        (lambda d: _set(d, "x", "steps", "draft_plan", "note"), "unknown keys: note"),
+        (lambda d: _set(d, {"enabled": True}, "agents", "ghost"), "unknown agents: ghost"),
+        (lambda d: _drop(d, "agents", "risk_agent"), "missing agents: risk_agent"),
+        (lambda d: _set(d, "no", "agents", "risk_agent", "enabled"), "expected true or false"),
+        (lambda d: _set(d, 1, "agents", "risk_agent", "limit"), "unknown keys: limit"),
+        (lambda d: _set(d, {}, "extra"), "unknown keys: extra"),
+        (lambda d: _drop(d, "agents"), "missing keys: agents"),
+    ],
+)
+def test_the_loader_refuses_a_bad_file_clearly(change, message):
+    _refused(_with(change), message)
+
+
+def test_a_missing_or_wrong_version_file_is_refused(tmp_path: Path):
+    with pytest.raises(PolicyError, match="autonomy.yaml: policy file not found"):
+        load_autonomy(tmp_path)
+    (tmp_path / "autonomy.yaml").write_text("version: 2\n")
+    with pytest.raises(PolicyError, match="version must be 1"):
+        load_autonomy(tmp_path)
+
+
+# --- Effective modes
+
+
+def test_a_disabled_agent_sends_its_steps_to_a_person():
+    policy = parse_autonomy(_with(lambda d: _set(d, False, "agents", "risk_agent", "enabled")))
+    for step in ("propose_risks", "score_risk", "open_low_risk"):
+        assert effective_mode(policy, step) == "person"
+    assert effective_mode(policy, "draft_proposal") == "agent"
+    assert effective_mode(policy, "submit_proposal") == "window"
+
+
+def test_score_risk_never_applies_to_a_needs_judgement_risk():
+    def agent_scores(data):
+        data["steps"]["score_risk"] = {
+            "mode": "agent",
+            "agent": "risk_agent",
+            "who": "project_manager",
+        }
+
+    policy = parse_autonomy(_with(agent_scores))
+    assert effective_mode(policy, "score_risk", SimpleNamespace(needs_judgement=False)) == "agent"
+    assert effective_mode(policy, "score_risk", SimpleNamespace(needs_judgement=True)) == "person"
+    proposed = parse_autonomy(_proposed())
+    judged = SimpleNamespace(needs_judgement=True)
+    assert effective_mode(proposed, "score_risk", judged) == "person"
+
+
+# --- The route
+
+
+def test_the_route_returns_the_policy(db, sign_in):
+    web = TestClient(app, base_url="http://localhost")
+    sign_in(web, db, "auditor")
+    response = web.get("/api/v1/autonomy")
+    assert response.status_code == 200
+    body = response.json()
+    loaded = load_autonomy(autonomy_dir())
+    assert body["digest"] == loaded.digest
+    assert [step["id"] for step in body["steps"]] == list(STEPS)
+    score = next(step for step in body["steps"] if step["id"] == "score_risk")
+    assert score == {
+        "id": "score_risk",
+        "mode": "window",
+        "effective_mode": "window",
+        "agent": "risk_agent",
+        "who": "project_manager",
+        "window_minutes": 15,
+        "person_only": False,
+    }
+    gate = next(step for step in body["steps"] if step["id"] == "pass_gate")
+    assert gate["person_only"] is True and gate["agent"] is None
+    assert body["agents"] == [{"name": name, "enabled": True} for name in AGENTS]
+
+
+def test_the_route_shows_the_effective_mode_after_an_off_switch(db, sign_in, monkeypatch):
+    policy = parse_autonomy(_with(lambda d: _set(d, False, "agents", "risk_agent", "enabled")))
+    monkeypatch.setattr(autonomy, "get_autonomy", lambda: policy)
+    web = TestClient(app, base_url="http://localhost")
+    sign_in(web, db, "project_manager")
+    body = web.get("/api/v1/autonomy").json()
+    score = next(step for step in body["steps"] if step["id"] == "score_risk")
+    assert (score["mode"], score["effective_mode"]) == ("window", "person")
+    assert {"name": "risk_agent", "enabled": False} in body["agents"]
+
+
+def test_without_the_policy_the_route_is_503(db, sign_in, monkeypatch):
+    def missing():
+        raise PolicyError("autonomy.yaml: policy file not found")
+
+    monkeypatch.setattr(autonomy, "get_autonomy", missing)
+    web = TestClient(app, base_url="http://localhost")
+    sign_in(web, db, "sponsor")
+    response = web.get("/api/v1/autonomy")
+    assert response.status_code == 503
+    assert "apply the autonomy policy file" in response.json()["detail"]
+
+
+def test_the_route_needs_a_login():
+    web = TestClient(app, base_url="http://localhost")
+    assert web.get("/api/v1/autonomy").status_code == 401

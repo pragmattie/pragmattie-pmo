@@ -162,3 +162,21 @@ def _changes_policy(monkeypatch):
     from app import policy
 
     monkeypatch.setattr(policy, "get_changes", _test_changes)
+
+
+# The autonomy policy is drafted in ci/proposed/policies/ and applied to policies/ by a person.
+# Until it is applied, tests read the draft, so the autonomy route can be tested.
+@cache
+def _test_autonomy():
+    from policy_files import autonomy_dir
+
+    from app.autonomy import load_autonomy
+
+    return load_autonomy(autonomy_dir())
+
+
+@pytest.fixture(autouse=True)
+def _autonomy_policy(monkeypatch):
+    from app import autonomy
+
+    monkeypatch.setattr(autonomy, "get_autonomy", _test_autonomy)
