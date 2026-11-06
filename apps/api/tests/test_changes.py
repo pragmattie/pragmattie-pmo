@@ -411,6 +411,9 @@ def _move(days_later: int) -> dict:
 
 CASES = [
     ("exactly 5%", _line("50.00"), "project_manager", [], "50.00", "5.00"),
+    # The level compares the unrounded percentage; the 2-place figure is for display only.
+    ("5.001%, shown as 5.00%", _line("50.01"), "sponsor", ["cost_above_limit"], "50.01", "5.00"),
+    ("5.004%, shown as 5.00%", _line("50.04"), "sponsor", ["cost_above_limit"], "50.04", "5.00"),
     ("just over 5%", _line("50.10"), "sponsor", ["cost_above_limit"], "50.10", "5.01"),
     ("5 working days later", _move(5), "project_manager", [], "0.00", "0.00"),
     ("6 working days later", _move(6), "sponsor", ["dates_above_limit"], "0.00", "0.00"),
@@ -740,6 +743,45 @@ def test_only_a_draft_can_be_edited_and_edits_are_measured_again(db, people, pro
     assert _refusals(db) == ["stale_version", "not_draft"]
 
 
+@pytest.mark.parametrize("action", ["edit", "submit"])
+@pytest.mark.parametrize("who", ["pm", "stranger"])
+def test_only_the_raiser_edits_or_submits_a_draft(db, people, project, sign_in, action, who):
+    """Nobody else, the project's project manager included, rewrites or submits someone else's
+    change (and could then decide it)."""
+    if who == "stranger":
+        client, user = _client(db, sign_in, "project_manager", "stranger@pmo.example")
+    else:
+        client, user = people[who]
+    change = _raise(people["raiser"][0], project, _line("10.00"))
+    if action == "edit":
+        response = client.patch(
+            _url(project, change["id"]),
+            json={"version": change["version"], "changes": _line("40.00")},
+        )
+    else:
+        response = client.post(
+            _url(project, change["id"], "submit"), json={"version": change["version"]}
+        )
+    assert response.status_code == 403
+    assert response.json()["detail"] == change_api.NOT_YOURS
+    [row] = _rows(db, status="rejected")
+    assert row.action_taken["action"] == f"change_{action}_refused"
+    assert row.action_taken["refusal"] == "not_raiser"
+    assert row.actor_user_id == user.id
+    db.expire_all()
+    stored = db.get(ChangeRequest, change["id"])
+    assert (stored.status, stored.version, stored.changes) == ("draft", 1, change["changes"])
+
+
+def test_only_the_raiser_resubmits(db, people, project):
+    change = _submitted(people["raiser"][0], project, _line("10.00"))
+    response = people["pm"][0].post(
+        _url(project, change["id"], "submit"), json={"version": change["version"]}
+    )
+    assert response.status_code == 403
+    assert _refusals(db) == ["not_raiser"]
+
+
 def test_final_states_stay_final(db, people, project):
     change = _submitted(people["raiser"][0], project, _line("10.00"))
     decided = _decide(people["pm"][0], project, change, "reject").json()
@@ -806,6 +848,7 @@ def test_the_change_log_lists_newest_first_with_effect_decider_and_baseline(db, 
     body = people["auditor"][0].get(_url(project)).json()
     assert body["total"] == 2
     assert body["current_baseline_number"] == 2
+    assert body["sponsor_deciders"] == ["sponsor"]
     newest, oldest = body["items"]
     assert (newest["status"], oldest["status"]) == ("draft", "approved")
     assert oldest["baseline_number"] == 2

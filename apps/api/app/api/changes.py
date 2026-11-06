@@ -3,11 +3,14 @@ through a change request that a person decides.
 
 - `GET /projects/{id}/changes` (`project:read`) is the change log, newest first and paged: each
   change with its computed effect, its decider, who decided, the reason and the baseline it
-  produced. It also says whether a client proposal is out of date against the plan.
+  produced. It also says whether a client proposal is out of date against the plan, and which
+  roles decide a sponsor-level change (the go-ahead gate's deciders), so the web can follow them.
 - `POST /projects/{id}/changes` (`project:write`) raises a draft; `PATCH .../{cid}` edits a draft;
-  `POST .../{cid}/submit` submits it. Each of the three measures the change against the project's
-  current baseline and stores the effect and the decider (`app.changes`); a client never sends
-  them. Submitting a change that is already submitted measures it again (resubmitting).
+  `POST .../{cid}/submit` submits it. Only the change's raiser edits or submits it (anyone else is
+  a 403, audited), so nobody can rewrite another person's change and then decide it. Each of the
+  three measures the change against the project's current baseline and stores the effect and the
+  decider (`app.changes`); a client never sends them. Submitting a change that is already
+  submitted measures it again (resubmitting).
 - `POST .../{cid}/withdraw` (`project:write`): its raiser or the project's project manager
   withdraws a draft or submitted change.
 - `POST .../{cid}/decide` approves or rejects a submitted change with a reason of at least 20
@@ -40,7 +43,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app import changes as change_rules
 from app import policy
-from app.api.gates import go_ahead_decider_refusal
+from app.api.gates import go_ahead_decider_refusal, go_ahead_deciders
 from app.api.intake import _commit, _names
 from app.api.projects import Db, Reader
 from app.audit import next_attempt, record_decision, record_refusal
@@ -86,6 +89,7 @@ STALE = "this change request has changed since you read it; reload it and try ag
 FINAL = "an approved, rejected or withdrawn change request is final"
 NOT_DRAFT = "only a draft change request can be edited"
 NOT_SUBMITTED = "only a submitted change request can be decided"
+NOT_YOURS = "only the person who raised this change request can edit or submit it"
 NOT_YOURS_TO_WITHDRAW = "only the change's raiser or the project's project manager can withdraw it"
 OWN_CHANGE = "you cannot decide a change request you raised"
 NOT_THE_PROJECT_MANAGER = (
@@ -332,6 +336,22 @@ def _check_version(
         )
 
 
+def _check_raiser(
+    db: Session, user: User, project: Project, change: ChangeRequest, action: str
+) -> None:
+    if change.raised_by != user.id:
+        raise _refuse(
+            db,
+            user,
+            project=project,
+            change=change,
+            action=action,
+            refusal="not_raiser",
+            code=status.HTTP_403_FORBIDDEN,
+            detail=NOT_YOURS,
+        )
+
+
 def _measure(
     db: Session, rules: ChangesPolicy, project: Project, raised_by: int, changes: dict[str, Any]
 ) -> tuple[dict[str, Any], str, int]:
@@ -440,6 +460,7 @@ def list_changes(
         project_stage=project.stage,
         project_status=project.status,
         pm_user_id=project.pm_user_id,
+        sponsor_deciders=go_ahead_deciders(),
         current_baseline_number=baseline.number if baseline else None,
         proposal_out_of_date=_proposal_out_of_date(db, project_id),
     )
@@ -485,6 +506,7 @@ def edit_change(
 ) -> ChangeOut:
     rules = _policy()
     project, change = _locked(db, project_id, change_id)
+    _check_raiser(db, user, project, change, "edit")
     _check_project(db, user, project, change, "edit")
     _check_version(db, user, project, change, body.version, "edit")
     if change.status != "draft":
@@ -522,6 +544,7 @@ def submit_change(
 ) -> ChangeOut:
     rules = _policy()
     project, change = _locked(db, project_id, change_id)
+    _check_raiser(db, user, project, change, "submit")
     _check_project(db, user, project, change, "submit")
     _check_version(db, user, project, change, body.version, "submit")
     before = _snapshot(change)

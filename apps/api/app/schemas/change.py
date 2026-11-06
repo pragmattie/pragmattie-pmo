@@ -164,6 +164,8 @@ class ChangesPage(BaseModel):
     project_stage: str
     project_status: str
     pm_user_id: int | None
+    # The roles that decide a sponsor-level change: the go-ahead gate's deciders.
+    sponsor_deciders: list[str]
     current_baseline_number: int | None
     # A client proposal whose checker flags it against the current plan, e.g. after a change.
     proposal_out_of_date: bool

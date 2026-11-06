@@ -434,6 +434,16 @@ def _decider_refusal(gate: Gate, subject: Subject, user: User) -> str | None:
     return subject.refuse_own(user)
 
 
+def go_ahead_deciders() -> list[str]:
+    """The roles the go-ahead gate lists as deciders, which also decide a sponsor-level change
+    request (item 5.5), so the web can show who may; empty while the gate isn't defined."""
+    try:
+        gate, _ = _gate(ProjectSubject)
+    except HTTPException:
+        return []
+    return list(gate.deciders)
+
+
 def go_ahead_decider_refusal(user: User, project: Project) -> tuple[str, str] | None:
     """The go-ahead gate's rules for who may decide, applied to another sponsor-level decision on
     `project` (a change request, item 5.5): `gate:decide`, a role the gate lists, and not the

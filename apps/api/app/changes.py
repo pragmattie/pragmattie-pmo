@@ -5,13 +5,15 @@
 - `unknown_items`: the ids a change set names that its baseline doesn't have.
 - `compute_effect`: rules in code, no model. A pure function of the baseline's content, the change
   set, the changes policy and who raised the change: the cost difference (decimal, shown as a
-  2-decimal string) and its percentage of the baseline total (rounded half-up to 2 places and
-  compared exactly with the limit, so 5.00% stays with the project manager and 5.01% goes to the
-  sponsor), the largest moves later and earlier in working days, whether scope changes, and why
-  the change escalates. The higher decider wins: one part needing the sponsor sends the whole
-  change there. A change that lowers the cost or brings dates earlier stays with the project
-  manager; any cost increase on a baseline total of zero goes to the sponsor. So does a change
-  the project manager raised, or one on a project with no project manager.
+  2-decimal string) and its percentage of the baseline total (rounded half-up to 2 places for
+  display only). The level compares exactly, `difference * 100 > limit * baseline total`, with no
+  rounding first: on a 1000.00 baseline +50.00 stays with the project manager, while +50.01
+  (5.001%, shown as 5.00%) goes to the sponsor. Also the largest moves later and earlier in
+  working days, whether scope changes, and why the change escalates. The higher decider wins:
+  one part needing the sponsor sends the whole change there. A change that lowers the cost or
+  brings dates earlier stays with the project manager; any cost increase on a baseline total of
+  zero goes to the sponsor. So does a change the project manager raised, or one on a project
+  with no project manager.
 - `apply`: writes an approved change onto the plan. It refuses (`ChangeConflict`, naming the
   problem) anything that would leave an invalid plan: an item removed or changed that the plan no
   longer has, a milestone that isn't there, or a line not above zero. It only flushes; the route
@@ -139,9 +141,10 @@ def compute_effect(
 
     escalations = []
     if difference > 0:
-        if percent is None:
+        if old_total == 0:
             escalations.append(COST_ON_ZERO_BASELINE)
-        elif percent > policy.max_cost_increase_pct:
+        # Exact, never the rounded percentage: 5.001% is over a 5% limit.
+        elif difference * 100 > policy.max_cost_increase_pct * old_total:
             escalations.append(COST_ABOVE_LIMIT)
     if later > policy.max_date_move_working_days:
         escalations.append(DATES_ABOVE_LIMIT)
