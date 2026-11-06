@@ -25,7 +25,7 @@ is not changed: its checker flags it against the new plan until it is refreshed 
 
 All writes need a project in delivery that isn't cancelled (otherwise a 409), and carry the
 change's `version` (stale is a 409). Approved, rejected and withdrawn are final. Each write is one
-audit row (agent `change`), and so is every refused attempt, 403 or 409. The policy comes from
+audit row (agent `change`), and so is every refused attempt, 403 or 409. The policy comes from the
 changes policy file (`app.policy.get_changes`); until a person applies it, every change route
 answers 503.
 """
