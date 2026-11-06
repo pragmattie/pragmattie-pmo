@@ -14,6 +14,7 @@ from app.api import (
     gates,
     health,
     intake,
+    orchestrator,
     plan,
     portfolio,
     projects,
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     api.include_router(autonomy.router)
     api.include_router(changes.router)
     api.include_router(intake.router)
+    api.include_router(orchestrator.router)
     api.include_router(gates.router)
     api.include_router(gates.project_router)
     api.include_router(portfolio.router)
