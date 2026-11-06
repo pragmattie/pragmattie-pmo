@@ -12,8 +12,9 @@ agent steps the autonomy policy allows, and hands every other step to a person.
   per-pass and daily caps, which are enforced here, never left to a model.
 - The actions are a registry (`ACTIONS`, step id to function), so later items plug new ones in
   without changing the engine. A step with no action goes to a person: "no agent does this yet".
-- A person step is never performed here, whatever the policy says (R1): the floor steps are
-  refused at import if anyone registers an action for them, and a pass sends them to a person.
+- A person step is never performed here, whatever the policy says (R1): the floor steps and the
+  steps no agent may do (`PERSON_ONLY`) are refused at import if anyone registers an action for
+  them, and a pass sends them to a person.
 
 Run it with `python -m app.orchestrator once` (one pass) or `run` (a pass every
 `ORCHESTRATOR_INTERVAL_SECONDS` until Ctrl+C).
@@ -41,6 +42,7 @@ from app.autonomy import (
     FLOOR_STEPS,
     PERSON,
     SCORE_RISK,
+    STEP_AGENTS,
     WINDOW,
     AutonomyPolicy,
     effective_mode,
@@ -91,6 +93,10 @@ MIN_HOLD_REASON = 10
 MAX_ERROR = 500
 PROJECT_MANAGER = "project_manager"
 
+# Steps a pass never performs: the floor steps (R1), and every step no agent may do (a change
+# decision), whatever a policy says.
+PERSON_ONLY = FLOOR_STEPS | {step for step, agents in STEP_AGENTS.items() if not agents}
+
 NO_AGENT = "no agent does this yet"
 AGENT_ALREADY_RAN = "an agent already did this step, but it is still open"
 NO_LONGER_NEEDED = "the step is no longer needed"
@@ -133,7 +139,7 @@ def _handoff(
 ) -> tuple[str, str | None]:
     """How `step` runs now, and why it went to a person when the policy gave it to an agent."""
     rule = policy.steps[step]
-    if step in FLOOR_STEPS or rule.mode == PERSON:
+    if step in PERSON_ONLY or rule.mode == PERSON:
         return PERSON, None
     if effective_mode(policy, step, risk) == PERSON:
         if rule.agent is not None and not policy.enabled[rule.agent]:
@@ -372,7 +378,7 @@ ACTIONS: dict[str, StepAction] = {
     "propose_risks": StepAction(_propose_risks),
     "draft_proposal": StepAction(_draft_proposal),
 }
-assert not FLOOR_STEPS & ACTIONS.keys(), "a person always decides a floor step (R1)"
+assert not PERSON_ONLY & ACTIONS.keys(), "a person always takes these steps (R1)"
 
 
 # --- Recording
@@ -677,7 +683,7 @@ class _Pass:
         if self.has_open_item(step):
             return
         action = self.pending(step)
-        if step.mode == PERSON or step.step in FLOOR_STEPS:
+        if step.mode == PERSON or step.step in PERSON_ONLY:
             if action is not None:
                 # The policy or a switch moved the step to a person while it waited.
                 self.give_up(step, action, step.full_reason)

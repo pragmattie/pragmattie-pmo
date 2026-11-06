@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app import orchestrator, policy
 from app.agents import risk_agent
 from app.audit import record_refusal
-from app.authz import Action, require, require_audited
+from app.authz import Action, require, require_any_audited
 from app.config import get_settings
 from app.db import get_db
 from app.models import OrchestratorAction, User
@@ -102,7 +102,12 @@ def _record_forbidden(db: Session, user: User, params: dict[str, str]) -> None:
     _refuse(db, user, action_id, "forbidden")
 
 
-Holder = Annotated[User, Depends(require_audited(Action.PROJECT_WRITE, _record_forbidden))]
+# Any role that can be a step's `who` (it holds the step's permission, `app.autonomy`); the
+# route then checks it is this step's `who`.
+WHO_ACTIONS = frozenset(
+    {Action.PROJECT_WRITE, Action.GATE_DECIDE, Action.PROPOSAL_APPROVE, Action.RISK_ACCEPT}
+)
+Holder = Annotated[User, Depends(require_any_audited(WHO_ACTIONS, _record_forbidden))]
 
 
 @router.post("/actions/{action_id}/hold", response_model=HoldOut)
