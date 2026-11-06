@@ -54,19 +54,29 @@ proposal: a drafter agent writes it from the plan, a checker ties every figure t
 project manager edits, the sponsor approves (never below T2), and a person sends it; no agent sends
 anything. 5.4 the go-ahead gate.
 
-**P6 Delivery and closure.** 6.1 status reports: the agent drafts with a source for every number,
-the project manager publishes, sponsors see only published ones. 6.2 executive and detailed views.
-6.3 overdue and unread flags. 6.4 the acceptance and close-out gates, the closure report and lessons,
+**P6 Agentic operation.** Added on 2026-11-06, approved by Geoff: agents move the work and people
+decide (R1).
+6.1 the autonomy policy: each step is done by an agent, by an agent after an objection window, or by
+a person, and the decisions in R1 can only be a person's. 6.2 the orchestrator: works out each request's
+and project's next step, runs what the policy allows and hands the rest to a person. 6.3 the
+decision inbox. 6.4 the portfolio board: every request and project by stage, and what each is
+waiting on. 6.5 the planner agent. 6.6 editing the plan in the web. 6.7 risk scoring by the agent.
+6.8 proposal automation and a simulated client, always labelled simulated; a person still approves
+and sends. 6.9 demo data for the agentic flow.
+
+**P7 Delivery and closure.** 7.1 status reports: the agent drafts with a source for every number,
+the project manager publishes, sponsors see only published ones. 7.2 executive and detailed views.
+7.3 overdue and unread flags. 7.4 the acceptance and close-out gates, the closure report and lessons,
 which feed the next intake's risk suggestions.
 
-**P7 Portfolio and oversight.** 7.1 the portfolio dashboard: health, budget, risk and gate status
-across projects. 7.2 PragMattie Sync as the live project, imported from its exported record. 7.3 the
+**P8 Portfolio and oversight.** 8.1 the portfolio dashboard: health, budget, risk and gate status
+across projects. 8.2 PragMattie Sync as the live project, imported from its exported record. 8.3 the
 agent registry: each agent's purpose, limits, owner, mode, run history and an off switch (R2, R4).
-7.4 one decision log across intake, risks, gates and reports. 7.5 the simulated ethics reviewer seat
+8.4 one decision log across intake, risks, gates and reports. 8.5 the simulated ethics reviewer seat
 on gates for high-impact AI work, always labelled simulated.
 
-**P8 Demo.** 8.1 the standards lens (each screen shows the rules it follows). 8.2 reset and
-pre-demo check. 8.3 the demo script, rehearsal and recorded backup. 8.4 the consulting-offer slide.
+**P9 Demo.** 9.1 the standards lens (each screen shows the rules it follows). 9.2 reset and
+pre-demo check. 9.3 the demo script, rehearsal and recorded backup. 9.4 the consulting-offer slide.
 
 **Later, not planned:** an MCP server, billing and invoices, forecasting dates with simulations,
 and work-item intake into running projects.

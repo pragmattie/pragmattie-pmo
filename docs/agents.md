@@ -1,7 +1,7 @@
 # Agents
 
 Each product agent proposes; a person decides, and the record shows who. Each agent's limits are
-written here and enforced in its code. The agent registry (milestone P7) will hold this later.
+written here and enforced in its code. The agent registry (milestone P8) will hold this later.
 
 ## Risk agent
 
