@@ -3,7 +3,8 @@
 #
 # - project_manager: the limits within which the project's own project manager decides a change.
 #   max_cost_increase_pct is the most a change may add to the baseline total, in percent (up to 2
-#   decimal places; the change's percentage is rounded to 2 places and compared exactly).
+#   decimal places). The change's exact percentage, unrounded, is compared with it; the figure
+#   rounded to 2 places is for display only.
 #   max_date_move_working_days is the furthest a change may move any milestone later, in working
 #   days (Monday to Friday). A change that lowers the cost or brings dates earlier stays within
 #   these limits; a change to scope never does.
