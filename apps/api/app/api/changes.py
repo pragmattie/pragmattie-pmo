@@ -26,7 +26,8 @@ is not changed: its checker flags it against the new plan until it is refreshed 
 All writes need a project in delivery that isn't cancelled (otherwise a 409), and carry the
 change's `version` (stale is a 409). Approved, rejected and withdrawn are final. Each write is one
 audit row (agent `change`), and so is every refused attempt, 403 or 409. The policy comes from
-`policies/changes.yaml`; until a person applies it, every change route answers 503.
+changes policy file (`app.policy.get_changes`); until a person applies it, every change route
+answers 503.
 """
 
 import logging
@@ -72,7 +73,7 @@ DELIVERY = "delivery"
 SPONSOR_LEVEL = "sponsor"
 
 UNAVAILABLE = (
-    "change requests aren't available until a person applies policies/changes.yaml; try later"
+    "change requests aren't available yet: a person needs to apply the changes policy file"
 )
 PROJECT_NOT_FOUND = "project not found"
 NOT_FOUND = "change request not found"

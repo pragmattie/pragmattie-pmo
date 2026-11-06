@@ -6,8 +6,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from conftest import changes_dir
 from fastapi.testclient import TestClient
+from policy_files import changes_dir
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

@@ -148,15 +148,10 @@ def gates_policy(tmp_path, monkeypatch):
 
 # The changes policy is drafted in ci/proposed/policies/ and applied to policies/ by a person.
 # Until it is applied, tests read the draft, so the change request routes can be tested.
-def changes_dir() -> Path:
-    """Where the changes policy is: policies/ once applied, else the draft."""
-    if (APPLIED_POLICIES / "changes.yaml").exists():
-        return APPLIED_POLICIES
-    return DRAFT_POLICIES
-
-
 @cache
 def _test_changes():
+    from policy_files import changes_dir
+
     from app.policy import load_changes
 
     return load_changes(changes_dir())
