@@ -130,7 +130,7 @@ def test_prose_limit_counts_the_title_too():
         parse_standards(_with(_set("title", "t" * (MAX_PROSE_CHARS + 1))))
 
 
-@pytest.mark.parametrize("bad_id", ["P9-thing", "P1", "p1-thing", "P1-Thing", "P1_thing", "X1-a"])
+@pytest.mark.parametrize("bad_id", ["P10-thing", "P1", "p1-thing", "P1-Thing", "P1_thing", "X1-a"])
 def test_rejects_ids_that_do_not_name_a_plan_milestone(bad_id):
     with pytest.raises(StandardsError, match="id"):
         parse_standards(_with(_set("id", bad_id)))
