@@ -55,7 +55,7 @@ from app.api.intake import (
     snapshot,
 )
 from app.audit import next_attempt, record_decision, record_refusal
-from app.authz import Action, not_own_submission, require, require_audited
+from app.authz import FORBIDDEN, Action, can, not_own_submission, require, require_audited
 from app.baselines import freeze, latest_baseline
 from app.db import get_db
 from app.gates import CHECKS_BY_SUBJECT
@@ -422,6 +422,34 @@ def _refuse(
     return HTTPException(code, detail)
 
 
+def _not_a_decider(gate: Gate) -> str:
+    return f"the {gate.name.lower()} is decided only by: {', '.join(gate.deciders)}"
+
+
+def _decider_refusal(gate: Gate, subject: Subject, user: User) -> str | None:
+    """Who may decide: a role the gate lists, and not the decider's own subject. The refusal's
+    name, or None when `user` may decide. (`gate:decide` itself is the route's guard.)"""
+    if user.role not in gate.deciders:
+        return "role_not_a_decider"
+    return subject.refuse_own(user)
+
+
+def go_ahead_decider_refusal(user: User, project: Project) -> tuple[str, str] | None:
+    """The go-ahead gate's rules for who may decide, applied to another sponsor-level decision on
+    `project` (a change request, item 5.5): `gate:decide`, a role the gate lists, and not the
+    project's own project manager. Gives the refusal's name and message, or None when `user`
+    may decide; a 503 while the gate isn't defined."""
+    gate, _ = _gate(ProjectSubject)
+    if not can(user.role, Action.GATE_DECIDE):
+        return "no_permission", FORBIDDEN
+    refusal = _decider_refusal(gate, ProjectSubject(project), user)
+    if refusal == "role_not_a_decider":
+        return refusal, _not_a_decider(gate)
+    if refusal is not None:
+        return refusal, OWN_PROJECT
+    return None
+
+
 def _decide(
     db: Session,
     subject: Subject,
@@ -432,19 +460,19 @@ def _decide(
 ) -> list[CriterionOut]:
     """Apply the shared rules to a decision on a locked subject, and record it; returns the
     criteria as they stood."""
-    if user.role not in gate.deciders:
+    refusal = _decider_refusal(gate, subject, user)
+    if refusal == "role_not_a_decider":
         raise _refuse(
             db,
             subject,
             user,
-            refusal="role_not_a_decider",
+            refusal=refusal,
             outcome=body.outcome,
             code=status.HTTP_403_FORBIDDEN,
-            detail=f"the {gate.name.lower()} is decided only by: {', '.join(gate.deciders)}",
+            detail=_not_a_decider(gate),
         )
-    own = subject.refuse_own(user)
-    if own is not None:
-        _record_refused(db, subject, user, refusal=own, outcome=body.outcome)
+    if refusal is not None:
+        _record_refused(db, subject, user, refusal=refusal, outcome=body.outcome)
         _commit(db)
         subject.own_error(user)
     for refusal, refused, message in subject.refusals(body.version):

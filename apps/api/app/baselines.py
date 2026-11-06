@@ -2,11 +2,12 @@
 
 `freeze` copies the plan as it is now (scope, deliverables, milestones, estimate lines,
 contingency and total) into a new `ProjectBaseline` numbered after the project's last one, made by
-the given gate decision. Money is stored as 2-decimal strings and dates as ISO text, so the copy
-reads the same whatever happens to the plan later.
+the given gate decision (baseline 1) or approved change request (item 5.5, every later one).
+Money is stored as 2-decimal strings and dates as ISO text, so the copy reads the same whatever
+happens to the plan later.
 
-It only flushes, never commits: the gate route commits it with the decision in one transaction,
-so a failure anywhere leaves no baseline and no decision.
+It only flushes, never commits: the gate and change request routes commit it with the decision in
+one transaction, so a failure anywhere leaves no baseline and no decision.
 """
 
 from decimal import Decimal
@@ -84,8 +85,17 @@ def plan_snapshot(db: Session, plan: ProjectPlan) -> dict[str, Any]:
     }
 
 
-def freeze(db: Session, plan: ProjectPlan, gate_decision_id: int) -> ProjectBaseline:
-    """Store the plan as the project's next baseline (1 for the first) and flush it."""
+def freeze(
+    db: Session,
+    plan: ProjectPlan,
+    gate_decision_id: int | None = None,
+    *,
+    change_request_id: int | None = None,
+) -> ProjectBaseline:
+    """Store the plan as the project's next baseline (1 for the first) and flush it. Exactly
+    one of `gate_decision_id` and `change_request_id` says what made it."""
+    if (gate_decision_id is None) == (change_request_id is None):
+        raise ValueError("a baseline is made by one gate decision or one change request")
     last = db.scalar(
         select(func.max(ProjectBaseline.number)).where(
             ProjectBaseline.project_id == plan.project_id
@@ -96,6 +106,7 @@ def freeze(db: Session, plan: ProjectPlan, gate_decision_id: int) -> ProjectBase
         project_id=plan.project_id,
         number=(last or 0) + 1,
         gate_decision_id=gate_decision_id,
+        change_request_id=change_request_id,
         plan=content,
         total=Decimal(content["total"]),
     )
