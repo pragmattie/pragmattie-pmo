@@ -677,3 +677,67 @@ def score_risk(
     if floor is not None:
         index = max(index, next(i for i, band in enumerate(bands) if band.name == floor))
     return score, bands[index].name
+
+
+# Change requests (item 5.5).
+
+
+@dataclass(frozen=True)
+class ChangesPolicy:
+    """Who decides a change request. The project manager decides a change that adds at most
+    `max_cost_increase_pct` to the baseline total, moves no milestone later by more than
+    `max_date_move_working_days`, and changes no scope; `escalate_to` decides the rest."""
+
+    max_cost_increase_pct: Decimal
+    max_date_move_working_days: int
+    escalate_to: str
+
+
+CHANGES_FILE = "changes.yaml"
+# The roles a change can go to: the code knows how each one decides.
+CHANGE_ESCALATIONS = (Role.SPONSOR.value,)
+MAX_CHANGE_PCT = Decimal(100)
+
+
+def _percent(value: Any, where: str) -> Decimal:
+    """A percentage from 0 to 100 with at most 2 decimal places."""
+    if type(value) not in (int, float):
+        raise PolicyError(f"{where}: expected a number from 0 to {MAX_CHANGE_PCT}")
+    number = Decimal(str(value))
+    if not number.is_finite() or not 0 <= number <= MAX_CHANGE_PCT:
+        raise PolicyError(f"{where}: expected a number from 0 to {MAX_CHANGE_PCT}")
+    if number.as_tuple().exponent < -2:  # type: ignore[operator]
+        raise PolicyError(f"{where}: at most 2 decimal places")
+    return number
+
+
+def parse_changes(data: dict, where: str = CHANGES_FILE) -> ChangesPolicy:
+    _keys(data, where, ("version", "project_manager", "escalate_to"))
+    limits = _mapping(data["project_manager"], f"{where} project_manager")
+    at = f"{where} project_manager"
+    _keys(limits, at, ("max_cost_increase_pct", "max_date_move_working_days"))
+    return ChangesPolicy(
+        max_cost_increase_pct=_percent(
+            limits["max_cost_increase_pct"], f"{at}.max_cost_increase_pct"
+        ),
+        max_date_move_working_days=_int(
+            limits["max_date_move_working_days"], f"{at}.max_date_move_working_days"
+        ),
+        escalate_to=_choice(
+            data["escalate_to"], f"{where} escalate_to", CHANGE_ESCALATIONS, "role"
+        ),
+    )
+
+
+def load_changes(directory: Path | str) -> ChangesPolicy:
+    """Read and validate `changes.yaml` in `directory`; raise `PolicyError` on any problem.
+
+    Loaded apart from `load_policies`, so a missing file only affects the change routes."""
+    return parse_changes(_read(Path(directory), CHANGES_FILE))
+
+
+@lru_cache
+def get_changes() -> ChangesPolicy:
+    """The changes policy in the configured directory, loaded on first use. A failure is not
+    cached, so the next call tries again once the file is fixed."""
+    return load_changes(get_settings().policies_dir)

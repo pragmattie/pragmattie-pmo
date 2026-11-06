@@ -1,0 +1,16 @@
+# Who decides a change request (item 5.5). A change is measured against the project's current
+# baseline. Drafted by an agent; a person applies it as policies/changes.yaml.
+#
+# - project_manager: the limits within which the project's own project manager decides a change.
+#   max_cost_increase_pct is the most a change may add to the baseline total, in percent (up to 2
+#   decimal places; the change's percentage is rounded to 2 places and compared exactly).
+#   max_date_move_working_days is the furthest a change may move any milestone later, in working
+#   days (Monday to Friday). A change that lowers the cost or brings dates earlier stays within
+#   these limits; a change to scope never does.
+# - escalate_to: who decides everything else: a change above either limit, every scope change,
+#   a change the project manager raised, and a change on a project with no project manager.
+version: 1
+project_manager:
+  max_cost_increase_pct: 5
+  max_date_move_working_days: 5
+escalate_to: sponsor
