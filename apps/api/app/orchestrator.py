@@ -26,7 +26,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -384,7 +384,7 @@ assert not PERSON_ONLY & ACTIONS.keys(), "a person always takes these steps (R1)
 # --- Recording
 
 
-def _record(db: Session, step: NextStep | None, *, subject: tuple[str, str], **fields: Any) -> int:
+def _record(db: Session, *, subject: tuple[str, str], **fields: Any) -> int:
     """One orchestrator audit row at the next free attempt for its subject, moving on when a
     parallel writer (a person holding an action) took the number first."""
     subject_type, subject_id = subject
@@ -455,9 +455,6 @@ class PassReport:
     agent_calls: int = 0
     outcomes: list[Outcome] = field(default_factory=list)
 
-    def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
 
 def _today_start(now: datetime) -> datetime:
     return now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -468,7 +465,7 @@ def spent_today(db: Session, now: datetime) -> Decimal:
     stmt = select(func.coalesce(func.sum(AuditDecision.cost_usd), 0)).where(
         AuditDecision.trigger == TRIGGER, AuditDecision.created_at >= _today_start(now)
     )
-    return Decimal(db.scalar(stmt) or 0)
+    return Decimal(str(db.scalar(stmt) or 0))
 
 
 def _take_lease(db: Session, holder: str, now: datetime) -> bool:
@@ -528,7 +525,6 @@ def _shadow(db: Session, steps: list[NextStep], digest: str, report: PassReport)
         would = {AGENT: "run", WINDOW: "open a window", PERSON: "send to a person"}[step.mode]
         _record(
             db,
-            step,
             subject=_subject(step),
             status="skipped",
             signals=signals,
@@ -568,7 +564,6 @@ class _Pass:
     def audit(self, step: NextStep, status: str, action: dict[str, Any], **fields: Any) -> int:
         return _record(
             self.db,
-            step,
             subject=_subject(step),
             status=status,
             signals=_signals(step, self.policy.digest, "enforce"),
@@ -669,7 +664,6 @@ class _Pass:
             return
         _record(
             self.db,
-            None,
             subject=("orchestrator_day", day),
             status="skipped",
             signals={"daily_cap_usd": f"{cap:.2f}", "policy_digest": self.policy.digest},
@@ -897,7 +891,6 @@ def hold(
         db.flush()
     _record(
         db,
-        None,
         subject=(action.subject_type, action.subject_id),
         trigger="human",
         status="ok",
