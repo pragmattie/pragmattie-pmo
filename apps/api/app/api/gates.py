@@ -249,6 +249,15 @@ def _gate(subject: type[Subject]) -> tuple[Gate, str]:
     return gate, gates.digest
 
 
+def _locked(subject: type[Subject], db: Session, subject_id: int) -> Subject:
+    """The subject, locked until commit on MySQL so a parallel decision waits and then sees the
+    new version. The guard's read-only transaction is ended first: on MySQL a plain read keeps
+    the snapshot its transaction began with, so without this the loser of a race would miss the
+    winner's audit row once the lock is released and pick the same `attempt` (a 500)."""
+    db.rollback()
+    return subject.load(db, subject_id, for_update=True)
+
+
 def _record_refused(
     db: Session,
     subject: Subject,
@@ -579,8 +588,7 @@ def decide_gate(
     db: Annotated[Session, Depends(get_db)],
 ) -> GateOut:
     gate, digest = _gate(RequestSubject)
-    # Locked until commit on MySQL, so a parallel change waits and then sees the new version.
-    subject = RequestSubject.load(db, request_id, for_update=True)
+    subject = _locked(RequestSubject, db, request_id)
     criteria = _decide(db, subject, gate, digest, body, user)
     return _request_out(db, gate, digest, subject, criteria)
 
@@ -628,6 +636,6 @@ def decide_project_gate(
     db: Annotated[Session, Depends(get_db)],
 ) -> ProjectGateOut:
     gate, digest = _gate(ProjectSubject)
-    subject = ProjectSubject.load(db, project_id, for_update=True)
+    subject = _locked(ProjectSubject, db, project_id)
     criteria = _decide(db, subject, gate, digest, body, user)
     return _project_out(db, gate, digest, subject, criteria)
