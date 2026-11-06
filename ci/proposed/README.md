@@ -18,6 +18,10 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
+Nothing.
+
+## Applied
+
 - **`policies/autonomy.yaml`** (item 6.1): for each of the 15 steps in a project's life, whether
   an agent does it (`agent`), an agent does it after a 15-minute window the project manager may
   hold (`window`), or a person does it (`person`), plus an off switch per agent. Starting values:
@@ -26,11 +30,8 @@ Nothing in this folder runs automatically.
   in code, and each step's `who` must hold the permission its decision needs. `accept_risk` names
   `project_manager`, but a risk's band still decides who may accept it, so a Medium or High risk
   goes to the sponsor. No agent may decide a change (`decide_change_pm`) until a later item adds
-  one. Copy it to `policies/autonomy.yaml` as is; until then `GET /api/v1/autonomy` answers
-  503.
-
-## Applied
-
+  one. Applied with its header corrected (the loader is in `app/policy.py`); `GET /api/v1/autonomy`
+  now answers instead of returning 503.
 - **`policies/changes.yaml`** (item 5.5): who decides a change request, by its size against the
   current baseline. The project manager decides a change that adds at most 5% to the baseline
   total, moves no milestone later by more than 5 working days and changes no scope; everything

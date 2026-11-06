@@ -1,6 +1,7 @@
 # The autonomy policy (item 6.1): for every step in a project's life, whether an agent does it
 # alone (`agent`), an agent does it after an objection window unless a person holds it
-# (`window`), or a person does it (`person`). Read and validated by apps/api/app/autonomy.py.
+# (`window`), or a person does it (`person`). Read and validated by apps/api/app/policy.py;
+# the step ids, floors and permissions are fixed in apps/api/app/autonomy.py.
 #
 # Rules for editing (the loader refuses a file that breaks them):
 # - Every step is listed exactly once, by its fixed id; unknown keys are refused.
