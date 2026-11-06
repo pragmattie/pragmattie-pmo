@@ -115,6 +115,14 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     agent_mode: AgentMode = "off"
 
+    # The orchestrator (app/orchestrator.py): `off` runs nothing, `shadow` records what it would
+    # do and changes nothing, `enforce` acts. The loop's pause between passes, the most Claude
+    # calls one pass may make, and the most its agent runs may cost in one UTC day, in US dollars.
+    orchestrator_mode: AgentMode = "off"
+    orchestrator_interval_seconds: int = Field(default=30, ge=1)
+    orchestrator_max_agent_calls: int = Field(default=5, ge=0)
+    orchestrator_daily_cap_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
+
     # Governance policy files; read only by app/policy.py, on first use.
     policies_dir: Path = Field(default_factory=_default_policies_dir)
     # Standards traceability map; read only by app/standards.py, on first use.
