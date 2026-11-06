@@ -1,4 +1,4 @@
-"""Policy directories for tests that need the gates file.
+"""Policy directories for tests that need the gates or changes file.
 
 The gates file is drafted in ci/proposed/policies/ and applied to policies/ by a person. Tests load
 the real file from the repository (never a copy of its contents written into a test): the draft
@@ -26,3 +26,10 @@ def gates_policy_dir(tmp_path: Path) -> Path:
         shutil.copy(path, target)
     shutil.copy(gates_file(), target / "gates.yaml")
     return target
+
+
+def changes_dir() -> Path:
+    """Where the changes policy is: policies/ once applied, else the draft."""
+    if (APPLIED_POLICIES / "changes.yaml").exists():
+        return APPLIED_POLICIES
+    return DRAFT_POLICIES

@@ -135,7 +135,8 @@ class BaselineOut(BaseModel):
     id: int
     project_id: int
     number: int
-    gate_decision_id: int
+    gate_decision_id: int | None
+    change_request_id: int | None
     plan: dict[str, Any]
     total: MoneyStr
     created_at: datetime

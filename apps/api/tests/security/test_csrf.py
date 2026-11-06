@@ -6,10 +6,10 @@ Each request carries a valid admin session, so only the CSRF token is wrong.
 
 import pytest
 from fastapi.routing import APIRoute, iter_route_contexts
-from test_authz import GUARDED, REFUSED, SAMPLES
+from test_authz import GATE_DECIDERS, GUARDED, REFUSED, SAMPLES, _holds
 
 from app.api.auth import LOGIN_PATH, LOGOUT_PATH, SAFE_METHODS
-from app.authz import PERMISSIONS, Role
+from app.authz import Role
 from app.main import app
 from app.models import AuditDecision
 from app.security import CSRF_COOKIE, CSRF_HEADER
@@ -90,9 +90,17 @@ def test_an_empty_cookie_and_empty_header_are_refused(web, db, sign_in, target, 
 
 @pytest.mark.parametrize(("method", "path"), UNSAFE, ids=[f"{m} {p}" for m, p in UNSAFE])
 def test_a_matching_token_is_accepted(web, db, sign_in, target, method, path):
-    # Admin, unless the route needs an action admin lacks: then the first role that has it.
+    # Admin, unless the route needs an action admin lacks (or a role its gate lists): then the
+    # first role that may use it.
     guard = {(m, p): g for m, p, g in GUARDED}.get((method, path))
-    sign_in(web, db, next(r for r in (Role.ADMIN, *Role) if guard in (None, *PERMISSIONS[r])))
+    deciders = GATE_DECIDERS.get((method, path), set(Role))
+    sign_in(
+        web,
+        db,
+        next(
+            r for r in (Role.ADMIN, *Role) if (guard is None or _holds(guard, r)) and r in deciders
+        ),
+    )
     response = _send(web, method, path, target.id, {CSRF_HEADER: CSRF_VALUE})
     # A refused route (the risk agent is off in tests) answers 409 once past the CSRF check.
     allowed = (409,) if (method, path) in REFUSED else (200, 201, 204)

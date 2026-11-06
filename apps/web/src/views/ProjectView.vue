@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
+import ChangesSection from '../components/ChangesSection.vue'
 import GateSection from '../components/GateSection.vue'
 import PlanSection from '../components/PlanSection.vue'
 import ProposalSection from '../components/ProposalSection.vue'
@@ -20,8 +21,9 @@ import {
 } from '../lib/projects'
 
 // Projects (item 4.6). Without an id, the list of projects; with one, the project: its brief,
-// plan (item 5.1), proposal (item 5.2), the go-ahead gate and its baseline (item 5.4),
-// stakeholders and assumptions, a link to its risks and one back to the request it came from.
+// plan (item 5.1), proposal (item 5.2), the go-ahead gate and its latest baseline (item 5.4), its
+// change requests once in delivery (item 5.5), stakeholders and assumptions, a link to its risks
+// and one back to the request it came from.
 // The API guards every route; the baseline is read-only.
 const route = useRoute()
 const projectId = computed(() => (route.params.id ? Number(route.params.id) : null))
@@ -214,9 +216,10 @@ watch(projectId, load, { immediate: true })
 
       <section v-if="baseline" class="mb-6" data-test="baseline">
         <h2 class="text-subtitle-1 mb-2">Baseline {{ baseline.number }}</h2>
-        <p class="text-caption text-medium-emphasis mb-2">
-          The plan as it stood when the go-ahead gate was passed on
-          {{ new Date(baseline.created_at).toLocaleDateString() }}. It doesn't change; change
+        <p class="text-caption text-medium-emphasis mb-2" data-test="baseline-made-by">
+          The plan as it stood when
+          {{ baseline.change_request_id ? 'a change request was approved' : 'the go-ahead gate was passed' }}
+          on {{ new Date(baseline.created_at).toLocaleDateString() }}. It doesn't change; change
           requests are measured against it.
         </p>
         <v-table density="compact">
@@ -273,6 +276,13 @@ watch(projectId, load, { immediate: true })
           </tbody>
         </v-table>
       </section>
+
+      <ChangesSection
+        v-if="baseline"
+        :project-id="project.id"
+        :baseline="baseline"
+        @decided="gateDecided"
+      />
 
       <section id="stakeholders" class="mb-6" data-test="stakeholders">
         <h2 class="text-subtitle-1 mb-2">Stakeholders</h2>

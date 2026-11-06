@@ -77,7 +77,8 @@ export interface Baseline {
   id: number
   project_id: number
   number: number
-  gate_decision_id: number
+  gate_decision_id: number | null
+  change_request_id: number | null
   plan: BaselinePlan
   total: string
   created_at: string

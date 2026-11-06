@@ -271,13 +271,41 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         } == {
             "fk_project_baselines_project": "projects",
             "fk_project_baselines_gate_decision": "gate_decisions",
+            "fk_project_baselines_change_request": "change_requests",
         }
         assert {
             uq["name"]: uq["column_names"]
             for uq in inspector.get_unique_constraints("project_baselines")
-        } == {"uq_project_baselines_number": ["project_id", "number"]}
+        } == {
+            "uq_project_baselines_number": ["project_id", "number"],
+            "uq_project_baselines_change_request": ["change_request_id"],
+        }
+        # 0020: change requests, and a baseline made by a gate decision or a change request.
+        assert {
+            fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("change_requests")
+        } == {
+            "fk_change_requests_project": "projects",
+            "fk_change_requests_raised_by": "users",
+            "fk_change_requests_decided_by": "users",
+        }
+        assert {ck["name"] for ck in inspector.get_check_constraints("change_requests")} == {
+            "ck_change_requests_status",
+            "ck_change_requests_decider",
+        }
+        baseline_columns = {c["name"]: c for c in inspector.get_columns("project_baselines")}
+        assert baseline_columns["gate_decision_id"]["nullable"] is True
+        assert baseline_columns["change_request_id"]["nullable"] is True
+        assert "ck_project_baselines_made_by" in {
+            ck["name"] for ck in inspector.get_check_constraints("project_baselines")
+        }
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0019")
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert "change_requests" not in inspector.get_table_names()
+        baseline_columns = {c["name"]: c for c in inspector.get_columns("project_baselines")}
+        assert "change_request_id" not in baseline_columns
+        assert baseline_columns["gate_decision_id"]["nullable"] is False
         command.downgrade(config, "0018")
         inspector = inspect(create_engine(get_settings().database_url))
         assert "project_baselines" not in inspector.get_table_names()

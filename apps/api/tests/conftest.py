@@ -144,3 +144,21 @@ def gates_policy(tmp_path, monkeypatch):
     get_policies.cache_clear()
     yield
     get_policies.cache_clear()
+
+
+# The changes policy is drafted in ci/proposed/policies/ and applied to policies/ by a person.
+# Until it is applied, tests read the draft, so the change request routes can be tested.
+@cache
+def _test_changes():
+    from policy_files import changes_dir
+
+    from app.policy import load_changes
+
+    return load_changes(changes_dir())
+
+
+@pytest.fixture(autouse=True)
+def _changes_policy(monkeypatch):
+    from app import policy
+
+    monkeypatch.setattr(policy, "get_changes", _test_changes)
