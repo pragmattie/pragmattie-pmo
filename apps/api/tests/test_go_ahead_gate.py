@@ -517,6 +517,48 @@ def test_pass_with_an_unmet_check_is_a_409_naming_it(web, db, pm, sponsor):
     ]
 
 
+def _plan_incomplete(web, db, pm, pid):
+    _plan(db, pid).report_period = None
+    _plan(db, pid).report_due_day = None
+    db.commit()
+
+
+def _proposal_not_accepted(web, db, pm, pid):
+    proposal = db.scalar(select(ProjectProposal).where(ProjectProposal.project_id == pid))
+    proposal.status = "sent"
+    db.commit()
+
+
+def _escalation_waiting(web, db, pm, pid):
+    _add_risk(db, pid, title="Budget overrun", escalated_to="sponsor", escalated_band="High")
+
+
+def _readiness_red(web, db, pm, pid):
+    _from_request(web, db, pm, pid, uses_ai=True, data_rating="red")
+
+
+@pytest.mark.parametrize(
+    ("check", "unmeet"),
+    [
+        ("plan_complete", _plan_incomplete),
+        ("proposal_accepted", _proposal_not_accepted),
+        ("escalations_settled", _escalation_waiting),
+        ("readiness_not_red", _readiness_red),
+    ],
+)
+def test_pass_with_each_unmet_check_is_a_409_naming_it(web, db, pm, sponsor, check, unmeet):
+    pid = _project(db, pm, client=True)
+    unmeet(web, db, pm, pid)
+    response = _decide(sponsor, pid)
+    assert _unmet_ids(response) == [check]
+    assert _state(db, pid) == ("planning", "on_track", 1)
+    assert _decisions(db) == [] and _baselines(db) == []
+    [row] = _gate_rows(db, pid)
+    assert (row.status, row.version) == ("rejected", 1)
+    assert row.action_taken["refusal"] == "unmet_criteria"
+    assert [c["id"] for c in row.action_taken["unmet"]] == [check]
+
+
 @pytest.mark.parametrize(
     ("ticks", "unmet"),
     [
@@ -676,6 +718,8 @@ def test_a_cancelled_project_cannot_start_a_proposal(web, db, pm, sponsor):
     [row] = _proposal_refusals(db, pid)
     assert (row.subject_type, row.subject_id) == ("project", str(pid))
     assert row.action_taken["refusal"] == "project_cancelled"
+    # The refusal records the project's real version: the decline moved it to 2.
+    assert row.version == _state(db, pid)[2] == 2
 
 
 # --- Who decides
