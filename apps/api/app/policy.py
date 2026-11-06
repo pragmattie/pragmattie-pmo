@@ -769,6 +769,12 @@ def _parse_autonomy_step(step_id: str, entry: Any, where: str) -> Step:
             f"{at}.mode: {step_id} must be decided by a person (mode person), not {mode}"
         )
     who = _choice(entry["who"], f"{at}.who", tuple(role.value for role in Role), "role")
+    # Imported here: app.authz imports this module, so a module-level import would be circular.
+    from app.authz import Action, can
+
+    permission = autonomy.who_permission(step_id)
+    if not can(who, Action(permission)):
+        raise PolicyError(f"{at}.who: {who} can't take {step_id}: it needs {permission}")
 
     agent = None
     if mode == autonomy.PERSON:

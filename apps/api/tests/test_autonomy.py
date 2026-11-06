@@ -13,11 +13,13 @@ from policy_files import autonomy_dir
 from sqlalchemy.orm import Session
 
 from app import policy
+from app.authz import Action
 from app.autonomy import (
     AGENTS,
     FLOOR_STEPS,
     STEPS,
     effective_mode,
+    who_permission,
 )
 from app.db import engine
 from app.main import app
@@ -158,6 +160,42 @@ def _set(data, value, *path):
 )
 def test_the_loader_refuses_a_bad_file_clearly(change, message):
     _refused(_with(change), message)
+
+
+def test_each_step_names_the_permission_its_who_needs():
+    special = {
+        "pass_gate": "gate:decide",
+        "decide_change_sponsor": "gate:decide",
+        "approve_proposal": "proposal:approve",
+        "accept_risk": "risk:accept",
+    }
+    for step in STEPS:
+        assert who_permission(step) == special.get(step, "project:write")
+        assert who_permission(step) in {action.value for action in Action}
+
+
+@pytest.mark.parametrize(
+    ("step", "role", "permission"),
+    [
+        ("pass_gate", "project_manager", "gate:decide"),
+        ("decide_change_sponsor", "project_manager", "gate:decide"),
+        ("approve_proposal", "project_manager", "proposal:approve"),
+        ("accept_risk", "ethics_reviewer", "risk:accept"),
+        ("draft_plan", "sponsor", "project:write"),
+        ("score_risk", "ethics_reviewer", "project:write"),
+        ("send_proposal", "sponsor", "project:write"),
+        ("decide_change_pm", "sponsor", "project:write"),
+    ],
+)
+def test_a_who_without_the_steps_permission_is_refused(step, role, permission):
+    data = _with(lambda d: _set(d, role, "steps", step, "who"))
+    _refused(data, f"steps.{step}.who: {role} can't take {step}: it needs {permission}")
+
+
+@pytest.mark.parametrize("role", ["auditor", "admin"])
+@pytest.mark.parametrize("step", STEPS)
+def test_a_read_only_role_can_never_be_who(step, role):
+    _refused(_with(lambda d: _set(d, role, "steps", step, "who")), f"{role} can't take {step}")
 
 
 def test_a_missing_or_wrong_version_file_is_refused(tmp_path: Path):

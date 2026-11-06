@@ -7,6 +7,9 @@
 # - `who` is required on every step: on a `person` step it is the role that decides; on a
 #   `window` step the role that may hold it; on an `agent` step the role that gets the step when
 #   the agent is switched off.
+# - `who` must hold the permission the step needs: gate:decide for pass_gate and
+#   decide_change_sponsor, proposal:approve for approve_proposal, risk:accept for accept_risk,
+#   project:write for every other step. Read-only roles (auditor, admin) can never be `who`.
 # - `agent` names the agent for `agent` and `window` steps only, and must be one the code allows
 #   for that step.
 # - `window_minutes` (a whole number from 1 to 1440) is required on `window` steps and allowed
@@ -64,13 +67,15 @@ steps:
     mode: agent
     agent: simulated_client
     who: project_manager
-  # A risk above the project manager's band still escalates as policies/risk.yaml says.
+  # The project manager takes the step, but the risk's band still decides who may accept that
+  # risk: its escalation owner in policies/risk.yaml, so a Medium or High risk goes to the sponsor.
   accept_risk:
     mode: person
     who: project_manager
   pass_gate:
     mode: person
     who: sponsor
+  # Not a floor step, but no agent may decide a change until a later item adds one.
   decide_change_pm:
     mode: person
     who: project_manager
