@@ -71,6 +71,11 @@ def test_repository_map_keeps_prose_short():
         assert len(feature.title) + len(feature.notes) <= MAX_PROSE_CHARS, feature.id
 
 
+def test_the_orchestrator_maps_the_rules_it_follows():
+    features = {feature.id: feature for feature in load_standards(MAP_PATH).features}
+    assert features["P6-orchestrator"].rules == ("R1", "R2", "R3", "R4", "R5")
+
+
 def test_rule_ids_match_the_rules_file():
     written = re.findall(r"^- \*\*(R\d+)\.\*\*", RULES_PATH.read_text(encoding="utf-8"), re.M)
     assert tuple(written) == RULE_IDS

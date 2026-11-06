@@ -148,6 +148,10 @@ features:
     title: The autonomy policy
     rules: [R1, R2, R3, R4, R9]
     notes: autonomy.yaml sets each step to agent, window or person; five steps are person-only in code; off switches send steps to a person; needs_judgement risks are never agent-scored.
+  - id: P6-orchestrator
+    title: The orchestrator
+    rules: [R1, R2, R3, R4, R5]
+    notes: Runs agent steps the autonomy policy allows, waits out windows a person may hold, sends the rest to a person's inbox; caps and retries in code; every action audited.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports
