@@ -44,6 +44,8 @@ NOT_AI = "not needed: this request doesn't use AI"
 
 NO_PLAN = "this project has no plan"
 NO_TOP_BUDGET = "The brief has no top budget"
+# The escalation owner whose open risks don't hold back the go-ahead (`escalations_settled`).
+PROJECT_MANAGER = "project_manager"
 
 Check = Callable[[Session, ProjectRequest], CheckResult]
 ProjectCheck = Callable[[Session, Project], CheckResult]
@@ -144,7 +146,13 @@ def estimate_within_budget(db: Session, project: Project) -> CheckResult:
 def proposal_accepted(db: Session, project: Project) -> CheckResult:
     if project.client_id is None:
         return CheckResult(True, "not needed: this project has no client")
-    proposal = db.scalar(select(ProjectProposal).where(ProjectProposal.project_id == project.id))
+    # Newest first, so the check reads the latest one if a project ever has more than one.
+    proposal = db.scalar(
+        select(ProjectProposal)
+        .where(ProjectProposal.project_id == project.id)
+        .order_by(ProjectProposal.id.desc())
+        .limit(1)
+    )
     if proposal is None:
         return CheckResult(False, "this project has no proposal yet")
     if proposal.status != "accepted":
@@ -169,20 +177,23 @@ def no_unreviewed_risks(db: Session, project: Project) -> CheckResult:
 
 
 def escalations_settled(db: Session, project: Project) -> CheckResult:
-    """An open risk with `escalated_to` set waits on that role; `app.risks.settle_escalation`
-    clears it when the escalation owner acts."""
+    """An open risk escalated beyond the project manager (`escalated_to` set to any other role:
+    today the sponsor, for Medium and High) is waiting, and blocks the go-ahead. It stops waiting
+    only when it leaves `open`: the sponsor accepts it, or the team closes or rejects it. An open
+    risk escalated to the project manager (Low) does not wait."""
     stmt = (
         select(Risk)
         .where(
             Risk.project_id == project.id,
             Risk.status == "open",
             Risk.escalated_to.is_not(None),
+            Risk.escalated_to != PROJECT_MANAGER,
         )
         .order_by(Risk.id)
     )
     waiting = list(db.scalars(stmt))
     if waiting:
-        named = "; ".join(f"'{r.title}' (with {r.escalated_to})" for r in waiting)
+        named = "; ".join(f"risk {r.id} '{r.title}' (with {r.escalated_to})" for r in waiting)
         return CheckResult(False, "waiting on an escalation owner: " + named)
     return CheckResult(True, "no open risk is waiting on an escalation owner")
 

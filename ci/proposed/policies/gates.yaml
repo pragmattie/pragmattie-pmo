@@ -57,7 +57,7 @@ gates:
         text: No risk on the project is still waiting to be reviewed
         check: no_unreviewed_risks
       - id: escalations_settled
-        text: No open risk is waiting on its escalation owner
+        text: No open risk escalated beyond the project manager is still waiting
         check: escalations_settled
       - id: readiness_not_red
         text: For a project from a request that uses AI, no readiness area is rated red
