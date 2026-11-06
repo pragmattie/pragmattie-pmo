@@ -180,3 +180,64 @@ or dropped, and which sections it replaced or kept. A failed run (an API error, 
 valid JSON, misses a section or stopped early) is a 502, saves nothing and records the error. A dry
 run or a refused run calls nothing; a refused run is recorded as a person's refused attempt (agent
 `proposal`).
+
+## Orchestrator
+
+Code: `apps/api/app/orchestrator.py`. Run by `python -m app.orchestrator once` (one pass) or
+`python -m app.orchestrator run` (a pass every `ORCHESTRATOR_INTERVAL_SECONDS`, default 30, until
+Ctrl+C), or by `POST /api/v1/orchestrator/run` (admin only, `orchestrator:run`), which runs one
+pass. It runs locally only. It is not an agent itself: it calls no model, and moves work between
+the agents and people as the autonomy policy (`policies/autonomy.yaml`) says.
+
+**What it reads.** Every open request (`draft` or `submitted`), every project in planning or
+delivery that isn't cancelled, and their risks, proposals and change requests, as they are now;
+the autonomy policy, the risk policy (for a risk's band) and the go-ahead gate's checks. From
+these the next-step engine (`next_steps`, rules only) gives each subject's next steps: a step id,
+a plain reason ("the plan is incomplete: ...", "the proposal is approved and waiting to be sent"),
+how it runs now (`agent`, `window` or `person`) and who or what it waits on. The inbox and the
+board use the same function.
+
+**What it may do alone.** Only in `ORCHESTRATOR_MODE=enforce` and `AGENT_MODE=enforce`:
+
+- run an `agent` step through the same code the **Draft with agent** buttons use (the intake,
+  risk and proposal agents), with no person as the actor and `trigger = orchestrator`;
+- open a `window` step as a pending action with its due time, and run it once the window has
+  passed with no hold;
+- open one inbox item for a `person` step, for the role the policy names (or, for a risk's
+  acceptance, the role it is escalated to), and close it once the step is no longer needed.
+
+A step whose agent isn't built, has no action yet ("no agent does this yet"), is switched off in
+the policy, or can't run because `AGENT_MODE` isn't `enforce`, goes to a person instead. So does a
+`score_risk` step for a risk marked as needing judgement, and an agent step that already ran once
+but is still open. A step already done, pending or in the inbox is not repeated.
+
+**What it never does.** Decide a gate, approve, return or mark sent a proposal, record a client's
+answer, accept a risk or decide a change request, whatever the policy says: those steps, and any
+step no agent may do, always go to a person. It never sends anything outside the product. It
+never deletes an inbox item: items close as `done` or `cancelled` with when and why.
+
+**Holding.** `POST /api/v1/orchestrator/actions/{id}/hold` stops a pending action. Only the step's
+`who` role may hold it, with a reason of at least 10 characters; the action becomes `held` and the
+step an inbox item. A refusal (wrong role, short reason, not pending) is a `rejected` audit row.
+
+**Modes.** `ORCHESTRATOR_MODE=off` (the default) does nothing. `shadow` records what it would do,
+as `skipped` audit rows, and changes nothing: a row is written when a step and subject first
+appear, and again only when the reason or route changes. `enforce` acts as above.
+
+**Caps and retries, enforced in code.**
+
+- At most `ORCHESTRATOR_MAX_AGENT_CALLS` agent runs per pass (default 5).
+- `ORCHESTRATOR_DAILY_CAP_USD` (default 5.00): once the cost of today's (UTC) agent runs with
+  `trigger = orchestrator`, summed from the audit rows, reaches it, agent steps wait for the next
+  day. The pass records once per day that it stopped for the cap.
+- A step waiting for a cap keeps a pending action whose wait reason says which cap.
+- An agent step that fails is retried at most 3 times, 5 minutes apart; then its action is
+  cancelled and the step goes to a person.
+- Only one pass runs at a time: a pass takes a lease (15 minutes) first and gives up when another
+  pass holds it.
+
+**Record.** A pass that does nothing writes nothing. Otherwise each action taken, opened, held,
+closed, skipped (in shadow) or failed is one `pmo_audit` row, agent `orchestrator`,
+`trigger = orchestrator`, no `actor_user_id`, subject the step's subject, with the step, the
+reason and the policy digest in its signals. An agent run it starts also writes that agent's own
+row, with `trigger = orchestrator`. An error on one subject is recorded and the pass carries on.
