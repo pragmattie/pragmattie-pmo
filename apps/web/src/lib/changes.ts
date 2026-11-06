@@ -64,6 +64,8 @@ export interface ChangeLog extends Page<ChangeRequest> {
   project_stage: string
   project_status: string
   pm_user_id: number | null
+  // The roles that decide a sponsor-level change (the go-ahead gate's deciders).
+  sponsor_deciders: string[]
   current_baseline_number: number | null
   proposal_out_of_date: boolean
 }
@@ -138,19 +140,31 @@ function has(user: Viewer, action: string): boolean {
   return user.actions.includes(action)
 }
 
-// Whether `user` may decide `change`: never their own; a sponsor-level change by a sponsor who
-// doesn't manage the project; a project-manager-level one only by the project's own project
-// manager.
+// Whether `user` may decide `change`: never their own; a sponsor-level change by a role the API
+// lists in `sponsorDeciders` (the go-ahead gate's deciders), with `gate:decide`, who doesn't
+// manage the project; a project-manager-level one only by the project's own project manager.
 export function canDecideChange(
   change: Pick<ChangeRequest, 'decider' | 'raised_by' | 'status'>,
   user: Viewer | null,
   pmUserId: number | null,
+  sponsorDeciders: readonly string[],
 ): boolean {
   if (!user || change.status !== 'submitted' || change.raised_by === user.id) return false
   if (change.decider === 'sponsor') {
-    return has(user, 'gate:decide') && user.role === 'sponsor' && user.id !== pmUserId
+    return (
+      has(user, 'gate:decide') && sponsorDeciders.includes(user.role) && user.id !== pmUserId
+    )
   }
   return has(user, 'project:write') && user.id === pmUserId
+}
+
+// Only its raiser may submit (or resubmit) a change, so nobody rewrites another person's change
+// and then decides it.
+export function canSubmitChange(
+  change: Pick<ChangeRequest, 'raised_by'>,
+  user: Viewer | null,
+): boolean {
+  return !!user && has(user, 'project:write') && user.id === change.raised_by
 }
 
 // Its raiser or the project's project manager may withdraw a draft or submitted change.

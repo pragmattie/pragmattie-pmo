@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import {
   canDecideChange,
+  canSubmitChange,
   canWithdrawChange,
   type ChangeForm,
   type ChangeLog,
@@ -47,6 +48,7 @@ const decisionReason = ref('')
 const decisionError = ref('')
 
 const pmUserId = computed(() => log.value?.pm_user_id ?? null)
+const sponsorDeciders = computed(() => log.value?.sponsor_deciders ?? [])
 const open = computed(
   () => log.value?.project_stage === 'delivery' && log.value.project_status !== 'cancelled',
 )
@@ -327,7 +329,7 @@ async function decide() {
           </div>
           <div class="d-flex flex-wrap ga-2 mt-1">
             <v-btn
-              v-if="open && change.status === 'draft' && auth.can('project:write')"
+              v-if="open && change.status === 'draft' && canSubmitChange(change, auth.user)"
               size="small"
               color="primary"
               variant="flat"
@@ -341,7 +343,7 @@ async function decide() {
               v-if="
                 open &&
                 change.status === 'submitted' &&
-                auth.can('project:write') &&
+                canSubmitChange(change, auth.user) &&
                 change.measured_baseline_number !== log.current_baseline_number
               "
               size="small"
@@ -352,7 +354,7 @@ async function decide() {
             >
               Resubmit
             </v-btn>
-            <template v-if="open && canDecideChange(change, auth.user, pmUserId)">
+            <template v-if="open && canDecideChange(change, auth.user, pmUserId, sponsorDeciders)">
               <v-btn size="small" color="success" variant="flat" data-test="change-approve" @click="ask(change, 'approve')">
                 Approve
               </v-btn>

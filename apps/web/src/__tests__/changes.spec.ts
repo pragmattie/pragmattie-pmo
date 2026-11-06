@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import ChangesSection from '../components/ChangesSection.vue'
 import {
   canDecideChange,
+  canSubmitChange,
   canWithdrawChange,
   type ChangeEffect,
   type ChangeLog,
@@ -91,6 +92,7 @@ function changeLog(items: ChangeRequest[], changes: Partial<ChangeLog> = {}): Ch
     project_stage: 'delivery',
     project_status: 'on_track',
     pm_user_id: PM_ID,
+    sponsor_deciders: ['sponsor'],
     current_baseline_number: 1,
     proposal_out_of_date: false,
     ...changes,
@@ -255,19 +257,41 @@ describe('the change helpers', () => {
     const ethics = { id: 10, role: 'ethics_reviewer', actions: ACTIONS.ethics_reviewer }
     const small = change()
     const large = change({ decider: 'sponsor' })
-    expect(canDecideChange(small, pm, PM_ID)).toBe(true)
-    expect(canDecideChange(small, raiser, PM_ID)).toBe(false)
-    expect(canDecideChange(small, sponsor, PM_ID)).toBe(false)
-    expect(canDecideChange(large, sponsor, PM_ID)).toBe(true)
-    expect(canDecideChange(large, sponsor, sponsor.id)).toBe(false)
-    expect(canDecideChange(large, pm, PM_ID)).toBe(false)
-    expect(canDecideChange(large, ethics, PM_ID)).toBe(false)
-    expect(canDecideChange(change({ status: 'draft' }), pm, PM_ID)).toBe(false)
-    expect(canDecideChange(change({ raised_by: PM_ID, decider: 'sponsor' }), pm, PM_ID)).toBe(false)
+    const deciders = ['sponsor']
+    expect(canDecideChange(small, pm, PM_ID, deciders)).toBe(true)
+    expect(canDecideChange(small, raiser, PM_ID, deciders)).toBe(false)
+    expect(canDecideChange(small, sponsor, PM_ID, deciders)).toBe(false)
+    expect(canDecideChange(large, sponsor, PM_ID, deciders)).toBe(true)
+    expect(canDecideChange(large, sponsor, sponsor.id, deciders)).toBe(false)
+    expect(canDecideChange(large, pm, PM_ID, deciders)).toBe(false)
+    expect(canDecideChange(large, ethics, PM_ID, deciders)).toBe(false)
+    expect(canDecideChange(change({ status: 'draft' }), pm, PM_ID, deciders)).toBe(false)
+    expect(
+      canDecideChange(change({ raised_by: PM_ID, decider: 'sponsor' }), pm, PM_ID, deciders),
+    ).toBe(false)
     expect(canWithdrawChange(small, raiser, PM_ID)).toBe(true)
     expect(canWithdrawChange(small, pm, PM_ID)).toBe(true)
     expect(canWithdrawChange(small, { ...raiser, id: 99 }, PM_ID)).toBe(false)
     expect(canWithdrawChange(change({ status: 'approved' }), raiser, PM_ID)).toBe(false)
+  })
+
+  it("follows the deciders the API sends for a sponsor-level change, not a fixed role", () => {
+    const sponsor = { id: 9, role: 'sponsor', actions: ACTIONS.sponsor }
+    const ethics = { id: 10, role: 'ethics_reviewer', actions: ACTIONS.ethics_reviewer }
+    const large = change({ decider: 'sponsor' })
+    expect(canDecideChange(large, ethics, PM_ID, ['sponsor', 'ethics_reviewer'])).toBe(true)
+    expect(canDecideChange(large, sponsor, PM_ID, ['ethics_reviewer'])).toBe(false)
+    // The gate not yet defined: nobody may decide a sponsor-level change.
+    expect(canDecideChange(large, sponsor, PM_ID, [])).toBe(false)
+  })
+
+  it('lets only the raiser submit a change', () => {
+    const pm = { id: PM_ID, role: 'project_manager', actions: ACTIONS.project_manager }
+    const raiser = { id: RAISER_ID, role: 'project_manager', actions: ACTIONS.project_manager }
+    const draft = change({ status: 'draft' })
+    expect(canSubmitChange(draft, raiser)).toBe(true)
+    expect(canSubmitChange(draft, pm)).toBe(false)
+    expect(canSubmitChange(draft, null)).toBe(false)
   })
 })
 
@@ -391,5 +415,27 @@ describe('the Changes section', () => {
   it('offers a resubmit when the change was measured on an older baseline', async () => {
     await mountSection('project_manager', RAISER_ID, changeLog([change()], { current_baseline_number: 2 }))
     expect(find('change-resubmit')).not.toBeNull()
+  })
+
+  it('offers submit and resubmit only to the raiser, not the project manager', async () => {
+    const draft = change({ status: 'draft' })
+    await mountSection('project_manager', RAISER_ID, changeLog([draft]))
+    expect(find('change-submit')).not.toBeNull()
+    document.body.innerHTML = ''
+    await mountSection('project_manager', PM_ID, changeLog([draft]))
+    expect(find('change-submit')).toBeNull()
+    expect(find('change-withdraw')).not.toBeNull()
+    document.body.innerHTML = ''
+    await mountSection('project_manager', PM_ID, changeLog([change()], { current_baseline_number: 2 }))
+    expect(find('change-resubmit')).toBeNull()
+  })
+
+  it('shows Approve on a sponsor-level change to whichever roles the API lists', async () => {
+    const large = change({ decider: 'sponsor' })
+    await mountSection('ethics_reviewer', 3, changeLog([large], { sponsor_deciders: ['ethics_reviewer'] }))
+    expect(find('change-approve')).not.toBeNull()
+    document.body.innerHTML = ''
+    await mountSection('sponsor', 2, changeLog([large], { sponsor_deciders: ['ethics_reviewer'] }))
+    expect(find('change-approve')).toBeNull()
   })
 })
