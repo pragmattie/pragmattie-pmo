@@ -4,15 +4,17 @@ Passing the go-ahead gate stores baseline 1, the plan as it stood when the spons
 requests (5.5) add 2, 3 and so on. `number` counts per project. A baseline is never changed or
 deleted: no route writes one after it is made. `plan` holds the scope, deliverables, milestones,
 estimate lines, contingency and total, with money as 2-decimal strings; `total` is the same total
-as a decimal, so it can be compared without reading the JSON. `gate_decision_id` is the decision
-that made it.
+as a decimal, so it can be compared without reading the JSON.
+
+What made it is exactly one of `gate_decision_id` (the go-ahead decision, for baseline 1) and
+`change_request_id` (the approved change request, for every later one); a check enforces it.
 """
 
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.migrations_filter import table_name
@@ -21,12 +23,21 @@ from app.models.base import Base, Money, utcnow
 BASELINES_TABLE = table_name("project_baselines")
 PROJECTS_TABLE = table_name("projects")
 GATE_DECISIONS_TABLE = table_name("gate_decisions")
+CHANGE_REQUESTS_TABLE = table_name("change_requests")
+# Exactly one of the two says what made a baseline.
+MADE_BY_ONE = (
+    "(gate_decision_id IS NOT NULL AND change_request_id IS NULL) OR "
+    "(gate_decision_id IS NULL AND change_request_id IS NOT NULL)"
+)
 
 
 class ProjectBaseline(Base):
     __tablename__ = BASELINES_TABLE
     __table_args__ = (
         UniqueConstraint("project_id", "number", name="uq_project_baselines_number"),
+        # One baseline per approved change request.
+        UniqueConstraint("change_request_id", name="uq_project_baselines_change_request"),
+        CheckConstraint(MADE_BY_ONE, name="ck_project_baselines_made_by"),
         # Audit rows name a baseline by id, so an id is never reused.
         {"sqlite_autoincrement": True},
     )
@@ -36,9 +47,12 @@ class ProjectBaseline(Base):
         ForeignKey(f"{PROJECTS_TABLE}.id", name="fk_project_baselines_project")
     )
     number: Mapped[int]
-    gate_decision_id: Mapped[int] = mapped_column(
+    gate_decision_id: Mapped[int | None] = mapped_column(
         ForeignKey(f"{GATE_DECISIONS_TABLE}.id", name="fk_project_baselines_gate_decision"),
         index=True,
+    )
+    change_request_id: Mapped[int | None] = mapped_column(
+        ForeignKey(f"{CHANGE_REQUESTS_TABLE}.id", name="fk_project_baselines_change_request")
     )
     plan: Mapped[Any] = mapped_column(JSON)
     total: Mapped[Decimal] = mapped_column(Money)
