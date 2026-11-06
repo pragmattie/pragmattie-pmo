@@ -175,6 +175,31 @@ def require_audited(action: Action, record_refusal: RefusalRecorder) -> Callable
     return guard
 
 
+def require_any_audited(
+    actions: frozenset[Action], record_refusal: RefusalRecorder
+) -> Callable[..., User]:
+    """Like `require_audited`, for a decision that roles holding different actions take at
+    different levels (a change request: a project manager's or a sponsor's). The role must hold
+    at least one of `actions`; the route then checks the level itself."""
+
+    def guard(
+        request: Request,
+        user: Annotated[User, Depends(current_user)],
+        db: Annotated[Session, Depends(get_db)],
+    ) -> User:
+        if not any(can(user.role, action) for action in actions):
+            record_refusal(db, user, dict(request.path_params))
+            db.commit()
+            raise HTTPException(status.HTTP_403_FORBIDDEN, FORBIDDEN)
+        return user
+
+    guard.pmo_guard = actions  # type: ignore[attr-defined]
+    guard.__name__ = "require_any_audited_" + "_".join(
+        sorted(a.value.replace(":", "_") for a in actions)
+    )
+    return guard
+
+
 def signed_in(user: Annotated[User, Depends(current_user)]) -> User:
     """A guard for routes every signed-in user may use, whatever their role (`auth/me`)."""
     return user

@@ -9,6 +9,7 @@ from app import __version__
 from app.api import (
     audit,
     auth,
+    changes,
     gates,
     health,
     intake,
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
     api.include_router(health.router)
     api.include_router(auth.router)
     api.include_router(audit.router)
+    api.include_router(changes.router)
     api.include_router(intake.router)
     api.include_router(gates.router)
     api.include_router(gates.project_router)

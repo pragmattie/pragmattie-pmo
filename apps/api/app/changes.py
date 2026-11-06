@@ -103,6 +103,7 @@ def compute_effect(
     changes: dict[str, Any],
     policy: ChangesPolicy,
     *,
+    baseline_number: int,
     has_project_manager: bool,
     raised_by_project_manager: bool,
 ) -> tuple[dict[str, Any], str]:
@@ -152,7 +153,7 @@ def compute_effect(
         escalations.append(RAISED_BY_PROJECT_MANAGER)
 
     effect = {
-        "baseline_number": baseline["number"],
+        "baseline_number": baseline_number,
         "baseline_total": _money(old_total),
         "new_total": _money(new_total),
         "cost_difference": _money(difference),
