@@ -71,7 +71,9 @@ def upgrade() -> None:
             name="ck_orchestrator_actions_status",
         ),
         sa.CheckConstraint("mode IN ('agent', 'window')", name="ck_orchestrator_actions_mode"),
-        sa.ForeignKeyConstraint(["held_by"], [f"{USERS}.id"], name="fk_orchestrator_actions_held_by"),
+        sa.ForeignKeyConstraint(
+            ["held_by"], [f"{USERS}.id"], name="fk_orchestrator_actions_held_by"
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("open_key", name="uq_orchestrator_actions_open_key"),
         sqlite_autoincrement=True,
@@ -95,9 +97,7 @@ def upgrade() -> None:
         sa.Column("open_key", sa.String(length=200), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.CheckConstraint(
-            "status IN ('open', 'done', 'cancelled')", name="ck_inbox_items_status"
-        ),
+        sa.CheckConstraint("status IN ('open', 'done', 'cancelled')", name="ck_inbox_items_status"),
         sa.ForeignKeyConstraint(["action_id"], [f"{ACTIONS}.id"], name="fk_inbox_items_action"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("open_key", name="uq_inbox_items_open_key"),
