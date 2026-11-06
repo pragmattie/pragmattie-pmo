@@ -351,6 +351,50 @@ def test_proposed_gates_file_loads(tmp_path):
     assert gates.digest == hashlib.sha256(gates_file().read_bytes()).hexdigest()
 
 
+def test_proposed_gates_file_adds_the_go_ahead_gate(tmp_path):
+    gates = load_policies(gates_policy_dir(tmp_path)).gates
+    assert list(gates.gates) == ["approval", "go_ahead"]
+    go_ahead = gates.gates["go_ahead"]
+    assert (go_ahead.from_stage, go_ahead.to_stage) == ("planning", "delivery")
+    assert go_ahead.applies_to == "project"
+    assert go_ahead.deciders == ("sponsor",)
+    assert [c.check for c in go_ahead.criteria if not c.person] == [
+        "plan_complete",
+        "estimate_within_budget",
+        "proposal_accepted",
+        "no_unreviewed_risks",
+        "escalations_settled",
+        "readiness_not_red",
+    ]
+    assert [c.text for c in go_ahead.criteria if c.person] == [
+        "The team and dates in the plan are realistic",
+        "The project's risks are acceptable to start",
+    ]
+
+
+def test_the_approval_gate_is_unchanged_from_the_applied_file(tmp_path):
+    """The proposed file keeps the approval gate exactly as the live file has it."""
+    applied = load_policies(REPO_ROOT / "policies").gates.gates
+    if "approval" not in applied:
+        pytest.skip("the live gates file has no approval gate")
+    proposed = load_policies(gates_policy_dir(tmp_path)).gates.gates
+    assert proposed["approval"] == applied["approval"]
+
+
+def test_a_check_must_suit_the_gates_subject(tmp_path):
+    def change(data):
+        _with_gate(_criterion(0, check="plan_complete"))(data)
+
+    assert_rejected(tmp_path, "gates.yaml", change, "'plan_complete' can't check a request")
+
+
+def test_the_checks_cover_exactly_the_subjects_the_loader_allows():
+    from app.gates import CHECKS
+    from app.policy import CHECK_SUBJECTS
+
+    assert CHECKS == dict(CHECK_SUBJECTS)
+
+
 def test_gates_digest_changes_with_the_file(tmp_path):
     first = load_policies(VALID).gates.digest
     changed = policy_dir(tmp_path)

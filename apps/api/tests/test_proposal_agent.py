@@ -123,7 +123,12 @@ def project(db, pm) -> Project:
     db.add(client)
     db.flush()
     row = Project(
-        name="Forecast", client_id=client.id, stage="planning", sponsor="S", pm="P", status="ok"
+        name="Forecast",
+        client_id=client.id,
+        stage="planning",
+        sponsor="S",
+        pm="P",
+        status="on_track",
     )
     db.add(row)
     db.flush()

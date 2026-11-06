@@ -131,6 +131,10 @@ features:
     title: Proposal agent
     rules: [R1, R2, R4, R5, R9]
     notes: Drafts proposal text only; code fills figures and dates from tokens and removes any it wrote; never replaces a person's section; unreviewed drafts block submit; each run audited.
+  - id: P5-go-ahead-gate
+    title: The go-ahead gate and the baseline
+    rules: [R1, R3, R5, R7, R9, R11]
+    notes: A sponsor passes it with every check met, freezing the plan as baseline 1; open risks escalated to the sponsor and red AI readiness block it; all decisions audited.
   # --- P6 Delivery and closure
   - id: P6-status-reports
     title: Status reports

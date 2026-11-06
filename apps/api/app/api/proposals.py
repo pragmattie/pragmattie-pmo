@@ -43,8 +43,9 @@ Every write carries the proposal's `version`; a stale one is a 409. Each change 
 role without the right, the caller's own submission, a stale version, a wrong status, open flags
 or a second create), is one audit row too (`status: rejected`), and changes nothing. A refusal
 before the project has a proposal is recorded against the project (subject type `project`).
-These routes need a signed-in person, so no agent can submit, approve, mark sent or record an
-answer.
+A cancelled project (declined at the go-ahead gate, item 5.4) takes no proposal writes: each one is
+a refused 409, recorded. These routes need a signed-in person, so no agent can submit, approve,
+mark sent or record an answer.
 """
 
 import logging
@@ -71,6 +72,7 @@ from app.models import (
     User,
 )
 from app.models.base import utcnow
+from app.models.portfolio import CANCELLED
 from app.models.proposal import TEXT_SECTIONS
 from app.proposals import (
     check,
@@ -126,6 +128,7 @@ NOT_DRAFT_AGENT = "the proposal agent drafts only for a draft proposal"
 AGENT_FAILED = "the proposal agent could not finish; the failed run is recorded in the audit trail"
 CONFIRM_NOT_DRAFT = "a section can be confirmed only on a draft proposal"
 NOT_AGENT_DRAFT = "this section is not an agent draft waiting for review"
+CANCELLED_PROJECT = "this project is cancelled, so its proposal can't change"
 
 EDITABLE = ("draft", "submitted", "approved")
 WITHDRAWABLE = ("draft", "submitted", "approved", "sent")
@@ -343,6 +346,20 @@ def _refusal_recorder(action: str):
     return record
 
 
+def _refuse_if_cancelled(db: Session, proposal: ProjectProposal, user: User, action: str) -> None:
+    """A cancelled project (declined at the go-ahead gate, item 5.4) takes no proposal writes."""
+    if db.get(Project, proposal.project_id).status == CANCELLED:
+        raise _refuse(
+            db,
+            proposal,
+            user,
+            action=action,
+            refusal="project_cancelled",
+            code=409,
+            detail=CANCELLED_PROJECT,
+        )
+
+
 def _person(action: Action, name: str):
     return Annotated[User, Depends(require_audited(action, _refusal_recorder(name)))]
 
@@ -372,7 +389,25 @@ def get_proposal(project_id: int, _user: Reader, db: Db) -> ProposalOut:
     "/{project_id}/proposal", response_model=ProposalOut, status_code=status.HTTP_201_CREATED
 )
 def create_proposal(project_id: int, user: Creator, db: Db) -> ProposalOut:
-    _client_project(db, project_id)
+    project, _ = _client_project(db, project_id)
+    if project.status == CANCELLED:
+        record_refusal(
+            db,
+            agent=AUDIT_AGENT,
+            subject_type=PROJECT_SUBJECT,
+            subject_id=str(project_id),
+            version=project.version,
+            actor_user_id=user.id,
+            output=None,
+            action_taken={
+                "action": "create_refused",
+                "refusal": "project_cancelled",
+                "actor_role": user.role,
+                "project_id": project_id,
+            },
+        )
+        db.commit()
+        raise HTTPException(status.HTTP_409_CONFLICT, CANCELLED_PROJECT)
     plan = _plan(db, project_id)
     existing = _find(db, project_id)
     if existing is not None:
@@ -400,6 +435,7 @@ def _editable(
     """The proposal, locked, if it is at `version` and can still change; a stale version or a
     sent, answered or withdrawn proposal is a refusal, recorded."""
     proposal = _proposal(db, project_id, for_update=True)
+    _refuse_if_cancelled(db, proposal, user, action)
     if proposal.version != version:
         raise _refuse(db, proposal, user, action=action, refusal="stale", code=409, detail=STALE)
     if proposal.status not in EDITABLE:
@@ -468,6 +504,7 @@ def _for_decision(
     """The proposal, locked, if it is at `version` and in one of the `wanted` statuses; any
     other case is a refusal, recorded."""
     proposal = _proposal(db, project_id, for_update=True)
+    _refuse_if_cancelled(db, proposal, user, action)
     if proposal.version != version:
         raise _refuse(db, proposal, user, action=action, refusal="stale", code=409, detail=STALE)
     if proposal.status not in wanted:
@@ -682,6 +719,7 @@ def draft_proposal(
 ) -> ProposalDraftResult:
     settings = get_settings()
     proposal = _proposal(db, project_id)
+    _refuse_if_cancelled(db, proposal, user, "draft")
     if settings.agent_mode == "off":
         raise _refuse(
             db, proposal, user, action="draft", refusal="agent_off", code=409, detail=AGENT_OFF
@@ -750,6 +788,7 @@ def confirm_section(
 ) -> ProposalOut:
     """A person accepts an agent's draft section as it is."""
     proposal = _proposal(db, project_id, for_update=True)
+    _refuse_if_cancelled(db, proposal, user, "confirm")
     if proposal.version != body.version:
         raise _refuse(db, proposal, user, action="confirm", refusal="stale", code=409, detail=STALE)
     if proposal.status != "draft":

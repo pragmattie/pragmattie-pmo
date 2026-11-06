@@ -30,11 +30,13 @@ def db():
 
 
 def _snapshot(db: Session) -> list[tuple]:
+    """Every seeded row's values, but not `version`: it counts a row's changes, so restoring a
+    drifted row moves it on."""
     clients = db.execute(select(Client).order_by(Client.id)).scalars()
     projects = db.execute(select(Project).order_by(Project.id)).scalars()
     risks = db.execute(select(Risk).order_by(Risk.id)).scalars()
     return [
-        tuple(getattr(row, col) for col in row.__table__.columns.keys())
+        tuple(getattr(row, col) for col in row.__table__.columns.keys() if col != "version")
         for row in [*clients, *projects, *risks]
     ]
 

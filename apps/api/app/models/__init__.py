@@ -3,6 +3,7 @@
 from app.models.audit import AuditDecision
 from app.models.auth import RevokedToken, User
 from app.models.base import Base, Money, utcnow
+from app.models.baseline import ProjectBaseline
 from app.models.gate import GateDecision
 from app.models.intake import (
     ProjectRequest,
@@ -26,6 +27,7 @@ __all__ = [
     "PlanDeliverable",
     "PlanEstimateLine",
     "PlanMilestone",
+    "ProjectBaseline",
     "Project",
     "ProjectAssumption",
     "ProjectBrief",

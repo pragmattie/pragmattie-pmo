@@ -16,6 +16,7 @@ just before it takes its row lock, then releases them all at once.
 import json
 import threading
 from collections.abc import Iterator
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +24,7 @@ from sqlalchemy import Engine, create_engine, make_url, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 import app.api.auth as auth_api
+import app.api.gates as gates_api
 import app.api.risks as risks_api
 import app.api.users as users_api
 from app.agents import risk_agent
@@ -30,9 +32,29 @@ from app.agents.risk_agent import ClaudeReply
 from app.config import get_settings
 from app.db import get_db
 from app.main import app
-from app.models import AuditDecision, Project, Risk, User
+from app.models import (
+    AuditDecision,
+    GateDecision,
+    PlanDeliverable,
+    PlanEstimateLine,
+    PlanMilestone,
+    Project,
+    ProjectBaseline,
+    ProjectBrief,
+    ProjectPlan,
+    Risk,
+    User,
+)
 from app.models.audit import AUDIT_TABLE
 from app.models.auth import REVOKED_TOKENS_TABLE, USERS_TABLE
+from app.models.baseline import BASELINES_TABLE, GATE_DECISIONS_TABLE
+from app.models.plan import (
+    DELIVERABLES_TABLE,
+    ESTIMATE_LINES_TABLE,
+    MILESTONES_TABLE,
+    PLANS_TABLE,
+)
+from app.models.planning import BRIEFS_TABLE
 from app.models.risk import PROJECTS_TABLE, RISKS_TABLE
 from app.security import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, hash_password, issue_token
 
@@ -45,6 +67,26 @@ ROUNDS = 5
 BARRIER_TIMEOUT = 20
 # These tests delete rows, audit rows included, so they only ever touch a local server.
 LOCAL_HOSTS = {"localhost", "127.0.0.1"}
+# Emptied before each test, children before the rows they point at.
+TABLES = (
+    BASELINES_TABLE,
+    GATE_DECISIONS_TABLE,
+    ESTIMATE_LINES_TABLE,
+    DELIVERABLES_TABLE,
+    MILESTONES_TABLE,
+    PLANS_TABLE,
+    BRIEFS_TABLE,
+    AUDIT_TABLE,
+    RISKS_TABLE,
+    PROJECTS_TABLE,
+    REVOKED_TOKENS_TABLE,
+    USERS_TABLE,
+)
+GATE_REASON = "The plan is complete and inside the budget"
+GATE_TICKS = [
+    {"id": "team_and_dates_realistic", "met": True, "note": "Owners agreed every date"},
+    {"id": "risks_acceptable", "met": True, "note": "Nothing open we can't carry"},
+]
 
 
 def _assert_local(url: str) -> None:
@@ -70,7 +112,7 @@ def mysql_engine() -> Iterator[Engine]:
 def mysql_db(mysql_engine) -> Iterator[sessionmaker]:
     """Empty tables, and the app's `get_db` pointed at MySQL for the test."""
     with mysql_engine.begin() as conn:
-        for table in (AUDIT_TABLE, RISKS_TABLE, PROJECTS_TABLE, REVOKED_TOKENS_TABLE, USERS_TABLE):
+        for table in TABLES:
             conn.execute(text(f"DELETE FROM `{table}`"))
     factory = sessionmaker(bind=mysql_engine, autoflush=False, expire_on_commit=False)
 
@@ -304,3 +346,109 @@ def test_two_overlapping_risk_agent_runs_each_write_one_audit_row(mysql_db, monk
             assert len(saved) == 2 * round_
     finally:
         app.dependency_overrides.pop(risks_api.get_claude_client, None)
+
+
+def _ready_project(factory: sessionmaker, pm: int) -> int:
+    """A project in planning that can pass the go-ahead gate: a complete plan of 900.00 inside
+    the brief's top budget, no client, no risks and no request."""
+    with factory() as session:
+        project = Project(
+            name="Parallel Forecast",
+            stage="planning",
+            sponsor="S",
+            pm="P",
+            pm_user_id=pm,
+            status="on_track",
+        )
+        session.add(project)
+        session.flush()
+        session.add(
+            ProjectBrief(
+                project_id=project.id,
+                purpose="Fewer stock-outs",
+                objectives="Forecast weekly demand",
+                decision_rights=[],
+                budget_high="1000.00",
+            )
+        )
+        plan = ProjectPlan(
+            project_id=project.id,
+            scope_in="Weekly forecast for the pilot stores",
+            scope_out="Other stores",
+            contingency_pct=10,
+            report_period="weekly",
+            report_due_day=5,
+        )
+        session.add(plan)
+        session.flush()
+        milestone = PlanMilestone(
+            plan_id=plan.id, name="Pilot live", target_date=date(2027, 3, 1), owner_user_id=pm
+        )
+        session.add(milestone)
+        session.flush()
+        session.add_all(
+            [
+                PlanDeliverable(plan_id=plan.id, name="Forecast model", milestone_id=milestone.id),
+                PlanEstimateLine(
+                    plan_id=plan.id, description="Analysts", category="people", amount="818.18"
+                ),
+            ]
+        )
+        session.commit()
+        return project.id
+
+
+@pytest.mark.mysql
+def test_two_sponsors_deciding_one_project_give_one_decision_and_one_baseline(
+    mysql_db, gates_policy, monkeypatch
+):
+    factory = mysql_db
+    pm = _add_user(factory, "pm.gate@pmo.example", "project_manager", "not-a-real-hash")
+    a = _add_user(factory, "sponsor.a@pmo.example", "sponsor", "not-a-real-hash")
+    b = _add_user(factory, "sponsor.b@pmo.example", "sponsor", "not-a-real-hash")
+    real = gates_api.ProjectSubject.load
+    barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
+
+    def at_the_same_moment(db, subject_id, *, for_update=False):
+        # Both decisions have passed the guard; now both take the project's row lock at once.
+        if for_update:
+            barrier.wait()
+        return real(db, subject_id, for_update=for_update)
+
+    monkeypatch.setattr(gates_api.ProjectSubject, "load", staticmethod(at_the_same_moment))
+    body = {"version": 1, "outcome": "pass", "reason": GATE_REASON, "criteria": GATE_TICKS}
+    for _ in range(ROUNDS):
+        barrier.reset()
+        pid = _ready_project(factory, pm)
+        url = f"/api/v1/projects/{pid}/gate"
+        webs = (_signed_in(a, "sponsor"), _signed_in(b, "sponsor"))
+        responses = _run_together(
+            [lambda web=web, url=url: web.post(url, json=body) for web in webs]
+        )
+        # One decision goes through; the other then sees the new version and is refused.
+        assert sorted(r.status_code for r in responses) == [200, 409], [r.text for r in responses]
+
+        with factory() as session:
+            project = session.get(Project, pid)
+            decisions = session.scalars(
+                select(GateDecision).where(GateDecision.subject_id == pid)
+            ).all()
+            baselines = session.scalars(
+                select(ProjectBaseline).where(ProjectBaseline.project_id == pid)
+            ).all()
+            rows = session.scalars(
+                select(AuditDecision)
+                .where(AuditDecision.agent == "gate", AuditDecision.subject_id == str(pid))
+                .order_by(AuditDecision.id)
+            ).all()
+        # One stage change, one decision, one baseline, made by that decision.
+        assert (project.stage, project.version) == ("delivery", 2)
+        assert len(decisions) == 1
+        assert [(bl.number, bl.gate_decision_id) for bl in baselines] == [(1, decisions[0].id)]
+        # One audit row for the decision and one for the refused attempt.
+        assert [(r.status, r.action_taken["action"]) for r in rows] == [
+            ("ok", "gate_pass"),
+            ("rejected", "gate_refused"),
+        ]
+        assert rows[0].action_taken["baseline_id"] == baselines[0].id
+        assert rows[1].action_taken["refusal"] == "stale_version"

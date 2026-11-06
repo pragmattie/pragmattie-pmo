@@ -98,13 +98,23 @@ class RiskPolicy:
 # Stage gates (item 4.4).
 STAGES = ("intake", "planning", "delivery", "closure", "closed")
 GATE_SUBJECTS = ("request", "project")
-# The automatic checks the code knows; `app.gates.CHECKS` implements each one.
-KNOWN_CHECKS = (
-    "value_case_confirmed",
-    "readiness_confirmed",
-    "readiness_not_red",
-    "yellow_actions_owned",
+# The automatic checks the code knows, and the subjects each one can read; `app.gates.CHECKS`
+# implements each one for each of its subjects.
+CHECK_SUBJECTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "value_case_confirmed": ("request",),
+        "readiness_confirmed": ("request",),
+        "readiness_not_red": ("request", "project"),
+        "yellow_actions_owned": ("request",),
+        # The go-ahead gate (item 5.4).
+        "plan_complete": ("project",),
+        "estimate_within_budget": ("project",),
+        "proposal_accepted": ("project",),
+        "no_unreviewed_risks": ("project",),
+        "escalations_settled": ("project",),
+    }
 )
+KNOWN_CHECKS = tuple(CHECK_SUBJECTS)
 GATE_ID = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 MAX_GATE_ID = 64
 MAX_CRITERION_TEXT = 500
@@ -507,6 +517,11 @@ def parse_gates(data: dict, where: str = "gates.yaml", digest: str = "") -> Gate
         criteria: list[Criterion] = []
         for position, item in enumerate(raw_criteria):
             criterion = _parse_criterion(item, f"{at}.criteria[{position}]")
+            if criterion.check is not None and applies_to not in CHECK_SUBJECTS[criterion.check]:
+                raise PolicyError(
+                    f"{at}.criteria[{position}].check: {criterion.check!r} can't check a "
+                    f"{applies_to}"
+                )
             if any(c.id == criterion.id for c in criteria):
                 raise PolicyError(
                     f"{at}.criteria[{position}].id: duplicate criterion id {criterion.id!r}"
