@@ -362,20 +362,71 @@ def test_no_unreviewed_risks(web, db, pm):
     assert _check(web, pid, "no_unreviewed_risks") == (False, "still proposed: 'Model drifts'")
 
 
-def test_escalations_settled(web, db, pm):
-    pid = _project(db, pm)
-    # Settled escalations, and one on a risk that is no longer open, don't wait on anyone.
-    _add_risk(db, pid, status="open")
-    _add_risk(db, pid, status="accepted", escalated_to="sponsor", escalated_band="High")
-    assert _check(web, pid, "escalations_settled") == (
-        True,
-        "no open risk is waiting on an escalation owner",
-    )
-    _add_risk(db, pid, title="Budget overrun", escalated_to="sponsor", escalated_band="High")
-    assert _check(web, pid, "escalations_settled") == (
+# Scored through the risk API, so the risk policy sets the band and the escalation owner.
+LOW = {"probability": 1, "impact": 2}  # score 2: Low, escalated to the project manager
+MEDIUM = {"probability": 3, "impact": 3}  # score 9: Medium, escalated to the sponsor
+SETTLED = (True, "no open risk is waiting on an escalation owner")
+
+
+def _scored_risk(web: TestClient, pid: int, title: str, score: dict) -> dict:
+    body = {
+        "kind": "threat",
+        "title": title,
+        "cause": "The client's export is manual",
+        "effect": "The pilot slips",
+        "category": "project",
+        "objectives": ["schedule"],
+        "response": "reduce",
+        "response_plan": "Automate the export",
+        **score,
+    }
+    response = web.post(f"/api/v1/projects/{pid}/risks", json=body)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _waiting(risk: dict) -> tuple[bool, str]:
+    return (
         False,
-        "waiting on an escalation owner: 'Budget overrun' (with sponsor)",
+        f"waiting on an escalation owner: risk {risk['id']} '{risk['title']}' (with sponsor)",
     )
+
+
+def test_an_open_low_risk_does_not_wait(web, db, pm):
+    pid = _project(db, pm)
+    risk = _scored_risk(web, pid, "Data arrives late", LOW)
+    assert (risk["status"], risk["band"], risk["escalated_to"]) == (
+        "open",
+        "Low",
+        "project_manager",
+    )
+    assert _check(web, pid, "escalations_settled") == SETTLED
+
+
+def test_an_open_medium_risk_waits_until_the_sponsor_accepts_it(web, db, pm, sponsor):
+    pid = _project(db, pm)
+    _scored_risk(web, pid, "Data arrives late", LOW)
+    risk = _scored_risk(web, pid, "Budget overrun", MEDIUM)
+    assert (risk["band"], risk["escalated_to"]) == ("Medium", "sponsor")
+    assert _check(web, pid, "escalations_settled") == _waiting(risk)
+    accepted = sponsor.post(
+        f"/api/v1/projects/{pid}/risks/{risk['id']}/accept",
+        json={
+            "version": risk["version"],
+            "reason": "Contingency covers an overrun of this size",
+            "review_date": date.today().isoformat(),
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert _check(web, pid, "escalations_settled") == SETTLED
+    # Closed by the team once accepted, it still waits on nobody.
+    closed = web.patch(
+        f"/api/v1/projects/{pid}/risks/{risk['id']}",
+        json={"version": accepted.json()["version"], "status": "closed"},
+    )
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["status"] == "closed"
+    assert _check(web, pid, "escalations_settled") == SETTLED
 
 
 def test_readiness_not_red_for_a_project_with_no_request(web, db, pm):
@@ -530,7 +581,7 @@ def _proposal_not_accepted(web, db, pm, pid):
 
 
 def _escalation_waiting(web, db, pm, pid):
-    _add_risk(db, pid, title="Budget overrun", escalated_to="sponsor", escalated_band="High")
+    _scored_risk(web, pid, "Budget overrun", MEDIUM)
 
 
 def _readiness_red(web, db, pm, pid):
