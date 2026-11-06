@@ -26,6 +26,10 @@ Nothing in this folder runs automatically.
 
 ## Applied
 
+- **`policies/gates.yaml`** (item 5.4): adds the go-ahead gate (planning to delivery, for
+  projects, decided by `sponsor`) with its six automatic checks and two person criteria; the
+  approval gate is unchanged. `GET` and `POST /api/v1/projects/{id}/gate` now answer instead of
+  returning 503, and the tests load the applied file.
 - **`policies/gates.yaml`** (item 4.4): the approval gate (intake to planning, for project
   requests, decided by `sponsor`) with its four automatic checks and two person criteria, moved
   over the live placeholder unchanged. `GET` and `POST /api/v1/requests/{id}/gate` now answer
