@@ -17,6 +17,8 @@ from typing import Any
 
 import yaml
 
+from app import autonomy
+from app.autonomy import AutonomyPolicy, Step
 from app.config import get_settings
 from app.models.risk import CATEGORIES as RISK_CATEGORIES
 from app.models.risk import KINDS as RISK_KINDS
@@ -741,3 +743,105 @@ def get_changes() -> ChangesPolicy:
     """The changes policy in the configured directory, loaded on first use. A failure is not
     cached, so the next call tries again once the file is fixed."""
     return load_changes(get_settings().policies_dir)
+
+
+# The autonomy policy (item 6.1). The steps, agents and floors are fixed in `app.autonomy`.
+
+AUTONOMY_FILE = "autonomy.yaml"
+
+
+def _window_minutes(value: Any, where: str) -> int:
+    # bool is a subclass of int; `true` is not a number of minutes.
+    if type(value) is not int or not autonomy.MIN_WINDOW <= value <= autonomy.MAX_WINDOW:
+        raise PolicyError(
+            f"{where}: expected a whole number from {autonomy.MIN_WINDOW} to {autonomy.MAX_WINDOW}"
+        )
+    return value
+
+
+def _parse_autonomy_step(step_id: str, entry: Any, where: str) -> Step:
+    at = f"{where} steps.{step_id}"
+    entry = _mapping(entry, at)
+    _keys(entry, at, ("mode", "who"), ("agent", "window_minutes"))
+    mode = _choice(entry["mode"], f"{at}.mode", autonomy.MODES, "mode")
+    if step_id in autonomy.FLOOR_STEPS and mode != autonomy.PERSON:
+        raise PolicyError(
+            f"{at}.mode: {step_id} must be decided by a person (mode person), not {mode}"
+        )
+    who = _choice(entry["who"], f"{at}.who", tuple(role.value for role in Role), "role")
+
+    agent = None
+    if mode == autonomy.PERSON:
+        if "agent" in entry:
+            raise PolicyError(f"{at}.agent: only an agent or window step names an agent")
+    else:
+        if "agent" not in entry:
+            raise PolicyError(f"{at}.agent: an {mode} step must name its agent")
+        agent = _choice(entry["agent"], f"{at}.agent", autonomy.AGENTS, "agent")
+        allowed = autonomy.STEP_AGENTS[step_id]
+        if agent not in allowed:
+            may = ", ".join(allowed) if allowed else "none: a person does it"
+            raise PolicyError(f"{at}.agent: {agent} can't do {step_id}; agents that may: {may}")
+
+    window = None
+    if mode == autonomy.WINDOW:
+        if "window_minutes" not in entry:
+            raise PolicyError(f"{at}.window_minutes: a window step needs its minutes")
+        window = _window_minutes(entry["window_minutes"], f"{at}.window_minutes")
+    elif "window_minutes" in entry:
+        raise PolicyError(f"{at}.window_minutes: only a window step has minutes")
+    return Step(id=step_id, mode=mode, who=who, agent=agent, window_minutes=window)
+
+
+def parse_autonomy(data: dict, where: str = AUTONOMY_FILE, digest: str = "") -> AutonomyPolicy:
+    _keys(data, where, ("version", "steps", "agents"))
+
+    raw = _mapping(data["steps"], f"{where} steps")
+    unknown = [str(step) for step in raw if step not in autonomy.STEP_AGENTS]
+    if unknown:
+        raise PolicyError(
+            f"{where} steps: unknown steps: {', '.join(unknown)}; "
+            f"steps are {', '.join(autonomy.STEPS)}"
+        )
+    missing = [step for step in autonomy.STEPS if step not in raw]
+    if missing:
+        raise PolicyError(f"{where} steps: missing steps: {', '.join(missing)}")
+    steps = {step: _parse_autonomy_step(step, raw[step], where) for step in autonomy.STEPS}
+
+    raw = _mapping(data["agents"], f"{where} agents")
+    unknown = [str(name) for name in raw if name not in autonomy.AGENTS]
+    if unknown:
+        raise PolicyError(
+            f"{where} agents: unknown agents: {', '.join(unknown)}; "
+            f"agents are {', '.join(autonomy.AGENTS)}"
+        )
+    missing = [name for name in autonomy.AGENTS if name not in raw]
+    if missing:
+        raise PolicyError(f"{where} agents: missing agents: {', '.join(missing)}")
+    enabled = {}
+    for name in autonomy.AGENTS:
+        at = f"{where} agents.{name}"
+        entry = _mapping(raw[name], at)
+        _keys(entry, at, ("enabled",))
+        if not isinstance(entry["enabled"], bool):
+            raise PolicyError(f"{at}.enabled: expected true or false")
+        enabled[name] = entry["enabled"]
+
+    return AutonomyPolicy(
+        steps=MappingProxyType(steps), enabled=MappingProxyType(enabled), digest=digest
+    )
+
+
+def load_autonomy(directory: Path | str) -> AutonomyPolicy:
+    """Read and validate `autonomy.yaml` in `directory`; raise `PolicyError` on any problem.
+
+    Loaded apart from `app.policy.load_policies`, so a missing file only affects autonomy."""
+    data, digest = _read_with_digest(Path(directory), AUTONOMY_FILE)
+    return parse_autonomy(data, digest=digest)
+
+
+@lru_cache
+def get_autonomy() -> AutonomyPolicy:
+    """The autonomy policy in the configured directory, loaded on first use. A failure is not
+    cached, so the next call tries again once the file is fixed."""
+    return load_autonomy(get_settings().policies_dir)

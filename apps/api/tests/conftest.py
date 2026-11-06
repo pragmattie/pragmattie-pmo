@@ -170,13 +170,13 @@ def _changes_policy(monkeypatch):
 def _test_autonomy():
     from policy_files import autonomy_dir
 
-    from app.autonomy import load_autonomy
+    from app.policy import load_autonomy
 
     return load_autonomy(autonomy_dir())
 
 
 @pytest.fixture(autouse=True)
 def _autonomy_policy(monkeypatch):
-    from app import autonomy
+    from app import policy
 
-    monkeypatch.setattr(autonomy, "get_autonomy", _test_autonomy)
+    monkeypatch.setattr(policy, "get_autonomy", _test_autonomy)

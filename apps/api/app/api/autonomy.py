@@ -11,9 +11,8 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app import autonomy
+from app import autonomy, policy
 from app.authz import Action, require
-from app.policy import PolicyError
 from app.schemas.autonomy import AgentSwitchOut, AutonomyOut, StepOut
 
 logger = logging.getLogger(__name__)
@@ -28,23 +27,23 @@ UNAVAILABLE = (
 @router.get("/autonomy", response_model=AutonomyOut)
 def read_autonomy() -> AutonomyOut:
     try:
-        policy = autonomy.get_autonomy()
-    except PolicyError:
+        rules = policy.get_autonomy()
+    except policy.PolicyError:
         logger.exception("autonomy policy failed to load")
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, UNAVAILABLE) from None
     return AutonomyOut(
-        digest=policy.digest,
+        digest=rules.digest,
         steps=[
             StepOut(
                 id=step.id,
                 mode=step.mode,
-                effective_mode=autonomy.effective_mode(policy, step.id),
+                effective_mode=autonomy.effective_mode(rules, step.id),
                 agent=step.agent,
                 who=step.who,
                 window_minutes=step.window_minutes,
                 person_only=step.id in autonomy.FLOOR_STEPS,
             )
-            for step in policy.steps.values()
+            for step in rules.steps.values()
         ],
-        agents=[AgentSwitchOut(name=name, enabled=on) for name, on in policy.enabled.items()],
+        agents=[AgentSwitchOut(name=name, enabled=on) for name, on in rules.enabled.items()],
     )

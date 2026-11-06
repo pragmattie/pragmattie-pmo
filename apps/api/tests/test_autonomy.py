@@ -12,19 +12,17 @@ from fastapi.testclient import TestClient
 from policy_files import autonomy_dir
 from sqlalchemy.orm import Session
 
-from app import autonomy
+from app import policy
 from app.autonomy import (
     AGENTS,
     FLOOR_STEPS,
     STEPS,
     effective_mode,
-    load_autonomy,
-    parse_autonomy,
 )
 from app.db import engine
 from app.main import app
 from app.models import Base
-from app.policy import PolicyError
+from app.policy import PolicyError, load_autonomy, parse_autonomy
 
 
 @pytest.fixture
@@ -225,8 +223,8 @@ def test_the_route_returns_the_policy(db, sign_in):
 
 
 def test_the_route_shows_the_effective_mode_after_an_off_switch(db, sign_in, monkeypatch):
-    policy = parse_autonomy(_with(lambda d: _set(d, False, "agents", "risk_agent", "enabled")))
-    monkeypatch.setattr(autonomy, "get_autonomy", lambda: policy)
+    rules = parse_autonomy(_with(lambda d: _set(d, False, "agents", "risk_agent", "enabled")))
+    monkeypatch.setattr(policy, "get_autonomy", lambda: rules)
     web = TestClient(app, base_url="http://localhost")
     sign_in(web, db, "project_manager")
     body = web.get("/api/v1/autonomy").json()
@@ -239,7 +237,7 @@ def test_without_the_policy_the_route_is_503(db, sign_in, monkeypatch):
     def missing():
         raise PolicyError("autonomy.yaml: policy file not found")
 
-    monkeypatch.setattr(autonomy, "get_autonomy", missing)
+    monkeypatch.setattr(policy, "get_autonomy", missing)
     web = TestClient(app, base_url="http://localhost")
     sign_in(web, db, "sponsor")
     response = web.get("/api/v1/autonomy")
