@@ -317,6 +317,50 @@ def next_steps(
     return steps
 
 
+def _live(project: Project | None) -> bool:
+    """Whether `next_steps` looks at the project and its risks, proposals and changes."""
+    return (
+        project is not None
+        and project.status != CANCELLED
+        and project.stage in ("planning", "delivery")
+    )
+
+
+def subject_steps(
+    db: Session,
+    policy: AutonomyPolicy,
+    subject_type: str,
+    subject_id: int,
+    *,
+    agent_mode: str = "enforce",
+    risk_rules: RiskPolicy | None = None,
+) -> list[NextStep]:
+    """One subject's next steps, exactly as `next_steps` gives them, without reading the rest.
+    The inbox uses it to drop an item a person has just decided, before the next pass."""
+    rules = risk_rules or risk_policy()
+
+    def make(*args: Any, **kwargs: Any) -> NextStep:
+        return _make(policy, agent_mode, *args, **kwargs)
+
+    if subject_type == REQUEST:
+        request = db.get(ProjectRequest, subject_id)
+        return _request_steps(db, request, make) if request is not None else []
+    if subject_type == PROJECT:
+        project = db.get(Project, subject_id)
+        if _live(project) and project.stage == "planning":
+            return _planning_steps(db, project, make)
+        return []
+    model = {RISK: Risk, PROPOSAL: ProjectProposal, CHANGE_REQUEST: ChangeRequest}.get(subject_type)
+    row = db.get(model, subject_id) if model is not None else None
+    if row is None or not _live(db.get(Project, row.project_id)):
+        return []
+    if isinstance(row, Risk):
+        return _risk_steps(row, rules, make) if row.status in ("proposed", "open") else []
+    if isinstance(row, ProjectProposal):
+        return _proposal_steps(row, make)
+    return _change_steps(row, make)
+
+
 # --- The actions an agent or window step runs
 
 
