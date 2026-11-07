@@ -298,8 +298,26 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         assert "ck_project_baselines_made_by" in {
             ck["name"] for ck in inspector.get_check_constraints("project_baselines")
         }
+        # 0021: the orchestrator's actions, inbox items and lease, and its audit trigger.
+        orchestrator_tables = {"orchestrator_actions", "inbox_items", "orchestrator_leases"}
+        assert orchestrator_tables <= set(inspector.get_table_names())
+        for table in ("orchestrator_actions", "inbox_items"):
+            assert {
+                uq["name"]: uq["column_names"] for uq in inspector.get_unique_constraints(table)
+            } == {f"uq_{table}_open_key": ["open_key"]}
+        trigger_check = {
+            ck["name"]: ck["sqltext"] for ck in inspector.get_check_constraints("pmo_audit")
+        }["ck_pmo_audit_trigger"]
+        assert "'orchestrator'" in trigger_check
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0020")
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert not orchestrator_tables & set(inspector.get_table_names())
+        trigger_check = {
+            ck["name"]: ck["sqltext"] for ck in inspector.get_check_constraints("pmo_audit")
+        }["ck_pmo_audit_trigger"]
+        assert "'orchestrator'" not in trigger_check and "'trial'" in trigger_check
         command.downgrade(config, "0019")
         inspector = inspect(create_engine(get_settings().database_url))
         assert "change_requests" not in inspector.get_table_names()

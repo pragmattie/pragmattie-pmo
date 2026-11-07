@@ -41,7 +41,7 @@ from app.models.base import Base, utcnow
 AUDIT_TABLE = table_name("pmo_audit")
 USERS_TABLE = table_name("users")
 
-TRIGGERS = ("agent", "human", "schedule", "trial")
+TRIGGERS = ("agent", "human", "schedule", "trial", "orchestrator")
 STATUSES = ("ok", "error", "rejected", "skipped")
 
 

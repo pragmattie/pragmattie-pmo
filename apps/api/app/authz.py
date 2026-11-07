@@ -34,14 +34,21 @@ class Action(StrEnum):
     REPORT_PUBLISH = "report:publish"
     PROPOSAL_APPROVE = "proposal:approve"
     STANDARDS_READ = "standards:read"
+    ORCHESTRATOR_RUN = "orchestrator:run"
 
 
-# Admin manages users but holds no decision rights. Project managers accept Low risks and
-# sponsors accept Medium and High ones: `may_accept_band` checks the band's owner in the risk
-# policy file.
+# Admin manages users and may start an orchestrator pass, but holds no decision rights. Project
+# managers accept Low risks and sponsors accept Medium and High ones: `may_accept_band` checks the
+# band's owner in the risk policy file.
 PERMISSIONS: dict[Role, frozenset[Action]] = {
     Role.ADMIN: frozenset(
-        {Action.USER_ADMIN, Action.AUDIT_READ, Action.PROJECT_READ, Action.STANDARDS_READ}
+        {
+            Action.USER_ADMIN,
+            Action.AUDIT_READ,
+            Action.PROJECT_READ,
+            Action.STANDARDS_READ,
+            Action.ORCHESTRATOR_RUN,
+        }
     ),
     Role.SPONSOR: frozenset(
         {
