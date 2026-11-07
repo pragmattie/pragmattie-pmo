@@ -25,8 +25,11 @@ import { useAuthStore } from '../stores/auth'
 // status with the buttons the signed-in role may use, and the version history. Marking it sent
 // records what a person did outside the product: nothing is sent from here. A project with no
 // client has no proposal. "Draft with agent" asks the proposal agent (item 5.3) for the text; each
-// section it wrote shows "Agent draft, not reviewed" until a person edits or confirms it.
+// section it wrote shows "Agent draft, not reviewed" until a person edits or confirms it. Each
+// decision (submit, approve, return, mark sent, the client's answer, withdraw) emits `decided`, so
+// a page listing it (the inbox) refreshes at once.
 const props = defineProps<{ projectId: number; clientName: string | null }>()
+const emit = defineEmits<{ decided: [message: string] }>()
 
 const auth = useAuthStore()
 const proposal = ref<Proposal | null>(null)
@@ -72,7 +75,7 @@ async function load(id: number) {
 
 watch(() => [props.projectId, props.clientName] as const, ([id]) => load(id), { immediate: true })
 
-async function act(step: () => Promise<Proposal>) {
+async function act(step: () => Promise<Proposal>, done?: string) {
   busy.value = true
   actionError.value = ''
   actionDetails.value = []
@@ -83,6 +86,7 @@ async function act(step: () => Promise<Proposal>) {
     missing.value = false
     open.value = null
     reason.value = ''
+    if (done) emit('decided', done)
   } catch (failure) {
     actionError.value = (failure as Error).message
     if (failure instanceof ApiError) actionDetails.value = failure.missing
@@ -125,18 +129,24 @@ const id = () => props.projectId
 const version = () => proposal.value?.version ?? 0
 const create = () => act(() => proposalApi.create(id()))
 const refresh = () => act(() => proposalApi.refresh(id(), version()))
-const submit = () => act(() => proposalApi.submit(id(), version()))
+const submit = () => act(() => proposalApi.submit(id(), version()), 'Proposal submitted.')
 const decide = (kind: 'approve' | 'return') =>
-  act(() =>
-    kind === 'approve'
-      ? proposalApi.approve(id(), version(), reason.value)
-      : proposalApi.return(id(), version(), reason.value),
+  act(
+    () =>
+      kind === 'approve'
+        ? proposalApi.approve(id(), version(), reason.value)
+        : proposalApi.return(id(), version(), reason.value),
+    kind === 'approve' ? 'Proposal approved.' : 'Proposal returned to draft.',
   )
 const markSent = () =>
-  act(() => proposalApi.sent(id(), version(), sent.to, sent.on, sent.means))
+  act(
+    () => proposalApi.sent(id(), version(), sent.to, sent.on, sent.means),
+    'Proposal recorded as sent.',
+  )
 const recordAnswer = () =>
-  act(() =>
-    proposalApi.answer(id(), version(), answer.value, answer.on, answer.note.trim() || null),
+  act(
+    () => proposalApi.answer(id(), version(), answer.value, answer.on, answer.note.trim() || null),
+    "The client's answer is recorded.",
   )
 const confirmSection = (section: TextSection) =>
   act(() => proposalApi.confirm(id(), version(), section))
@@ -156,7 +166,8 @@ async function draftWithAgent() {
     busy.value = false
   }
 }
-const withdraw = () => act(() => proposalApi.withdraw(id(), version(), reason.value))
+const withdraw = () =>
+  act(() => proposalApi.withdraw(id(), version(), reason.value), 'Proposal withdrawn.')
 </script>
 
 <template>

@@ -534,7 +534,7 @@ describe('the proposal section', () => {
   })
 
   it('lets the sponsor approve with a reason', async () => {
-    const { fetchMock } = await mountAs('sponsor', {
+    const { wrapper, fetchMock } = await mountAs('sponsor', {
       stored: proposal({ status: 'submitted', latest_version: 1, submitted_by: PM_ID }),
       versions: [version(1)],
       answer: proposal({ status: 'approved', approved_version: 1, approval_current: true }),
@@ -551,6 +551,8 @@ describe('the proposal section', () => {
     ])
     expect(find('proposal-status')?.textContent).toContain('Approved')
     expect(find('proposal-approval')?.textContent).toContain('Approved as version 1')
+    // A page listing it (the inbox) refreshes at once.
+    expect(wrapper.emitted('decided')).toEqual([['Proposal approved.']])
   })
 
   it('records sending with who, when and how, and says nothing is sent', async () => {

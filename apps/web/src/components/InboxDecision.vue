@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import { type Baseline, gateApi, type GateSubject } from '../lib/gates'
 import { formFor, type InboxEntry, subjectLink } from '../lib/inbox'
+import { REQUEST_CONFLICT } from '../lib/intake'
 import { projectApi } from '../lib/projects'
 import {
   ApiError,
@@ -33,12 +34,14 @@ const auth = useAuthStore()
 const router = useRouter()
 const form = computed(() => formFor(props.entry))
 const loadError = ref('')
-// A gate refusal (409): its message and what is still unmet, as the request page shows it.
+// A gate refusal (403 or 409): its message and what is still unmet, worded as the request or
+// project page words it.
 const conflict = ref('')
 const conflictItems = ref<string[]>([])
 
 function gateConflict(text: string, items: string[] = []) {
-  conflict.value = text
+  const stale = props.entry.subject_type === 'request' && text.includes('changed')
+  conflict.value = stale ? REQUEST_CONFLICT : text
   conflictItems.value = items
 }
 
@@ -268,6 +271,7 @@ onMounted(async () => {
       v-else-if="form === 'proposal' && ready && entry.project_id !== null"
       :project-id="entry.project_id"
       :client-name="clientName"
+      @decided="emit('decided', $event)"
     />
 
     <ChangesSection

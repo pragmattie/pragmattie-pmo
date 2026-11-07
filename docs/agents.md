@@ -294,7 +294,8 @@ written by code from those facts: one function per step, in `RECOMMENDERS`.
 
 **Deciding.** Each item opens the existing form for its step inside the inbox (the gate decision,
 the risk's accept, open and reject, the proposal section, the change requests), which calls the
-existing route with its own checks; a 403 or 409 shows as it does elsewhere. A window action shows
+existing route with its own checks; a 403 or 409 shows as it does elsewhere. Every decision,
+a proposal's included, refreshes the list and the count at once. A window action shows
 "happens at HH:MM unless you hold it", and only the step's role gets the Hold button, which calls
 the orchestrator's hold route. The menu's count refreshes every 15 seconds while the tab is
 visible, and at once when it becomes visible again.
