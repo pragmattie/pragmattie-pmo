@@ -52,6 +52,7 @@ function milestone(changes: Partial<Milestone> = {}): Milestone {
     owner_active: true,
     description: 'The pilot warehouse runs on the forecast',
     contributors: 'Data team',
+    source: 'person',
     version: 1,
     ...changes,
   }
@@ -59,15 +60,15 @@ function milestone(changes: Partial<Milestone> = {}): Milestone {
 
 const MILESTONES = [
   milestone(),
-  milestone({ id: 3, name: 'Go live', target_date: '2027-06-01', owner_user_id: null, owner_name: null, owner_active: false }),
+  milestone({ id: 3, name: 'Go live', target_date: '2027-06-01', owner_user_id: null, owner_name: null, owner_active: false, source: 'agent' }),
 ]
 const DELIVERABLES = [
-  { id: 1, plan_id: 2, name: 'Forecast model', description: null, milestone_id: 1, milestone_name: 'Pilot', version: 1 },
-  { id: 2, plan_id: 2, name: 'Runbook', description: 'How to run it', milestone_id: null, milestone_name: null, version: 1 },
+  { id: 1, plan_id: 2, name: 'Forecast model', description: null, milestone_id: 1, milestone_name: 'Pilot', source: 'agent', version: 1 },
+  { id: 2, plan_id: 2, name: 'Runbook', description: 'How to run it', milestone_id: null, milestone_name: null, source: 'person', version: 1 },
 ]
 const LINES = [
-  { id: 1, plan_id: 2, description: 'Team', category: 'people', amount: '10000.00', version: 1 },
-  { id: 2, plan_id: 2, description: 'Licence', category: 'software', amount: '2000.00', version: 1 },
+  { id: 1, plan_id: 2, description: 'Team', category: 'people', amount: '10000.00', source: 'person', version: 1 },
+  { id: 2, plan_id: 2, description: 'Licence', category: 'software', amount: '2000.00', source: 'agent', version: 1 },
 ]
 
 // One page of `items` as the API sends it: at most `limit` from `offset`, with the full total.
@@ -162,6 +163,15 @@ describe('the plan section', () => {
     expect(milestones[1]).toContain('No owner')
     expect(find('plan-reporting')?.textContent).toContain('Weekly, due on Friday')
     expect(find('plan-stakeholders-link')?.getAttribute('href')).toBe('#stakeholders')
+  })
+
+  it('marks the items the planner agent drafted, and only those', async () => {
+    await mountPlan()
+    const marked = (testId: string) =>
+      findAll(testId).map((row) => row.querySelector('[data-test="plan-agent-drafted"]')?.textContent?.trim() ?? null)
+    expect(marked('plan-milestone')).toEqual([null, 'Drafted by the planner agent'])
+    expect(marked('plan-deliverable')).toEqual(['Drafted by the planner agent', null])
+    expect(marked('plan-line')).toEqual([null, 'Drafted by the planner agent'])
   })
 
   it('shows the total the API computed against the budget range', async () => {

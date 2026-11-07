@@ -23,8 +23,8 @@ WINDOW = "window"
 PERSON = "person"
 MODES = (AGENT, WINDOW, PERSON)
 
-# The agents, named as their audit rows name them. Some are not built yet (the planner and the
-# simulated client): the orchestrator sends a step whose agent isn't built to a person.
+# The agents, named as their audit rows name them. Some are not built yet (the simulated
+# client): the orchestrator sends a step whose agent isn't built to a person.
 AGENTS = ("intake_agent", "risk_agent", "proposal_agent", "planner_agent", "simulated_client")
 
 # Every step, and the agents that may do it. A step with no agents can only be `person`.
