@@ -90,6 +90,7 @@ def upgrade() -> None:
         sa.Column("who", sa.String(length=32), nullable=False),
         sa.Column("reason", sa.String(length=500), nullable=False),
         sa.Column("status", sa.String(length=16), nullable=False),
+        sa.Column("handoff", sa.Boolean(), nullable=False),
         sa.Column("action_id", sa.Integer(), nullable=True),
         sa.Column("closed_at", sa.DateTime(), nullable=True),
         sa.Column("closed_reason", sa.String(length=500), nullable=True),

@@ -100,6 +100,8 @@ PERSON_ONLY = FLOOR_STEPS | {step for step, agents in STEP_AGENTS.items() if not
 NO_AGENT = "no agent does this yet"
 AGENT_ALREADY_RAN = "an agent already did this step, but it is still open"
 NO_LONGER_NEEDED = "the step is no longer needed"
+AGENT_BACK = "agent available again"
+NOT_APPLIED = "a person held the action during the agent call, so its result was not applied"
 PASS_CAP = "waiting for the next pass: this pass reached its cap of {n} agent calls"
 DAY_CAP = "waiting for the next UTC day: today's agent runs reached the cap of {cap} US dollars"
 
@@ -114,6 +116,8 @@ class NextStep:
     `mode` is how it runs now: `agent`, `window` or `person`. `waits_on` names the agent for an
     agent or window step and the role for a person step. `handoff` says why a step the policy
     gives an agent goes to a person instead (its agent is off, no agent does it yet, and so on).
+    `unavailable` is set when that is only because the agent can't act (switched off, not built
+    yet, or `AGENT_MODE` not `enforce`), so the inbox item can be cancelled when it can again.
     """
 
     step: str
@@ -123,6 +127,7 @@ class NextStep:
     waits_on: str
     mode: str
     handoff: str | None = None
+    unavailable: bool = False
 
     @property
     def key(self) -> str:
@@ -136,22 +141,23 @@ class NextStep:
 
 def _handoff(
     policy: AutonomyPolicy, step: str, agent_mode: str, risk: Risk | None
-) -> tuple[str, str | None]:
-    """How `step` runs now, and why it went to a person when the policy gave it to an agent."""
+) -> tuple[str, str | None, bool]:
+    """How `step` runs now, why it went to a person when the policy gave it to an agent, and
+    whether that is only because the agent can't act."""
     rule = policy.steps[step]
     if step in PERSON_ONLY or rule.mode == PERSON:
-        return PERSON, None
+        return PERSON, None, False
     if effective_mode(policy, step, risk) == PERSON:
         if rule.agent is not None and not policy.enabled[rule.agent]:
-            return PERSON, f"the {rule.agent} is switched off"
+            return PERSON, f"the {rule.agent} is switched off", True
         if step == SCORE_RISK and risk is not None and risk.needs_judgement:
-            return PERSON, "the risk needs a person's judgement, so a person scores it"
-        return PERSON, None
+            return PERSON, "the risk needs a person's judgement, so a person scores it", False
+        return PERSON, None, False
     if step not in ACTIONS:
-        return PERSON, NO_AGENT
+        return PERSON, NO_AGENT, True
     if agent_mode != "enforce":
-        return PERSON, f"the agents are off (AGENT_MODE={agent_mode})"
-    return rule.mode, None
+        return PERSON, f"the agents are off (AGENT_MODE={agent_mode})", True
+    return rule.mode, None, False
 
 
 def _make(
@@ -165,10 +171,12 @@ def _make(
     risk: Risk | None = None,
     who: str | None = None,
 ) -> NextStep:
-    mode, handoff = _handoff(policy, step, agent_mode, risk)
+    mode, handoff, unavailable = _handoff(policy, step, agent_mode, risk)
     rule = policy.steps[step]
     waits_on = (who or rule.who) if mode == PERSON else rule.agent
-    return NextStep(step, subject_type, subject_id, reason, waits_on or rule.who, mode, handoff)
+    return NextStep(
+        step, subject_type, subject_id, reason, waits_on or rule.who, mode, handoff, unavailable
+    )
 
 
 def _agent_ran(db: Session, agent: str, subject_type: str, subject_id: int) -> bool:
@@ -384,19 +392,27 @@ assert not PERSON_ONLY & ACTIONS.keys(), "a person always takes these steps (R1)
 # --- Recording
 
 
-def _record(db: Session, *, subject: tuple[str, str], **fields: Any) -> int:
-    """One orchestrator audit row at the next free attempt for its subject, moving on when a
-    parallel writer (a person holding an action) took the number first."""
+def _record(
+    db: Session,
+    *,
+    subject: tuple[str, str],
+    agent: str = ORCHESTRATOR,
+    version: int = 1,
+    **fields: Any,
+) -> int:
+    """One audit row (the orchestrator's, unless `agent` says otherwise) at the next free attempt
+    for its subject, moving on when a parallel writer (a person holding an action) took the
+    number first."""
     subject_type, subject_id = subject
     attempt = 0
     for tried in range(1, 6):
         attempt = max(
             next_attempt(
                 db,
-                agent=ORCHESTRATOR,
+                agent=agent,
                 subject_type=subject_type,
                 subject_id=subject_id,
-                version=1,
+                version=version,
             ),
             attempt + 1,
         )
@@ -405,10 +421,10 @@ def _record(db: Session, *, subject: tuple[str, str], **fields: Any) -> int:
                 fields.setdefault("trigger", TRIGGER)
                 row = record_decision(
                     db,
-                    agent=ORCHESTRATOR,
+                    agent=agent,
                     subject_type=subject_type,
                     subject_id=subject_id,
-                    version=1,
+                    version=version,
                     attempt=attempt,
                     **fields,
                 )
@@ -442,7 +458,7 @@ class Outcome:
     step: str
     subject_type: str
     subject_id: int
-    outcome: str  # done, failed, pending, waiting, inbox, skipped, cancelled, closed, error
+    outcome: str  # done, failed, pending, waiting, inbox, held, skipped, cancelled, closed, error
     detail: str
 
 
@@ -573,7 +589,9 @@ class _Pass:
 
     # Inbox items and actions
 
-    def open_inbox(self, step: NextStep, *, reason: str | None = None, action_id=None) -> InboxItem:
+    def open_inbox(
+        self, step: NextStep, *, reason: str | None = None, action_id=None, handoff: bool = False
+    ) -> InboxItem:
         item = InboxItem(
             step=step.step,
             subject_type=step.subject_type,
@@ -581,6 +599,7 @@ class _Pass:
             who=self.policy.steps[step.step].who if step.mode != PERSON else step.waits_on,
             reason=(reason or step.full_reason)[:REASON_MAX],
             status="open",
+            handoff=handoff,
             action_id=action_id,
             policy_digest=self.policy.digest,
             open_key=step.key,
@@ -589,8 +608,16 @@ class _Pass:
         self.db.flush()
         return item
 
-    def to_person(self, step: NextStep, reason: str, action_id: int | None = None) -> None:
-        item = self.open_inbox(step, reason=reason, action_id=action_id)
+    def to_person(
+        self,
+        step: NextStep,
+        reason: str,
+        action_id: int | None = None,
+        *,
+        handoff: bool = False,
+    ) -> None:
+        """One open inbox item for the step. `handoff`: only because its agent can't act."""
+        item = self.open_inbox(step, reason=reason, action_id=action_id, handoff=handoff)
         self.audit(
             step,
             "ok",
@@ -637,9 +664,29 @@ class _Pass:
         )
         return self.db.scalar(stmt.limit(1)) is not None
 
-    def has_open_item(self, step: NextStep) -> bool:
-        stmt = select(InboxItem.id).where(InboxItem.open_key == step.key)
-        return self.db.scalar(stmt) is not None
+    def open_item(self, step: NextStep) -> InboxItem | None:
+        stmt = select(InboxItem).where(InboxItem.open_key == step.key)
+        return self.db.scalar(stmt.with_for_update())
+
+    def cancel_handoff(self, step: NextStep, item: InboxItem) -> None:
+        """The step's agent can act again, so the item opened only because it couldn't is
+        cancelled and the step goes ahead as normal."""
+        item.status = "cancelled"
+        item.open_key = None
+        item.closed_at = self.now
+        item.closed_reason = AGENT_BACK
+        self.audit(
+            step, "ok", {"action": "cancel_inbox", "inbox_item_id": item.id, "reason": AGENT_BACK}
+        )
+        self.db.commit()
+        self.outcome(step, "cancelled", f"inbox item {item.id}: {AGENT_BACK}")
+
+    def relock(self, action_id: int) -> OrchestratorAction:
+        """The action as it is now, locked. A refresh, since a person may have changed it (and
+        its version) while the lock was released."""
+        action = self.db.get(OrchestratorAction, action_id)
+        self.db.refresh(action, with_for_update=True)
+        return action
 
     # The caps
 
@@ -674,15 +721,21 @@ class _Pass:
     # One step
 
     def handle(self, step: NextStep) -> None:
-        if self.has_open_item(step):
-            return
+        item = self.open_item(step)
+        if item is not None:
+            # Only an item opened because the agent couldn't act gives way, once it can. One
+            # opened for a person step, a hold or used-up retries stays open.
+            if not item.handoff or step.mode == PERSON:
+                self.db.rollback()
+                return
+            self.cancel_handoff(step, item)
         action = self.pending(step)
         if step.mode == PERSON or step.step in PERSON_ONLY:
             if action is not None:
                 # The policy or a switch moved the step to a person while it waited.
-                self.give_up(step, action, step.full_reason)
+                self.give_up(step, action, step.full_reason, handoff=step.unavailable)
             else:
-                self.to_person(step, step.full_reason)
+                self.to_person(step, step.full_reason, handoff=step.unavailable)
             return
         if action is None:
             if self.already_done(step):
@@ -734,7 +787,7 @@ class _Pass:
     def run(self, step: NextStep, action: OrchestratorAction) -> None:
         step_action = ACTIONS.get(step.step)
         if step_action is None:  # the registry changed since the step was found
-            self.give_up(step, action, NO_AGENT)
+            self.give_up(step, action, NO_AGENT, handoff=True)
             return
         if step_action.uses_claude:
             wait = self.cap_reason()
@@ -754,17 +807,25 @@ class _Pass:
                 return
             self.calls += 1
             self.report.agent_calls += 1
+        # Release the action's row lock before the agent call (up to 120 seconds), so a person
+        # can hold the action meanwhile without waiting for it. The row is re-read afterwards.
+        action_id = action.id
+        self.db.commit()
         context = Context(self.db, self.settings, self.client)
         try:
             agent_audit_id = step_action.run(context, step.subject_id)
         except risk_agent.AgentError as exc:
             # The agent's own error row is flushed and kept.
-            self.failed(step, action, str(exc), exc.audit_id)
+            self.failed(step, action_id, str(exc), exc.audit_id)
             return
         except Exception as exc:
             logger.exception("orchestrator step %s failed for %s", step.step, step.key)
             self.db.rollback()
-            self.failed(step, action, f"{type(exc).__name__}: {exc}", None)
+            self.failed(step, action_id, f"{type(exc).__name__}: {exc}", None)
+            return
+        action = self.relock(action_id)
+        if action.status != "pending":
+            self.not_applied(step, action, agent_audit_id)
             return
         action.status = "done"
         action.open_key = None
@@ -779,10 +840,79 @@ class _Pass:
         self.db.commit()
         self.outcome(step, "done", f"the {action.agent} ran")
 
-    def failed(
-        self, step: NextStep, action: OrchestratorAction, error: str, agent_audit_id: int | None
+    def not_applied(
+        self, step: NextStep, action: OrchestratorAction, agent_audit_id: int | None
     ) -> None:
-        action = self.db.get(OrchestratorAction, action.id, populate_existing=True)
+        """A person held the action while its agent ran. The hold stands: the agent's changes
+        are rolled back, and its run is recorded again as `skipped`, not applied, keeping its
+        model, tokens and cost (so the daily cap still counts it)."""
+        status, action_id = action.status, action.id
+        kept = None
+        run = self.db.get(AuditDecision, agent_audit_id) if agent_audit_id is not None else None
+        if run is not None:
+            kept = {
+                name: getattr(run, name)
+                for name in (
+                    "agent",
+                    "trigger",
+                    "version",
+                    "tier",
+                    "signals",
+                    "output",
+                    "model",
+                    "prompt_version",
+                    "input_tokens",
+                    "output_tokens",
+                    "cost_usd",
+                    "actor_user_id",
+                )
+            }
+            kept["subject"] = (run.subject_type, run.subject_id)
+            kept["action_taken"] = {
+                **(run.action_taken or {}),
+                "applied": False,
+                "not_applied_reason": NOT_APPLIED,
+            }
+        self.db.rollback()
+        run_id = None
+        if kept is not None:
+            run_id = _record(self.db, status="skipped", **kept)
+        self.audit(
+            step,
+            "skipped",
+            {
+                "action": "run",
+                "action_id": action_id,
+                "agent_audit_id": run_id,
+                "applied": False,
+                "action_status": status,
+                "reason": NOT_APPLIED,
+            },
+        )
+        self.db.commit()
+        self.outcome(step, "held", NOT_APPLIED)
+
+    def failed(
+        self, step: NextStep, action_id: int, error: str, agent_audit_id: int | None
+    ) -> None:
+        action = self.relock(action_id)
+        if action.status != "pending":
+            # A person held it during the call: the hold stands and nothing is retried.
+            self.audit(
+                step,
+                "error",
+                {
+                    "action": "run",
+                    "action_id": action.id,
+                    "agent_audit_id": agent_audit_id,
+                    "applied": False,
+                    "action_status": action.status,
+                },
+                error=error[:MAX_ERROR],
+            )
+            self.db.commit()
+            self.outcome(step, "held", f"the {action.agent} failed while the action was held")
+            return
         action.attempts += 1
         action.last_error = error[:MAX_ERROR]
         retry = action.attempts <= MAX_RETRIES
@@ -799,13 +929,15 @@ class _Pass:
         reason = f"{step.full_reason}; the {action.agent} failed {action.attempts} times"
         self.give_up(step, action, reason)
 
-    def give_up(self, step: NextStep, action: OrchestratorAction, reason: str) -> None:
+    def give_up(
+        self, step: NextStep, action: OrchestratorAction, reason: str, *, handoff: bool = False
+    ) -> None:
         action.status = "cancelled"
         action.open_key = None
         action.closed_at = self.now
         action.closed_reason = reason[:REASON_MAX]
         self.db.flush()
-        self.to_person(step, reason, action_id=action.id)
+        self.to_person(step, reason, action_id=action.id, handoff=handoff)
 
 
 def run_pass(

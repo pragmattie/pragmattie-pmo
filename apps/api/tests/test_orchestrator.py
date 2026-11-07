@@ -564,6 +564,57 @@ def test_agent_mode_off_sends_agent_steps_to_a_person_without_retries(db, settin
     assert _items(db)[0].reason.endswith("the agents are off (AGENT_MODE=off)")
 
 
+@pytest.mark.parametrize("unavailable", ["switched_off", "agent_mode"])
+def test_a_handoff_item_is_cancelled_when_the_agent_is_available_again(
+    db, settings, monkeypatch, rules, unavailable
+):
+    pm = _user(db)
+    request_id = _request(db, pm)
+    claude = FakeClaude(intake_reply())
+    off_rules = rules
+    if unavailable == "switched_off":
+        off_rules = dataclasses.replace(rules, enabled={**rules.enabled, "intake_agent": False})
+    else:
+        monkeypatch.setattr(settings, "agent_mode", "off")
+    report = _pass(db, settings, rules=off_rules, client=claude)
+    assert [(o.step, o.outcome) for o in report.outcomes] == [("draft_value_case", "inbox")]
+    [item] = _items(db)
+    assert (item.status, item.handoff) == ("open", True)
+    # The agent is available again: the item is cancelled and the step runs, once.
+    monkeypatch.setattr(settings, "agent_mode", "enforce")
+    report = _pass(db, settings, rules=rules, client=claude)
+    assert [(o.step, o.outcome) for o in report.outcomes] == [
+        ("draft_value_case", "cancelled"),
+        ("draft_value_case", "done"),
+    ]
+    [item] = _items(db)
+    assert (item.status, item.open_key) == ("cancelled", None)
+    assert item.closed_reason == orchestrator.AGENT_BACK and item.closed_at is not None
+    cancel = [r for r in _orchestrator_rows(db) if r.action_taken["action"] == "cancel_inbox"]
+    assert [(r.status, r.action_taken["inbox_item_id"]) for r in cancel] == [("ok", item.id)]
+    assert db.scalar(select(ValueCase).where(ValueCase.request_id == request_id)) is not None
+    assert len(claude.requests) == 1
+    assert _pass(db, settings, rules=rules, client=claude).outcomes == []
+    assert len(claude.requests) == 1
+
+
+def test_items_opened_for_other_reasons_stay_open_when_the_agent_is_available(
+    db, settings, actions, rules
+):
+    """A person step's item and a judgement hand-off stay open whatever the agents do."""
+    actions(score_risk=Calls())
+    pm = _user(db)
+    _request(db, pm, status="submitted")
+    _risk(db, _project(db, stage="delivery"), needs_judgement=True)
+    window = _window_rules(rules)
+    _pass(db, settings, rules=window)
+    items = _items(db, "open")
+    assert {i.step for i in items} == {"pass_gate", "score_risk"}
+    assert not any(i.handoff for i in items)
+    assert _pass(db, settings, rules=window).outcomes == []
+    assert len(_items(db, "open")) == 2
+
+
 def test_enforce_never_performs_a_person_step_whatever_the_policy_says(
     db, settings, monkeypatch, actions, rules
 ):
@@ -691,6 +742,121 @@ def test_holding_needs_the_steps_who_role_and_refusals_are_audited(
     assert (row.actor_user_id, row.trigger) == (user.id, "human")
     assert row.action_taken["refusal"] == refusal
     assert _actions(db)[0].status == "pending" and _items(db) == []
+
+
+class HoldDuringCall:
+    """A fake agent action during whose run a person holds the pending action. Then, like an
+    agent, it changes the subject and writes its own run row with a cost.
+
+    A fake, not the real intake agent: SQLite's driver commits a savepoint opened outside a
+    transaction when it is released, so the agent's saved draft couldn't be rolled back there.
+    On MySQL the savepoint sits inside the pass's transaction and is rolled back with it."""
+
+    def __init__(self, web: TestClient):
+        self.web = web
+        self.responses = []
+        self.subjects: list[int] = []
+
+    def __call__(self, ctx, subject_id: int) -> int:
+        self.subjects.append(subject_id)
+        with Session(engine) as other:
+            [action] = other.scalars(select(OrchestratorAction))
+        self.responses.append(_hold(self.web, action.id))
+        ctx.db.get(ProjectRequest, subject_id).problem = "rewritten by the agent"
+        run = AuditDecision(
+            agent="intake_agent",
+            trigger="orchestrator",
+            subject_type="project_request",
+            subject_id=str(subject_id),
+            status="ok",
+            model="claude-test",
+            input_tokens=10,
+            output_tokens=20,
+            cost_usd=Decimal("0.25"),
+            action_taken={"action": "draft", "saved": ["problem"]},
+        )
+        ctx.db.add(run)
+        ctx.db.flush()
+        return run.id
+
+
+def test_a_hold_during_the_agent_call_stands_and_the_result_is_not_applied(
+    db, web, settings, monkeypatch, sign_in
+):
+    pm = sign_in(web, db, "project_manager")
+    request_id = _request(db, pm)
+    fake = HoldDuringCall(web)
+    monkeypatch.setattr(orchestrator, "ACTIONS", {"draft_value_case": StepAction(fake)})
+    report = _pass(db, settings)
+    # The hold got a clean response, not a lock wait.
+    [response] = fake.responses
+    assert response.status_code == 200, response.text
+    assert [(o.step, o.outcome) for o in report.outcomes] == [("draft_value_case", "held")]
+    [action] = _actions(db)
+    assert (action.status, action.held_by, action.attempts) == ("held", pm.id, 0)
+    [item] = _items(db, "open")
+    assert item.action_id == action.id and not item.handoff
+    # The agent's change was not applied; its run is recorded as not applied, cost and all.
+    assert db.get(ProjectRequest, request_id).problem == REQUEST["problem"]
+    [run] = db.scalars(select(AuditDecision).where(AuditDecision.agent == "intake_agent"))
+    assert (run.status, run.trigger, run.cost_usd) == ("skipped", "orchestrator", Decimal("0.25"))
+    assert (run.model, run.input_tokens, run.output_tokens) == ("claude-test", 10, 20)
+    assert run.action_taken == {
+        "action": "draft",
+        "saved": ["problem"],
+        "applied": False,
+        "not_applied_reason": orchestrator.NOT_APPLIED,
+    }
+    assert orchestrator.spent_today(db, utcnow()) == Decimal("0.25")
+    row = _orchestrator_rows(db)[-1]
+    assert (row.status, row.trigger) == ("skipped", "orchestrator")
+    assert row.action_taken == {
+        "action": "run",
+        "action_id": action.id,
+        "agent_audit_id": run.id,
+        "applied": False,
+        "action_status": "held",
+        "reason": orchestrator.NOT_APPLIED,
+    }
+    # The hold stands: later passes don't run the step again.
+    _pass(db, settings)
+    assert fake.subjects == [request_id]
+    assert _actions(db)[0].status == "held" and len(_items(db, "open")) == 1
+
+
+def test_a_run_that_fails_while_held_is_not_retried(db, web, settings, monkeypatch, sign_in):
+    sign_in(web, db, "project_manager")
+    _request(db, _user(db))
+    fake = HoldDuringCall(web)
+
+    def hold_then_fail(ctx, subject_id):
+        fake(ctx, subject_id)
+        raise RuntimeError("the model was down")
+
+    monkeypatch.setattr(orchestrator, "ACTIONS", {"draft_value_case": StepAction(hold_then_fail)})
+    start = utcnow()
+    report = _pass(db, settings, now=start)
+    assert fake.responses[0].status_code == 200
+    assert [(o.step, o.outcome) for o in report.outcomes] == [("draft_value_case", "held")]
+    [action] = _actions(db)
+    assert (action.status, action.attempts, action.next_try_at) == ("held", 0, None)
+    error = _orchestrator_rows(db)[-1]
+    assert (error.status, error.action_taken["action_status"]) == ("error", "held")
+    _pass(db, settings, now=start + timedelta(minutes=10))
+    assert len(fake.subjects) == 1
+
+
+def test_a_missing_reason_is_an_audited_refusal(db, web, settings, actions, rules, sign_in):
+    actions(score_risk=Calls())
+    _risk(db, _project(db, stage="delivery"))
+    _pass(db, settings, rules=_window_rules(rules))
+    [action] = _actions(db)
+    sign_in(web, db, "project_manager")
+    response = web.post(f"/api/v1/orchestrator/actions/{action.id}/hold", json={})
+    assert response.status_code == 422
+    assert response.json()["detail"] == orchestrator_api.SHORT_REASON
+    assert _refusals(db)[-1].action_taken["refusal"] == "short_reason"
+    assert _actions(db)[0].status == "pending"
 
 
 def test_holding_needs_a_reason_of_ten_characters(db, web, settings, actions, rules, sign_in):

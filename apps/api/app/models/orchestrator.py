@@ -5,7 +5,8 @@
   window) or `cancelled` (the step is no longer needed, or it went to a person). Who held it,
   why, and when and why it closed are kept on the row.
 - `InboxItem`: a step waiting on a person, for the inbox (item 6.3). Never deleted: `open`, then
-  `done` or `cancelled`, with when and why it closed.
+  `done` or `cancelled`, with when and why it closed. `handoff` marks an item opened only because
+  the step's agent couldn't act; it is cancelled when the agent can act again.
 - `OrchestratorLease`: one row per lock name. A pass takes the `pass` lease before it starts and
   gives up when another pass holds an unexpired one, so two passes never overlap.
 
@@ -115,6 +116,9 @@ class InboxItem(Base):
     who: Mapped[str] = mapped_column(String(32))
     reason: Mapped[str] = mapped_column(String(REASON_MAX))
     status: Mapped[str] = mapped_column(String(16), default="open")
+    # Opened only because the step's agent couldn't act (switched off, not built yet, or
+    # AGENT_MODE not `enforce`): a later pass cancels it once the agent can act again.
+    handoff: Mapped[bool] = mapped_column(default=False)
     # The action it came from, when a held or failed action made it.
     action_id: Mapped[int | None] = mapped_column(
         ForeignKey(f"{ACTIONS_TABLE}.id", name="fk_inbox_items_action"), index=True
