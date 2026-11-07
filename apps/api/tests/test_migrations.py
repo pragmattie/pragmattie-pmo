@@ -210,6 +210,7 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         assert {ck["name"] for ck in inspector.get_check_constraints("plan_estimate_lines")} == {
             "ck_plan_estimate_lines_category",
             "ck_plan_estimate_lines_amount",
+            "ck_plan_estimate_lines_source",
         }
         with create_engine(get_settings().database_url).connect() as conn:
             for table in ("plan_milestones", "plan_deliverables", "plan_estimate_lines"):
@@ -309,8 +310,19 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
             ck["name"]: ck["sqltext"] for ck in inspector.get_check_constraints("pmo_audit")
         }["ck_pmo_audit_trigger"]
         assert "'orchestrator'" in trigger_check
+        # 0022: who wrote each plan item.
+        plan_item_tables = ("plan_milestones", "plan_deliverables", "plan_estimate_lines")
+        for table in plan_item_tables:
+            assert not {c["name"]: c for c in inspector.get_columns(table)}["source"]["nullable"]
+            assert f"ck_{table}_source" in {
+                ck["name"] for ck in inspector.get_check_constraints(table)
+            }
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0021")
+        inspector = inspect(create_engine(get_settings().database_url))
+        for table in plan_item_tables:
+            assert "source" not in {c["name"] for c in inspector.get_columns(table)}
         command.downgrade(config, "0020")
         inspector = inspect(create_engine(get_settings().database_url))
         assert not orchestrator_tables & set(inspector.get_table_names())

@@ -9,6 +9,10 @@ reported (item 5.1).
 - `PlanDeliverable`: what the project hands over, and which milestone delivers it.
 - `PlanEstimateLine`: one line of the estimate: a description, a category and an amount.
 
+`source` on milestones, deliverables and estimate lines (item 6.5) says who wrote the item:
+`agent` for the planner agent's draft, `person` for anything a person added or edited (and for
+every item that existed before the agent). A re-draft replaces only `agent` items.
+
 `report_due_day` means a weekday (1 to 7, Monday is 1) for weekly and fortnightly reports and a
 day of the month (1 to 28) for monthly ones; the API checks it against the period on every write.
 
@@ -41,6 +45,9 @@ REPORT_PERIODS = ("weekly", "fortnightly", "monthly")
 ESTIMATE_CATEGORIES = ("people", "software", "services", "other")
 # The highest due day each period allows: a weekday, or a day every month has.
 DUE_DAY_MAX = {"weekly": 7, "fortnightly": 7, "monthly": 28}
+AGENT_SOURCE = "agent"
+PERSON_SOURCE = "person"
+SOURCES = (AGENT_SOURCE, PERSON_SOURCE)
 
 
 class ProjectPlan(Base):
@@ -79,6 +86,7 @@ class ProjectPlan(Base):
 class PlanMilestone(Base):
     __tablename__ = MILESTONES_TABLE
     __table_args__ = (
+        CheckConstraint(column("source").in_(SOURCES), name="ck_plan_milestones_source"),
         # Audit rows name a milestone by id, so an id is never reused after a delete.
         {"sqlite_autoincrement": True},
     )
@@ -94,6 +102,7 @@ class PlanMilestone(Base):
     )
     description: Mapped[str | None] = mapped_column(String(DESCRIPTION_MAX))
     contributors: Mapped[str | None] = mapped_column(String(CONTRIBUTORS_MAX))
+    source: Mapped[str] = mapped_column(String(16), default=PERSON_SOURCE)
     version: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
@@ -103,7 +112,10 @@ class PlanMilestone(Base):
 
 class PlanDeliverable(Base):
     __tablename__ = DELIVERABLES_TABLE
-    __table_args__ = ({"sqlite_autoincrement": True},)
+    __table_args__ = (
+        CheckConstraint(column("source").in_(SOURCES), name="ck_plan_deliverables_source"),
+        {"sqlite_autoincrement": True},
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     plan_id: Mapped[int] = mapped_column(
@@ -114,6 +126,7 @@ class PlanDeliverable(Base):
     milestone_id: Mapped[int | None] = mapped_column(
         ForeignKey(f"{MILESTONES_TABLE}.id", name="fk_plan_deliverables_milestone"), index=True
     )
+    source: Mapped[str] = mapped_column(String(16), default=PERSON_SOURCE)
     version: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
@@ -128,6 +141,7 @@ class PlanEstimateLine(Base):
             column("category").in_(ESTIMATE_CATEGORIES), name="ck_plan_estimate_lines_category"
         ),
         CheckConstraint(column("amount") > 0, name="ck_plan_estimate_lines_amount"),
+        CheckConstraint(column("source").in_(SOURCES), name="ck_plan_estimate_lines_source"),
         {"sqlite_autoincrement": True},
     )
 
@@ -138,6 +152,7 @@ class PlanEstimateLine(Base):
     description: Mapped[str] = mapped_column(String(DESCRIPTION_MAX))
     category: Mapped[str] = mapped_column(String(16))
     amount: Mapped[Decimal] = mapped_column(Money)
+    source: Mapped[str] = mapped_column(String(16), default=PERSON_SOURCE)
     version: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
