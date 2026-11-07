@@ -2,7 +2,7 @@
 rests on and a one-line recommendation.
 
 - **Where items come from.** The orchestrator (6.2) makes them: an open `InboxItem` (a `person`
-  step, a held window action, or an agent step that failed 3 times), and a pending window
+  step, a held window action, or an agent step that failed after 3 retries), and a pending window
   `OrchestratorAction`, which happens at its due time unless the step's `who` holds it.
 - **Who sees what.** An item waits on a role (`who`). Where its project names someone for that
   role (its sponsor or project manager), only that person sees it. A draft request has no project
@@ -11,6 +11,10 @@ rests on and a one-line recommendation.
 - **A decided item leaves at once.** An item whose step the orchestrator's rules
   (`orchestrator.subject_steps`) no longer give for its subject is left out, so a person never
   waits for the next pass to see it go. The next pass closes it, as it always has.
+- **An item follows its step's `who`.** An open item counts only for the role the live step now
+  waits on: when that changed (a risk escalated to another role), the old role stops seeing it at
+  once and the new role sees the step. The next pass closes the old item and opens one for the new
+  role.
 - **The agent's case.** The facts come from the subject as it is now (a gate's checks, a risk's
   score and band, a proposal's flags, a change's effect, a draft's gaps). The recommendation is
   written by code from those facts (`recommend`), one function per step; no model is involved.
@@ -445,9 +449,11 @@ def entries(
     """The signed-in person's inbox, oldest first, without facts (see `with_case`). Raises
     `PolicyError` when the autonomy or risk policy can't be loaded."""
     rules = risk_rules or orchestrator.risk_policy()
+    # Every open item, not just the role's: an item whose step now waits on another role (a risk
+    # escalated elsewhere) goes to that role at once, before the next pass reopens it for them.
     items = db.scalars(
         select(InboxItem)
-        .where(InboxItem.status == "open", InboxItem.who == user.role)
+        .where(InboxItem.status == "open")
         .order_by(InboxItem.created_at, InboxItem.id)
     ).all()
     windows = db.scalars(
@@ -483,15 +489,21 @@ def entries(
     names = _user_names(db, held_by)
     for row in [*items, *windows]:
         subject_id = int(row.subject_id)
-        scope = _scope(db, row.subject_type, subject_id, row.who)
-        if scope is None:
-            continue
-        if scope.named_user_id is not None and scope.named_user_id != user.id:
-            continue
         step = live(row.step, row.subject_type, subject_id)
         if step is None:
             continue  # decided since the last pass: it leaves at once
         is_item = isinstance(row, InboxItem)
+        # The step's `who` now, which an open item follows: when it has changed, the old role
+        # stops seeing the item and the new role sees the step.
+        who = orchestrator.person_who(policy, step) if is_item else row.who
+        if who != user.role:
+            continue
+        moved = who != row.who
+        scope = _scope(db, row.subject_type, subject_id, who)
+        if scope is None:
+            continue
+        if scope.named_user_id is not None and scope.named_user_id != user.id:
+            continue
         found.append(
             Entry(
                 kind=ITEM if is_item else WINDOW,
@@ -499,9 +511,9 @@ def entries(
                 step=row.step,
                 subject_type=row.subject_type,
                 subject_id=subject_id,
-                who=row.who,
+                who=who,
                 reason=step.reason,
-                handoff=_handoff(db, row, step, names) if is_item else None,
+                handoff=None if moved or not is_item else _handoff(db, row, step, names),
                 created_at=row.created_at,
                 action_id=row.action_id if is_item else row.id,
                 due_at=None if is_item else row.due_at,

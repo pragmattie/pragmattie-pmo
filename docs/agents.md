@@ -279,14 +279,18 @@ inbox is always empty and the page says so.
 
 **A decided item leaves at once.** Before listing, each item's subject is read again through the
 orchestrator's own rules (`subject_steps`, the same rules as `next_steps`); an item whose step is
-no longer needed is left out. The next pass closes it, as before.
+no longer needed is left out. The next pass closes it, as before. An item also follows its step's
+`who`: it counts only for the role the live step now waits on, so when that changes (a risk
+re-escalated to another role) the old role stops seeing it at once and the new role sees the step.
+The next pass closes the old item ("the step now waits on another role") and opens one for the
+new role.
 
 **The case.** Each item shows its step's plain reason and, when it went to a person instead of an
 agent, why ("no agent does this yet", "the risk_agent is switched off", "held by <name>: <reason>",
-"the intake_agent failed 4 times"), in the words its audit row uses. Then the facts the decision
-rests on, read from the subject now (a gate's checks, a risk's score and band, a proposal's
-checker flags, a change's effect, a draft's gaps), and a one-line recommendation written by code
-from those facts: one function per step, in `RECOMMENDERS`.
+"the intake_agent failed after 3 retries"), in the words its audit row uses. Then the facts the
+decision rests on, read from the subject now (a gate's checks, a risk's score and band, a
+proposal's checker flags, a change's effect, a draft's gaps), and a one-line recommendation
+written by code from those facts: one function per step, in `RECOMMENDERS`.
 
 **Deciding.** Each item opens the existing form for its step inside the inbox (the gate decision,
 the risk's accept, open and reject, the proposal section, the change requests), which calls the

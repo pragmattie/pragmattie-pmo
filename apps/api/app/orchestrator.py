@@ -100,6 +100,7 @@ PERSON_ONLY = FLOOR_STEPS | {step for step, agents in STEP_AGENTS.items() if not
 NO_AGENT = "no agent does this yet"
 AGENT_ALREADY_RAN = "an agent already did this step, but it is still open"
 NO_LONGER_NEEDED = "the step is no longer needed"
+WHO_CHANGED = "the step now waits on another role"
 AGENT_BACK = "agent available again"
 NOT_APPLIED = "a person held the action during the agent call, so its result was not applied"
 LEASE_LOST = "another pass took over the lease during the agent call, so its result was not applied"
@@ -179,6 +180,12 @@ def _make(
     return NextStep(
         step, subject_type, subject_id, reason, waits_on or rule.who, mode, handoff, unavailable
     )
+
+
+def person_who(policy: AutonomyPolicy, step: NextStep) -> str:
+    """The role an inbox item for `step` waits on: the step's `who` for a person step (a risk's
+    escalation role, for instance), else the role the policy gives the step."""
+    return step.waits_on if step.mode == PERSON else policy.steps[step.step].who
 
 
 def _agent_ran(db: Session, agent: str, subject_type: str, subject_id: int) -> bool:
@@ -659,7 +666,7 @@ class _Pass:
             step=step.step,
             subject_type=step.subject_type,
             subject_id=str(step.subject_id),
-            who=self.policy.steps[step.step].who if step.mode != PERSON else step.waits_on,
+            who=person_who(self.policy, step),
             reason=(reason or step.full_reason)[:REASON_MAX],
             status="open",
             handoff=handoff,
@@ -689,8 +696,11 @@ class _Pass:
         self.db.commit()
         self.outcome(step, "inbox", f"for the {item.who}: {item.reason}")
 
-    def close_stale(self, live: set[str]) -> None:
-        """Close the open inbox items and pending actions whose step is no longer needed."""
+    def close_stale(self, live: dict[str, str]) -> None:
+        """Close the open inbox items and pending actions whose step is no longer needed. `live`
+        maps each live step's key to the role its inbox item waits on: an open item whose `who`
+        differs (a risk escalated to another role) is closed too, and the step opens a new item
+        for the new role in this pass."""
         db = self.db
         items = select(InboxItem).where(InboxItem.status == "open").order_by(InboxItem.id)
         actions = (
@@ -699,20 +709,22 @@ class _Pass:
             .order_by(OrchestratorAction.id)
         )
         for row in [*db.scalars(items), *db.scalars(actions)]:
-            if row.open_key in live:
-                continue
             is_item = isinstance(row, InboxItem)
+            if row.open_key not in live:
+                why = NO_LONGER_NEEDED
+            elif is_item and live[row.open_key] != row.who:
+                why = WHO_CHANGED
+            else:
+                continue
             row.status = "done" if is_item else "cancelled"
             row.open_key = None
             row.closed_at = self.now
-            row.closed_reason = NO_LONGER_NEEDED
-            stale = NextStep(
-                row.step, row.subject_type, int(row.subject_id), NO_LONGER_NEEDED, row.who, PERSON
-            )
+            row.closed_reason = why
+            stale = NextStep(row.step, row.subject_type, int(row.subject_id), why, row.who, PERSON)
             what = "close_inbox" if is_item else "cancel_action"
-            self.audit(stale, "ok", {"action": what, "id": row.id, "reason": NO_LONGER_NEEDED})
+            self.audit(stale, "ok", {"action": what, "id": row.id, "reason": why})
             db.commit()
-            self.outcome(stale, "closed" if is_item else "cancelled", NO_LONGER_NEEDED)
+            self.outcome(stale, "closed" if is_item else "cancelled", why)
 
     def pending(self, step: NextStep) -> OrchestratorAction | None:
         stmt = select(OrchestratorAction).where(OrchestratorAction.open_key == step.key)
@@ -1018,7 +1030,7 @@ class _Pass:
         if retry:
             self.outcome(step, "failed", f"try {action.attempts} failed; retrying in 5 minutes")
             return
-        reason = f"{step.full_reason}; the {action.agent} failed {action.attempts} times"
+        reason = f"{step.full_reason}; the {action.agent} failed after {MAX_RETRIES} retries"
         self.give_up(step, action, reason)
 
     def give_up(
@@ -1062,7 +1074,7 @@ def run_pass(
             _shadow(db, steps, rules.digest, report)
             return report
         work = _Pass(db, settings, client, rules, now, report, holder)
-        work.close_stale({step.key for step in steps})
+        work.close_stale({step.key: person_who(rules, step) for step in steps})
         for step in steps:
             if work.lost_lease:
                 break

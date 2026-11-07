@@ -170,6 +170,48 @@ def test_a_sponsor_never_sees_another_projects_named_sponsor_items(db, web, sett
         assert named["project_name"] == "Pilot"
 
 
+def test_an_item_follows_its_steps_who_when_a_risk_is_re_escalated(
+    db, web, settings, actions, sign_in
+):
+    actions()
+    sponsor = _user(db, role="sponsor", name="re-escalated-sponsor")
+    project = _project(db, stage="delivery", sponsor_user_id=sponsor.id)
+    risk = _risk(db, project, **HIGH_RISK)
+    _pass(db, settings)
+    [old] = _items(db, "open")
+    assert old.who == "sponsor"
+    web.cookies.set(SESSION_COOKIE, issue_token(sponsor.id, "sponsor").token)
+    web.cookies.set(CSRF_COOKIE, "test-csrf-value")
+    assert _steps(web) == [("accept_risk", "risk", risk.id)]
+
+    risk.escalated_to = "ethics_reviewer"
+    db.commit()
+    # At once, before the next pass: the sponsor stops seeing it, the ethics reviewer sees it.
+    assert _steps(web) == [] and _count(web) == 0
+    web.cookies.clear()
+    sign_in(web, db, "ethics_reviewer")
+    [entry] = _inbox(web)["items"]
+    assert (entry["step"], entry["subject_id"], entry["who"]) == (
+        "accept_risk",
+        risk.id,
+        "ethics_reviewer",
+    )
+    assert entry["reason"] == (
+        "the risk is escalated to the ethics_reviewer and waiting for a decision"
+    )
+    assert entry["handoff"] is None and entry["named_user_id"] is None
+    assert _count(web) == 1
+
+    # The next pass closes the sponsor's item and opens one for the ethics reviewer.
+    _pass(db, settings)
+    db.expire_all()
+    closed = db.get(type(old), old.id)
+    assert (closed.status, closed.closed_reason) == ("done", orchestrator.WHO_CHANGED)
+    [new] = _items(db, "open")
+    assert (new.step, new.who) == ("accept_risk", "ethics_reviewer")
+    assert _steps(web) == [("accept_risk", "risk", risk.id)]
+
+
 # --- The case: facts and the recommendation
 
 
@@ -225,7 +267,7 @@ def test_an_agent_that_failed_hands_off_with_that_reason(db, web, settings, acti
         _pass(db, settings, now=start + timedelta(minutes=minutes))
     [entry] = _inbox(web)["items"]
     assert entry["reason"] == "the request has no value case"
-    assert entry["handoff"] == "the intake_agent failed 4 times"
+    assert entry["handoff"] == "the intake_agent failed after 3 retries"
 
 
 def test_every_step_has_a_recommendation():
