@@ -212,6 +212,11 @@ the policy, or can't run because `AGENT_MODE` isn't `enforce`, goes to a person 
 `score_risk` step for a risk marked as needing judgement, and an agent step that already ran once
 but is still open. A step already done, pending or in the inbox is not repeated.
 
+An inbox item opened only because the agent couldn't act (switched off, not built, or `AGENT_MODE`
+not `enforce`) gives way once it can: the next pass that finds the step's agent available again
+cancels the item ("agent available again", with when) and handles the step as normal. Items opened
+for any other reason (a person step, a hold, a judgement call, retries used up) stay open.
+
 **What it never does.** Decide a gate, approve, return or mark sent a proposal, record a client's
 answer, accept a risk or decide a change request, whatever the policy says: those steps, and any
 step no agent may do, always go to a person. It never sends anything outside the product. It
@@ -220,7 +225,15 @@ never deletes an inbox item: items close as `done` or `cancelled` with when and 
 **Holding.** `POST /api/v1/orchestrator/actions/{id}/hold` stops a pending action. Only the step's
 `who` role may hold it, with a reason of at least 10 characters; the action becomes `held` and the
 step an inbox item. The hold is a person's decision, so its audit row has `trigger = human` and
-that person as `actor_user_id`. A refusal (wrong role, short reason, not pending) is a `rejected` audit row.
+that person as `actor_user_id`. A refusal (wrong role, a short or missing reason, not pending) is
+a `rejected` audit row.
+
+A pass doesn't hold the action's row lock while its agent runs: it commits after the cap check,
+calls the agent, then re-reads the action and finishes only if it is still `pending`. So a hold
+made during the call returns at once. If a person held the action meanwhile, the hold stands: the
+agent's changes are rolled back, its run row is written again as `skipped` with
+`applied: false` (keeping its tokens and cost, which still count against the daily cap), and the
+pass records the run as not applied.
 
 **Modes.** `ORCHESTRATOR_MODE=off` (the default) does nothing. `shadow` records what it would do,
 as `skipped` audit rows, and changes nothing: a row is written when a step and subject first
