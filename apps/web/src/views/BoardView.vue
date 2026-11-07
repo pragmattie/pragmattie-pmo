@@ -36,15 +36,20 @@ const filters = ref<BoardFilters>({
 
 let timer: ReturnType<typeof setInterval> | null = null
 let last = new Map<string, string>()
+// Each load takes the next number; a response for an older one is dropped, so a poll that was
+// already on its way can't put back the board for a filter that has since changed.
+let latest = 0
 
 function failed(err: unknown): string {
   return err instanceof Error ? err.message : 'Something went wrong. Please try again.'
 }
 
 async function load() {
+  const asked = ++latest
   loading.value = true
   try {
     const found = await boardApi.get(filters.value)
+    if (asked !== latest) return
     const moved = movedKeys(last, found)
     last = states(found)
     board.value = found
@@ -58,9 +63,9 @@ async function load() {
       }, HIGHLIGHT_MS)
     }
   } catch (err) {
-    error.value = failed(err)
+    if (asked === latest) error.value = failed(err)
   } finally {
-    loading.value = false
+    if (asked === latest) loading.value = false
   }
 }
 

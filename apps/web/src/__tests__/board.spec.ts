@@ -292,6 +292,38 @@ describe('the board page', () => {
     wrapper.unmount()
   })
 
+  it('never lets an older response overwrite a newer one', async () => {
+    const base = signedInAs('sponsor')
+    let release: (() => void) | null = null
+    let boardReads = 0
+    const fetch = vi.fn(async (path: string) => {
+      if (!path.startsWith('/api/v1/board')) return base(path)
+      boardReads += 1
+      if (boardReads === 2) {
+        // A poll for the unfiltered board that is still on its way when the filter changes.
+        await new Promise<void>((resolve) => (release = resolve))
+        return json(makeBoard([card(), REQUEST]))
+      }
+      return json(boardReads === 1 ? makeBoard([card(), REQUEST]) : makeBoard([card()]))
+    })
+    vi.stubGlobal('fetch', fetch)
+    const { wrapper } = await mountAt('/board')
+    const view = wrapper.findComponent({ name: 'BoardView' })
+    ;(view.vm as unknown as { load: () => Promise<void> }).load()
+    await flushPromises()
+    const filters = (view.vm as unknown as { filters: Record<string, unknown> }).filters
+    filters.client_id = 5
+    await flushPromises()
+    expect(wrapper.find('[data-test="card-request-4"]').exists()).toBe(false)
+    release!()
+    await flushPromises()
+    // The old poll answered last, but the filtered board stays.
+    expect(boardReads).toBe(3)
+    expect(wrapper.find('[data-test="card-project-2"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="card-request-4"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('refreshes every 15 seconds and highlights a card that moved', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const moved = card({
