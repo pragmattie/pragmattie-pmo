@@ -739,8 +739,14 @@ class _Pass:
         if step_action.uses_claude:
             wait = self.cap_reason()
             if wait is not None:
+                # One row when the step first waits for this cap; later passes add none.
                 if action.wait_reason != wait:
                     action.wait_reason = wait
+                    self.audit(
+                        step,
+                        "skipped",
+                        {"action": "wait", "action_id": action.id, "reason": wait},
+                    )
                     self.db.commit()
                 else:
                     self.db.rollback()
@@ -941,10 +947,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {o.step} {o.subject_type} {o.subject_id}: {o.outcome} ({o.detail})")
 
     try:
-        one_pass()
-        while args.command == "run":
-            time.sleep(settings.orchestrator_interval_seconds)
+        if args.command == "once":
             one_pass()
+            return 0
+        while True:
+            try:
+                one_pass()
+            except Exception:
+                # A bad pass (a policy error, the database away) waits for the next interval.
+                logger.exception(
+                    "orchestrator pass failed; trying again in %ss",
+                    settings.orchestrator_interval_seconds,
+                )
+            time.sleep(settings.orchestrator_interval_seconds)
     except KeyboardInterrupt:
         print("orchestrator: stopped")
     return 0

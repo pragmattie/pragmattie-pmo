@@ -808,6 +808,80 @@ def test_the_daily_cap_counts_todays_orchestrator_runs(db, settings, monkeypatch
     assert fakes["draft_value_case"].subjects == [request_id]
 
 
+def _cap_rows(db: Session) -> list[AuditDecision]:
+    return [r for r in _orchestrator_rows(db) if (r.action_taken or {}).get("action") == "wait"]
+
+
+def test_the_per_pass_cap_writes_one_row_when_a_step_first_waits(
+    db, settings, monkeypatch, actions
+):
+    monkeypatch.setattr(settings, "orchestrator_max_agent_calls", 1)
+    actions(draft_value_case=Calls())
+    pm = _user(db)
+    ids = [_request(db, pm) for _ in range(3)]
+    _pass(db, settings)
+    reason = orchestrator.PASS_CAP.format(n=1)
+    rows = _cap_rows(db)
+    assert [int(r.subject_id) for r in rows] == ids[1:]
+    for row in rows:
+        assert row.trigger == "orchestrator" and row.status == "skipped"
+        assert row.action_taken["reason"] == reason
+        assert row.signals["step"] == "draft_value_case" and row.signals["policy_digest"]
+    # The next pass runs one more and defers the last for the same reason: no new row.
+    _pass(db, settings)
+    assert len(_cap_rows(db)) == 2
+
+
+def test_the_daily_cap_writes_one_row_when_a_step_first_waits(db, settings, monkeypatch, actions):
+    monkeypatch.setattr(settings, "orchestrator_daily_cap_usd", Decimal("1.00"))
+    actions(draft_value_case=Calls())
+    request_id = _request(db, _user(db))
+    db.add(
+        AuditDecision(
+            agent="intake_agent",
+            trigger="orchestrator",
+            subject_type="project_request",
+            subject_id=str(request_id),
+            attempt=1,
+            status="ok",
+            cost_usd=Decimal("1.00"),
+        )
+    )
+    db.commit()
+    now = utcnow()
+    _pass(db, settings, now=now)
+    rows = _cap_rows(db)
+    assert len(rows) == 1
+    assert rows[0].subject_id == str(request_id) and rows[0].status == "skipped"
+    assert rows[0].trigger == "orchestrator"
+    assert rows[0].action_taken["reason"] == orchestrator.DAY_CAP.format(cap="1.00")
+    assert rows[0].signals["step"] == "draft_value_case" and rows[0].signals["policy_digest"]
+    before = len(_orchestrator_rows(db))
+    _pass(db, settings, now=now)
+    assert len(_orchestrator_rows(db)) == before
+
+
+def test_the_loop_survives_a_failing_pass(monkeypatch, capsys):
+    calls = []
+
+    def fake_run_pass(_db, settings, _client):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("database unreachable")
+        if len(calls) == 2:
+            return orchestrator.PassReport(mode=settings.orchestrator_mode, ran=True)
+        raise KeyboardInterrupt
+
+    sleeps = []
+    monkeypatch.setattr(orchestrator, "run_pass", fake_run_pass)
+    monkeypatch.setattr(orchestrator.risk_agent, "AnthropicClient", lambda _s: None)
+    monkeypatch.setattr(orchestrator.time, "sleep", sleeps.append)
+    assert orchestrator.main(["run"]) == 0
+    assert len(calls) == 3 and len(sleeps) == 2
+    out = capsys.readouterr().out
+    assert "ran True" in out and "orchestrator: stopped" in out
+
+
 # --- Overlap and the route
 
 
