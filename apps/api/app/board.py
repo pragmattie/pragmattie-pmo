@@ -419,10 +419,10 @@ def _matches(card: Card, filters: Filters) -> bool:
         return False
     if filters.project_manager is not None and card.project_manager != filters.project_manager:
         return False
-    holders = {w.holder for w in card.waiting}
-    if filters.waiting == WAITING_PERSON and PERSON_HOLDER not in holders:
+    # The waiting filter follows `held_by`: a card waiting on a person and an agent is person-held.
+    if filters.waiting == WAITING_PERSON and card.held_by != PERSON_HOLDER:
         return False
-    if filters.waiting == WAITING_AGENT and AGENT_HOLDER not in holders:
+    if filters.waiting == WAITING_AGENT and card.held_by != AGENT_HOLDER:
         return False
     return True
 

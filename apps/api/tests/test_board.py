@@ -419,7 +419,7 @@ def test_the_summary_adds_up_the_shown_cards(db, rules):
 
 
 def test_filters(db, rules, actions):
-    actions(draft_value_case=Calls())
+    actions(draft_value_case=Calls(), propose_risks=Calls())
     pm = _user(db, name="Robin")
     harbour = Client(name="Harbour Foods")
     db.add(harbour)
@@ -427,13 +427,23 @@ def test_filters(db, rules, actions):
     agent_card = f"request-{_request(db, pm)}"
     person_card = f"request-{_request(db, pm, status='submitted')}"
     theirs = _owned(db, harbour, stage="delivery")
-    keys = set(_cards(db, rules))
+    # A card waiting on a person and an agent at once is person-held, in the filter too.
+    # Here the risk agent hasn't looked yet and a submitted proposal waits for approval.
+    both = _project(db)
+    both.pm = "Robin"
+    _complete_plan(db, both, pm)
+    _proposal(db, both, pm, "submitted", True)
+    both_card = f"project-{both.id}"
+    found = _cards(db, rules)
+    assert {w.holder for w in found[both_card].waiting} == {"agent", "person"}
+    assert found[both_card].held_by == "person"
+    keys = set(found)
     assert set(_cards(db, rules, client_id=harbour.id)) == {f"project-{theirs.id}"}
     assert set(_cards(db, rules, project_manager="Pat Lee")) == {f"project-{theirs.id}"}
-    assert set(_cards(db, rules, project_manager="Robin")) == {agent_card, person_card}
+    assert set(_cards(db, rules, project_manager="Robin")) == {agent_card, person_card, both_card}
     assert set(_cards(db, rules, waiting="agent")) == {agent_card}
-    assert set(_cards(db, rules, waiting="person")) == {person_card}
-    assert keys == {agent_card, person_card, f"project-{theirs.id}"}
+    assert set(_cards(db, rules, waiting="person")) == {person_card, both_card}
+    assert keys == {agent_card, person_card, both_card, f"project-{theirs.id}"}
     # A filter never hides its own choices.
     narrowed = _board(db, rules, Filters(client_id=harbour.id))
     assert narrowed.clients == [(harbour.id, "Harbour Foods")]

@@ -328,5 +328,8 @@ edge. A step the simulated client takes is labelled simulated.
 as on the plan page, against the brief's top budget (a request shows its own top budget). The
 summary bar counts each column and adds up plan totals in planning (both planning columns) and in
 delivery, open risks in every band above the lowest (Medium and High), and the steps waiting on a
-person. Filters: client, project manager, waiting on a person, waiting on an agent. The page
-refreshes every 15 seconds and briefly highlights a card that changed column or waiting state.
+person. Filters: client, project manager, waiting on a person, waiting on an agent. A card waiting
+on both a person and an agent is person-held, and the waiting filter follows who holds the card,
+so it shows under "waiting on a person" only. The page refreshes every 15 seconds and briefly
+highlights a card that changed column or waiting state; a response asked for before the latest
+request is dropped, so an old filter's board never comes back.
