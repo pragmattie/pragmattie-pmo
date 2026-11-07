@@ -697,3 +697,33 @@ def test_a_project_without_a_plan_gets_one(db, pm, mode):
     plan = _plan(db, row)
     assert plan is not None and plan.scope_in == "Forecasting for two warehouses"
     assert date.fromisoformat(_day(30)) == _rows(db, PlanMilestone, row)[0].target_date
+
+
+def test_a_failure_while_saving_leaves_the_old_plan_untouched(
+    web, db, project, fake, mode, monkeypatch
+):
+    mode("enforce")
+    assert _draft(web, project).status_code == 200
+    before = [(m.id, m.name) for m in _rows(db, PlanMilestone, project)]
+    version = _plan(db, project).version
+    real_save = planner_agent.save
+
+    def save_then_fail(*args, **kwargs):
+        real_save(*args, **kwargs)
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(planner_agent, "save", save_then_fail)
+    fake.reply = _reply(
+        _output(
+            milestones=[
+                {"name": "X", "target_date": _day(10), "description": None},
+                {"name": "Y", "target_date": _day(20), "description": None},
+            ]
+        )
+    )
+    assert _draft(web, project).status_code == 502
+    assert [(m.id, m.name) for m in _rows(db, PlanMilestone, project)] == before
+    assert _plan(db, project).version == version
+    runs = _runs(db)
+    assert [r.status for r in runs] == ["ok", "error"]
+    assert "the database went away" in runs[-1].error
