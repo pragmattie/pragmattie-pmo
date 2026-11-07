@@ -27,8 +27,9 @@ class PassOut(BaseModel):
 class HoldIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # The minimum length is checked by the route, so a short reason is an audited refusal.
-    reason: str = Field(max_length=LONG_TEXT_MAX)
+    # The minimum length is checked by the route, so a short or missing reason is an audited
+    # refusal rather than a validation error.
+    reason: str = Field(default="", max_length=LONG_TEXT_MAX)
 
 
 class ActionOut(BaseModel):
