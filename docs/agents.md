@@ -262,3 +262,35 @@ closed, skipped (in shadow, or left waiting for a cap) or failed is one `pmo_aud
 `trigger = orchestrator`, no `actor_user_id`, subject the step's subject, with the step, the
 reason and the policy digest in its signals. An agent run it starts also writes that agent's own
 row, with `trigger = orchestrator`. An error on one subject is recorded and the pass carries on.
+
+## Decision inbox
+
+Code: `apps/api/app/inbox.py`, routes `GET /api/v1/inbox` and `GET /api/v1/inbox/count`
+(`project:read`), page **Needs you** in the web. It is not an agent and calls no model: it shows
+the decisions the orchestrator has left waiting on a person, and decides nothing itself.
+
+**What it lists.** The signed-in person's open inbox items (a `person` step, a held window action,
+an agent step whose retries are used up) and pending window actions, oldest first, paged. An item
+waits on a role; where its project names someone for that role (its sponsor or project manager),
+only that person sees it. A draft request goes to the project manager who raised it, or to any
+project manager when someone in another role raised it. The ethics reviewer and admin are never
+named on a project, so they see their role's items. An admin or auditor decides nothing, so their
+inbox is always empty and the page says so.
+
+**A decided item leaves at once.** Before listing, each item's subject is read again through the
+orchestrator's own rules (`subject_steps`, the same rules as `next_steps`); an item whose step is
+no longer needed is left out. The next pass closes it, as before.
+
+**The case.** Each item shows its step's plain reason and, when it went to a person instead of an
+agent, why ("no agent does this yet", "the risk_agent is switched off", "held by <name>: <reason>",
+"the intake_agent failed 4 times"), in the words its audit row uses. Then the facts the decision
+rests on, read from the subject now (a gate's checks, a risk's score and band, a proposal's
+checker flags, a change's effect, a draft's gaps), and a one-line recommendation written by code
+from those facts: one function per step, in `RECOMMENDERS`.
+
+**Deciding.** Each item opens the existing form for its step inside the inbox (the gate decision,
+the risk's accept, open and reject, the proposal section, the change requests), which calls the
+existing route with its own checks; a 403 or 409 shows as it does elsewhere. A window action shows
+"happens at HH:MM unless you hold it", and only the step's role gets the Hold button, which calls
+the orchestrator's hold route. The menu's count refreshes every 15 seconds while the tab is
+visible, and at once when it becomes visible again.
