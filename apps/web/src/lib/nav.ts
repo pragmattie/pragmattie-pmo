@@ -11,6 +11,8 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
+  // The decisions waiting on the signed-in person; the menu shows their count.
+  { name: 'inbox', path: '/inbox', title: 'Needs you', action: 'project:read' },
   { name: 'projects', path: '/projects', title: 'Projects', action: 'project:read' },
   { name: 'intake', path: '/intake', title: 'Intake', action: 'project:read' },
   { name: 'risks', path: '/risks', title: 'Risks', action: 'project:read' },

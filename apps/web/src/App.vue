@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 
 import { NAV_ITEMS } from './lib/nav'
 
 import { useAuthStore } from './stores/auth'
+import { useInboxStore } from './stores/inbox'
 
 const auth = useAuthStore()
+const inbox = useInboxStore()
 const router = useRouter()
 // At phone width the menu folds away behind a button so pages get the full screen.
 const { smAndDown } = useDisplay()
@@ -15,6 +17,20 @@ const menuOpen = ref(!smAndDown.value)
 watch(smAndDown, (small) => (menuOpen.value = !small))
 // Only the pages this role may use; the API still refuses anything else.
 const navItems = computed(() => NAV_ITEMS.filter((item) => auth.can(item.action)))
+// The inbox count polls while someone is signed in (paused while the tab is hidden).
+watch(
+  () => auth.user?.id,
+  (id) => {
+    if (id === undefined) {
+      inbox.stopPolling()
+      inbox.count = null
+    } else {
+      inbox.startPolling()
+    }
+  },
+  { immediate: true },
+)
+onUnmounted(() => inbox.stopPolling())
 
 async function logout() {
   await auth.logout()
@@ -52,7 +68,16 @@ async function logout() {
           :to="{ name: item.name }"
           :title="item.title"
           :data-test="`nav-${item.name}`"
-        />
+        >
+          <template v-if="item.name === 'inbox' && inbox.count" #append>
+            <v-badge
+              :content="inbox.count"
+              color="accent"
+              inline
+              data-test="inbox-badge"
+            />
+          </template>
+        </v-list-item>
       </v-list>
     </v-navigation-drawer>
     <v-main>
