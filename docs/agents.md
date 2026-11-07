@@ -185,7 +185,8 @@ run or a refused run calls nothing; a refused run is recorded as a person's refu
 
 Code: `apps/api/app/orchestrator.py`. Run by `python -m app.orchestrator once` (one pass) or
 `python -m app.orchestrator run` (a pass every `ORCHESTRATOR_INTERVAL_SECONDS`, default 30, until
-Ctrl+C), or by `POST /api/v1/orchestrator/run` (admin only, `orchestrator:run`), which runs one
+Ctrl+C; a pass that fails, say because the database is unreachable, is logged and the loop tries
+again at the next interval), or by `POST /api/v1/orchestrator/run` (admin only, `orchestrator:run`), which runs one
 pass. It runs locally only. It is not an agent itself: it calls no model, and moves work between
 the agents and people as the autonomy policy (`policies/autonomy.yaml`) says.
 
@@ -218,7 +219,8 @@ never deletes an inbox item: items close as `done` or `cancelled` with when and 
 
 **Holding.** `POST /api/v1/orchestrator/actions/{id}/hold` stops a pending action. Only the step's
 `who` role may hold it, with a reason of at least 10 characters; the action becomes `held` and the
-step an inbox item. A refusal (wrong role, short reason, not pending) is a `rejected` audit row.
+step an inbox item. The hold is a person's decision, so its audit row has `trigger = human` and
+that person as `actor_user_id`. A refusal (wrong role, short reason, not pending) is a `rejected` audit row.
 
 **Modes.** `ORCHESTRATOR_MODE=off` (the default) does nothing. `shadow` records what it would do,
 as `skipped` audit rows, and changes nothing: a row is written when a step and subject first
@@ -230,14 +232,16 @@ appear, and again only when the reason or route changes. `enforce` acts as above
 - `ORCHESTRATOR_DAILY_CAP_USD` (default 5.00): once the cost of today's (UTC) agent runs with
   `trigger = orchestrator`, summed from the audit rows, reaches it, agent steps wait for the next
   day. The pass records once per day that it stopped for the cap.
-- A step waiting for a cap keeps a pending action whose wait reason says which cap.
+- A step waiting for a cap keeps a pending action whose wait reason says which cap. The first
+  time its wait reason becomes a cap, the pass writes one `skipped` row with the step and the cap;
+  later passes that leave it waiting for the same cap write nothing.
 - An agent step that fails is retried at most 3 times, 5 minutes apart; then its action is
   cancelled and the step goes to a person.
 - Only one pass runs at a time: a pass takes a lease (15 minutes) first and gives up when another
   pass holds it.
 
 **Record.** A pass that does nothing writes nothing. Otherwise each action taken, opened, held,
-closed, skipped (in shadow) or failed is one `pmo_audit` row, agent `orchestrator`,
+closed, skipped (in shadow, or left waiting for a cap) or failed is one `pmo_audit` row, agent `orchestrator`,
 `trigger = orchestrator`, no `actor_user_id`, subject the step's subject, with the step, the
 reason and the policy digest in its signals. An agent run it starts also writes that agent's own
 row, with `trigger = orchestrator`. An error on one subject is recorded and the pass carries on.
