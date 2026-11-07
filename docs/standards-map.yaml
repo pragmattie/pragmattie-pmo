@@ -152,6 +152,10 @@ features:
     title: The orchestrator
     rules: [R1, R2, R3, R4, R5]
     notes: Runs agent steps the autonomy policy allows, waits out windows a person may hold, sends the rest to a person's inbox; caps and retries in code; every action audited.
+  - id: P6-inbox
+    title: The decision inbox
+    rules: [R1, R2, R3]
+    notes: Lists each decision waiting on a person, with facts and a coded recommendation; decided through existing routes; window actions can be held.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports

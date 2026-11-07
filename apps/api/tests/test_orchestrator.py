@@ -911,7 +911,9 @@ def test_a_failing_step_is_retried_three_times_five_minutes_apart_then_goes_to_a
     assert action.last_error == "RuntimeError: the model was down"
     [item] = _items(db, "open")
     assert item.action_id == action.id
-    assert item.reason.endswith("the intake_agent failed 4 times")
+    assert item.reason.endswith("the intake_agent failed after 3 retries")
+    handed = [r for r in _orchestrator_rows(db) if r.action_taken.get("action") == "inbox"]
+    assert handed[-1].action_taken["reason"] == item.reason
     errors = [r for r in _orchestrator_rows(db) if r.status == "error"]
     assert len(errors) == 4 and errors[0].error == "RuntimeError: the model was down"
     _pass(db, settings, now=start + timedelta(minutes=30))
