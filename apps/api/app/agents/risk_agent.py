@@ -504,6 +504,7 @@ def run(
     settings: Settings,
     save: bool,
     actor_user_id: int | None,
+    trigger: str = "human",
 ) -> RunResult:
     """One run: one Claude call, checked in code, one audit row. With `save`, each kept
     proposal becomes a `proposed` risk with its own audit row. The caller commits; on failure,
@@ -518,7 +519,7 @@ def run(
             db,
             project.id,
             agent=AGENT,
-            trigger="human",
+            trigger=trigger,
             subject_type=AUDIT_SUBJECT,
             subject_id=str(project.id),
             version=1,

@@ -488,6 +488,7 @@ def run(
     settings: Settings,
     save_it: bool,
     actor_user_id: int | None,
+    trigger: str = "human",
 ) -> RunResult:
     """One run: one Claude call, checked in code, one audit row. With `save_it`, the kept
     sections are saved as unreviewed agent drafts where no person has edited or confirmed one.
@@ -502,7 +503,7 @@ def run(
             db,
             proposal,
             agent=AGENT,
-            trigger="human",
+            trigger=trigger,
             subject_type=AUDIT_SUBJECT,
             subject_id=str(proposal.id),
             status=status,

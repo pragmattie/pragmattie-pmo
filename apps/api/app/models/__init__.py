@@ -13,6 +13,7 @@ from app.models.intake import (
     ValueCase,
     ValueCaseBenefit,
 )
+from app.models.orchestrator import InboxItem, OrchestratorAction, OrchestratorLease
 from app.models.plan import PlanDeliverable, PlanEstimateLine, PlanMilestone, ProjectPlan
 from app.models.planning import ProjectAssumption, ProjectBrief, ProjectStakeholder
 from app.models.portfolio import Client, Project
@@ -25,7 +26,10 @@ __all__ = [
     "ChangeRequest",
     "Client",
     "GateDecision",
+    "InboxItem",
     "Money",
+    "OrchestratorAction",
+    "OrchestratorLease",
     "PlanDeliverable",
     "PlanEstimateLine",
     "PlanMilestone",

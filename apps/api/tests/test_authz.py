@@ -35,6 +35,7 @@ from app.models import (
     ChangeRequest,
     Client,
     GateDecision,
+    OrchestratorAction,
     PlanDeliverable,
     PlanEstimateLine,
     PlanMilestone,
@@ -83,7 +84,13 @@ def _target(db: Session, role: str = "project_manager", email: str = "target@pmo
 def test_permissions_table_is_exactly_the_agreed_one():
     a = Action
     assert PERMISSIONS == {
-        Role.ADMIN: {a.USER_ADMIN, a.AUDIT_READ, a.PROJECT_READ, a.STANDARDS_READ},
+        Role.ADMIN: {
+            a.USER_ADMIN,
+            a.AUDIT_READ,
+            a.PROJECT_READ,
+            a.STANDARDS_READ,
+            a.ORCHESTRATOR_RUN,
+        },
         Role.SPONSOR: {
             a.PROJECT_READ,
             a.INTAKE_DECIDE,
@@ -123,6 +130,7 @@ def test_roles_and_actions_are_the_spec_values():
         "report:publish",
         "proposal:approve",
         "standards:read",
+        "orchestrator:run",
     }
 
 
@@ -589,6 +597,32 @@ def _change_sample(suffix: str = "", body: dict | None = None, *, status: str | 
     return sample
 
 
+HOLD = "/api/v1/orchestrator/actions/{action_id}/hold"
+
+
+def _hold_sample(_target: int) -> dict:
+    """A pending window action on a proposed risk, held by the project manager (its `who`)."""
+    with Session(engine) as session:
+        project_id, risk_id = _project_with_risk(status="proposed")
+        action = OrchestratorAction(
+            step="score_risk",
+            subject_type="risk",
+            subject_id=str(risk_id),
+            mode="window",
+            agent="risk_agent",
+            who="project_manager",
+            reason="the risk is proposed and not scored",
+            status="pending",
+            due_at=datetime(2030, 1, 1),
+            policy_digest="test",
+            open_key=f"score_risk:risk:{risk_id}",
+        )
+        session.add(action)
+        session.commit()
+        url = f"/api/v1/orchestrator/actions/{action.id}/hold"
+    return {"url": url, "json": {"reason": "I will score this risk myself"}}
+
+
 # Routes with path parameters or a body need a sample request that succeeds when allowed. Each
 # takes the id of a project-manager user that the caller may act on.
 SAMPLES = {
@@ -808,6 +842,9 @@ SAMPLES = {
         {"version": 1, "outcome": "reject", "reason": "Not worth it for this pilot phase"},
         status="submitted",
     ),
+    ("POST", HOLD): _hold_sample,
+    # ORCHESTRATOR_MODE is off in tests, so an allowed caller gets an empty pass, never a call.
+    ("POST", "/api/v1/orchestrator/run"): lambda _target: {"url": "/api/v1/orchestrator/run"},
     ("PATCH", "/api/v1/users/{user_id}/role"): lambda target: {
         "url": f"/api/v1/users/{target}/role",
         "json": {"role": "auditor"},
@@ -864,6 +901,8 @@ GATE_DECIDERS = {
     ("POST", "/api/v1/requests/{request_id}/gate"): {Role.SPONSOR},
     ("POST", GO_AHEAD): {Role.SPONSOR},
     ("POST", f"{CHANGE}/decide"): {Role.SPONSOR},
+    # Only the step's `who` may hold it: the project manager, for score_risk.
+    ("POST", HOLD): {Role.PROJECT_MANAGER},
 }
 
 
@@ -946,6 +985,8 @@ def test_matrix_covers_the_existing_routes():
         ("POST", f"{CHANGE}/submit"),
         ("POST", f"{CHANGE}/withdraw"),
         ("POST", f"{CHANGE}/decide"),
+        ("POST", "/api/v1/orchestrator/run"),
+        ("POST", HOLD),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -1033,6 +1074,11 @@ def test_matrix_covers_the_existing_routes():
         ("POST", f"{CHANGE}/withdraw"),
     ):
         assert by_method[(method, path)] == Action.PROJECT_WRITE
+    assert by_method[("POST", "/api/v1/orchestrator/run")] == Action.ORCHESTRATOR_RUN
+    # Any role that can be a step's `who` gets past the guard; the route checks it is this one's.
+    assert by_method[("POST", HOLD)] == frozenset(
+        {Action.PROJECT_WRITE, Action.GATE_DECIDE, Action.PROPOSAL_APPROVE, Action.RISK_ACCEPT}
+    )
     # A project manager decides a small change and a sponsor a large one: the route checks which.
     assert by_method[("POST", f"{CHANGE}/decide")] == frozenset(
         {Action.GATE_DECIDE, Action.PROJECT_WRITE}
