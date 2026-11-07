@@ -7,7 +7,7 @@ sends; sending `null` clears an optional field. Money is a JSON string with 2 de
 
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -20,6 +20,7 @@ from pydantic import (
 
 from app.models.intake import LONG_TEXT_MAX
 from app.models.plan import CONTINGENCY_MAX, CONTRIBUTORS_MAX, DESCRIPTION_MAX, NAME_MAX
+from app.schemas.audit import CostStr
 from app.schemas.common import MoneyStr
 
 LongText = Annotated[
@@ -39,6 +40,8 @@ ReportPeriod = Literal["weekly", "fortnightly", "monthly"]
 Category = Literal["people", "software", "services", "other"]
 BudgetFit = Literal["within", "below", "above", "no_range"]
 Version = Annotated[int, Field(ge=1)]
+# Who wrote an item: the planner agent, or a person (who added or edited it).
+Source = Literal["agent", "person"]
 # A computed sum can pass the 12 digits a stored amount has, so the total is not capped.
 Total = Annotated[
     Decimal,
@@ -134,6 +137,7 @@ class MilestoneOut(BaseModel):
     owner_active: bool = False
     description: str | None
     contributors: str | None
+    source: Source
     version: int
 
 
@@ -163,6 +167,7 @@ class DeliverableOut(BaseModel):
     description: str | None
     milestone_id: int | None
     milestone_name: str | None = None
+    source: Source
     version: int
 
 
@@ -191,4 +196,43 @@ class EstimateLineOut(BaseModel):
     description: str
     category: str
     amount: MoneyStr
+    source: Source
     version: int
+
+
+class PlanDraftDropped(BaseModel):
+    part: str
+    reason: str
+
+
+class PlanDraftChanged(BaseModel):
+    part: str
+    what: str
+    # "from" is a keyword, so the field is `before` and serialised as "from".
+    before: str = Field(alias="from", serialization_alias="from")
+    after: str = Field(alias="to", serialization_alias="to")
+
+
+class PlanDraftResult(BaseModel):
+    """The answer of `POST /projects/{id}/plan/draft` (item 6.5).
+
+    A dry run has `request` (the exact request that would be sent) and `cost_ceiling_usd` (the
+    most it can cost, rounded up to the cent), and nothing is called or saved. A real run has the
+    draft as code kept it (`draft`), what code dropped or changed, what it saved, removed and
+    kept (`saved`; in `shadow` what it would), its tokens and cost and its audit row."""
+
+    mode: Literal["shadow", "enforce"]
+    dry_run: bool
+    model: str
+    prompt_version: str
+    request: dict[str, Any] | None = None
+    cost_ceiling_usd: MoneyStr | None = None
+    draft: dict[str, Any] | None = None
+    dropped: list[PlanDraftDropped] = []
+    changed: list[PlanDraftChanged] = []
+    saved: dict[str, Any] | None = None
+    plan_version: int | None = None
+    audit_id: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: CostStr | None = None

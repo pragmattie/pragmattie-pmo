@@ -4,6 +4,7 @@ import { ref, watch } from 'vue'
 import {
   budgetFitText,
   type Deliverable,
+  DRAFTED_BY_AGENT,
   type EstimateLine,
   type Milestone,
   ownerText,
@@ -16,7 +17,7 @@ import { budgetText, label } from '../lib/projects'
 // The project's plan (item 5.1), read only: what is missing first, then scope and deliverables,
 // milestones in date order with who does what, the estimate and its total against the brief's
 // budget range, and the reporting plan. The API computes the total and the missing list. Every
-// page of each list is read.
+// page of each list is read. An item the planner agent drafted (item 6.5) is marked as such.
 const props = defineProps<{ projectId: number }>()
 
 const plan = ref<Plan | null>(null)
@@ -96,7 +97,10 @@ watch(() => props.projectId, load, { immediate: true })
         </thead>
         <tbody>
           <tr v-for="item in deliverables" :key="item.id" data-test="plan-deliverable">
-            <td>{{ item.name }}</td>
+            <td>
+              {{ item.name }}
+              <div v-if="item.source === 'agent'" class="text-caption text-medium-emphasis" data-test="plan-agent-drafted">{{ DRAFTED_BY_AGENT }}</div>
+            </td>
             <td>{{ item.description ?? '' }}</td>
             <td>{{ item.milestone_name ?? 'No milestone' }}</td>
           </tr>
@@ -120,6 +124,7 @@ watch(() => props.projectId, load, { immediate: true })
             <td>
               {{ item.name }}
               <div v-if="item.description" class="text-caption">{{ item.description }}</div>
+              <div v-if="item.source === 'agent'" class="text-caption text-medium-emphasis" data-test="plan-agent-drafted">{{ DRAFTED_BY_AGENT }}</div>
             </td>
             <td>{{ ownerText(item) }}</td>
             <td>{{ item.contributors ?? '' }}</td>
@@ -131,7 +136,10 @@ watch(() => props.projectId, load, { immediate: true })
       <v-table density="compact" class="mb-4">
         <tbody>
           <tr v-for="item in lines" :key="item.id" data-test="plan-line">
-            <td>{{ item.description }}</td>
+            <td>
+              {{ item.description }}
+              <div v-if="item.source === 'agent'" class="text-caption text-medium-emphasis" data-test="plan-agent-drafted">{{ DRAFTED_BY_AGENT }}</div>
+            </td>
             <td>{{ label(item.category) }}</td>
             <td class="text-right">{{ item.amount }}</td>
           </tr>

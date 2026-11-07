@@ -35,7 +35,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.agents import intake_agent, proposal_agent, risk_agent
+from app.agents import intake_agent, planner_agent, proposal_agent, risk_agent
 from app.audit import next_attempt, record_decision
 from app.autonomy import (
     AGENT,
@@ -228,7 +228,7 @@ def _planning_steps(db: Session, project: Project, make: Callable) -> list[NextS
     steps = []
     plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
     gaps = ["the project has no plan"] if plan is None else missing(db, plan)
-    if gaps and not _agent_ran(db, "planner_agent", PROJECT, project.id):
+    if gaps and not _agent_ran(db, planner_agent.AGENT, planner_agent.AUDIT_SUBJECT, project.id):
         reason = "the plan is incomplete: " + "; ".join(gaps)
         steps.append(make("draft_plan", PROJECT, project.id, reason[:REASON_MAX]))
     if not _agent_ran(db, risk_agent.AGENT, risk_agent.AUDIT_SUBJECT, project.id):
@@ -415,6 +415,19 @@ def _propose_risks(ctx: Context, project_id: int) -> int:
     return result.audit_id
 
 
+def _draft_plan(ctx: Context, project_id: int) -> int:
+    result = planner_agent.run(
+        ctx.db,
+        ctx.client,
+        ctx.db.get(Project, project_id),
+        settings=ctx.settings,
+        save_it=True,
+        actor_user_id=None,
+        trigger=TRIGGER,
+    )
+    return result.audit_id
+
+
 def _draft_proposal(ctx: Context, proposal_id: int) -> int:
     proposal = ctx.db.get(ProjectProposal, proposal_id)
     plan = ctx.db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == proposal.project_id))
@@ -436,6 +449,7 @@ def _draft_proposal(ctx: Context, proposal_id: int) -> int:
 ACTIONS: dict[str, StepAction] = {
     "draft_value_case": StepAction(_draft_request),
     "draft_readiness": StepAction(_draft_request),
+    "draft_plan": StepAction(_draft_plan),
     "propose_risks": StepAction(_propose_risks),
     "draft_proposal": StepAction(_draft_proposal),
 }

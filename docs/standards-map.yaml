@@ -160,6 +160,10 @@ features:
     title: The portfolio board
     rules: [R1, R5, R12]
     notes: Read-only cards by stage, computed fresh; what each waits on is the orchestrator's next step, agent or person, simulated labelled; a person decides on the linked page.
+  - id: P6-planner-agent
+    title: The planner agent
+    rules: [R1, R2, R4, R5]
+    notes: Drafts milestones, deliverables, estimate lines and reporting as agent items; code sets owners, dates, caps and the top budget; a person's items stay; every run audited.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports

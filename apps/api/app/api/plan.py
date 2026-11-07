@@ -21,16 +21,29 @@ with the values before and after.
 
 Deleting a milestone leaves its deliverables without a milestone (they then show in `missing`);
 its audit row lists them.
+
+Each milestone, deliverable and estimate line has a `source`: `agent` for the planner agent's
+draft, `person` for anything a person added or edited. An edit through these routes marks the
+item `person`, so a re-draft never replaces it.
+
+`POST /projects/{id}/plan/draft` (`project:write`, item 6.5) runs the planner agent
+(`app.agents.planner_agent`) on a project in planning, gated by `AGENT_MODE`: `off` refuses (409,
+audited) and calls nothing; `shadow` returns the draft and saves nothing; `enforce` replaces the
+agent's own items with the draft and fills the plan's empty fields, in one commit. With
+`?dry_run=true` it returns the exact request and a cost ceiling and calls nothing.
 """
 
+import logging
+from decimal import ROUND_UP, Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
+from app.agents import planner_agent, risk_agent
 from app.api.intake import _names
 from app.api.projects import (
     AUDIT_AGENT,
@@ -43,7 +56,8 @@ from app.api.projects import (
     _project,
     _snapshot,
 )
-from app.audit import record_decision
+from app.audit import record_decision, record_refusal
+from app.config import get_settings
 from app.models import (
     PlanDeliverable,
     PlanEstimateLine,
@@ -54,7 +68,7 @@ from app.models import (
     User,
 )
 from app.models.base import utcnow
-from app.models.plan import DUE_DAY_MAX
+from app.models.plan import DUE_DAY_MAX, PERSON_SOURCE
 from app.models.portfolio import CANCELLED
 from app.plans import budget_fit, compute_total, missing, subtotal
 from app.projects import STAGE
@@ -69,9 +83,12 @@ from app.schemas.plan import (
     MilestoneCreate,
     MilestoneOut,
     MilestoneUpdate,
+    PlanDraftResult,
     PlanOut,
     PlanUpdate,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["plans"])
 
@@ -88,6 +105,8 @@ CANCELLED_PROJECT = "this project is cancelled, so its plan can't change"
 BAD_OWNER = "owner_user_id must be an active user"
 BAD_MILESTONE = "milestone_id must be a milestone of this plan"
 PERIOD_NEEDS_DAY = "changing report_period needs a report_due_day that fits it in the same change"
+AGENT_OFF = "the planner agent is off (AGENT_MODE=off); a person can write the plan by hand"
+AGENT_FAILED = "the planner agent could not finish; the failed run is recorded in the audit trail"
 DAY_NEEDS_PERIOD = "report_due_day needs a report_period"
 BAD_DUE_DAY = (
     "report_due_day must be 1 to 7 (Monday is 1) for weekly and fortnightly reports, "
@@ -95,9 +114,16 @@ BAD_DUE_DAY = (
 )
 
 PLAN_FIELDS = ("scope_in", "scope_out", "contingency_pct", "report_period", "report_due_day")
-MILESTONE_FIELDS = ("name", "target_date", "owner_user_id", "description", "contributors")
-DELIVERABLE_FIELDS = ("name", "description", "milestone_id")
-LINE_FIELDS = ("description", "category", "amount")
+MILESTONE_FIELDS = (
+    "name",
+    "target_date",
+    "owner_user_id",
+    "description",
+    "contributors",
+    "source",
+)
+DELIVERABLE_FIELDS = ("name", "description", "milestone_id", "source")
+LINE_FIELDS = ("description", "category", "amount", "source")
 
 
 def _invalid(message: str) -> HTTPException:
@@ -311,6 +337,8 @@ def _update(
     before = _snapshot(row, fields)
     if not _apply(row, changes):
         return
+    # A person's edit makes the item theirs: a re-draft by the planner agent keeps it.
+    row.source = PERSON_SOURCE
     _save(db)
     _touch(db, plan)
     _record(
@@ -399,7 +427,9 @@ def create_milestone(project_id: int, body: MilestoneCreate, user: Writer, db: D
     plan = _writable_plan(db, project_id)
     _check_version(plan, body.version)
     _check_user(db, body.owner_user_id, BAD_OWNER)
-    row = PlanMilestone(plan_id=plan.id, **body.model_dump(exclude={"version"}))
+    row = PlanMilestone(
+        plan_id=plan.id, source=PERSON_SOURCE, **body.model_dump(exclude={"version"})
+    )
     _create(db, plan, row, "plan_milestone", MILESTONE_FIELDS, user)
     return _milestones_out(db, [row])[0]
 
@@ -502,7 +532,9 @@ def create_deliverable(
     plan = _writable_plan(db, project_id)
     _check_version(plan, body.version)
     _check_milestone(db, plan, body.milestone_id)
-    row = PlanDeliverable(plan_id=plan.id, **body.model_dump(exclude={"version"}))
+    row = PlanDeliverable(
+        plan_id=plan.id, source=PERSON_SOURCE, **body.model_dump(exclude={"version"})
+    )
     _create(db, plan, row, "plan_deliverable", DELIVERABLE_FIELDS, user)
     return _deliverables_out(db, [row])[0]
 
@@ -563,7 +595,9 @@ def create_estimate_line(
 ) -> EstimateLineOut:
     plan = _writable_plan(db, project_id)
     _check_version(plan, body.version)
-    row = PlanEstimateLine(plan_id=plan.id, **body.model_dump(exclude={"version"}))
+    row = PlanEstimateLine(
+        plan_id=plan.id, source=PERSON_SOURCE, **body.model_dump(exclude={"version"})
+    )
     _create(db, plan, row, "plan_estimate_line", LINE_FIELDS, user)
     return EstimateLineOut.model_validate(row)
 
@@ -594,3 +628,90 @@ def delete_estimate_line(
     _check_version(row, version)
     _delete(db, plan, row, version, "plan_estimate_line", LINE_FIELDS, user)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- The planner agent (item 6.5)
+
+
+def get_claude_client() -> risk_agent.ClaudeClient:
+    """The planner agent's Claude client; tests replace it through `dependency_overrides`."""
+    return risk_agent.AnthropicClient(get_settings())
+
+
+def _refuse_draft(db: Session, project: Project, user: User, refusal: str, detail: str) -> None:
+    """Record a refused draft request, commit it, and answer 409."""
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    record_refusal(
+        db,
+        agent=AUDIT_AGENT,
+        subject_type="project_plan" if plan is not None else "project",
+        subject_id=str(plan.id if plan is not None else project.id),
+        version=plan.version if plan is not None else project.version,
+        actor_user_id=user.id,
+        output=None,
+        action_taken={"action": "draft_plan", "refusal": refusal, "project_id": project.id},
+    )
+    db.commit()
+    raise HTTPException(status.HTTP_409_CONFLICT, detail)
+
+
+@router.post("/{project_id}/plan/draft", response_model=PlanDraftResult)
+def draft_plan(
+    project_id: int,
+    user: Writer,
+    db: Db,
+    claude: Annotated[risk_agent.ClaudeClient, Depends(get_claude_client)],
+    dry_run: bool = False,
+) -> PlanDraftResult:
+    settings = get_settings()
+    project = _project(db, project_id)
+    if project.status == CANCELLED:
+        _refuse_draft(db, project, user, "cancelled", CANCELLED_PROJECT)
+    if project.stage != STAGE:
+        _refuse_draft(db, project, user, "not_planning", NOT_PLANNING)
+    if settings.agent_mode == "off":
+        _refuse_draft(db, project, user, "agent_off", AGENT_OFF)
+    common = {
+        "mode": settings.agent_mode,
+        "dry_run": dry_run,
+        "model": settings.planner_agent_model,
+        "prompt_version": planner_agent.PROMPT_VERSION,
+    }
+    if dry_run:
+        plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+        data = planner_agent.request_data(db, project, plan, utcnow().date())
+        api_request = planner_agent.build_request(data, settings)
+        ceiling = planner_agent.cost_ceiling(api_request, settings)
+        return PlanDraftResult(
+            **common,
+            request=api_request,
+            cost_ceiling_usd=ceiling.quantize(Decimal("0.01"), rounding=ROUND_UP),
+        )
+    try:
+        result = planner_agent.run(
+            db,
+            claude,
+            project,
+            settings=settings,
+            save_it=settings.agent_mode == "enforce",
+            actor_user_id=user.id,
+        )
+    except risk_agent.AgentError:
+        logger.exception("planner agent run failed for project %s", project_id)
+        db.commit()
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, AGENT_FAILED) from None
+    _commit(db)
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    draft = planner_agent.draft_json(result.checked)
+    return PlanDraftResult(
+        **common,
+        draft={k: v for k, v in draft.items() if k not in ("dropped", "changed")},
+        dropped=result.checked.dropped,
+        changed=result.checked.changed,
+        saved=result.saved.as_dict(),
+        plan_version=plan.version if plan is not None else None,
+        audit_id=result.audit_id,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cost_usd=result.cost_usd,
+    )

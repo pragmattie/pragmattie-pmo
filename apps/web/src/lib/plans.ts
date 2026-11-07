@@ -7,6 +7,11 @@ import { call } from './risks'
 export type ReportPeriod = 'weekly' | 'fortnightly' | 'monthly'
 export type BudgetFit = 'within' | 'below' | 'above' | 'no_range'
 export type EstimateCategory = 'people' | 'software' | 'services' | 'other'
+// Who wrote a plan item (item 6.5): the planner agent's draft, or a person who added or edited it.
+export type ItemSource = 'agent' | 'person'
+
+// How the plan marks an item the planner agent drafted, so a person can tell it apart.
+export const DRAFTED_BY_AGENT = 'Drafted by the planner agent'
 
 export interface Plan {
   id: number
@@ -39,6 +44,7 @@ export interface Milestone {
   owner_active: boolean
   description: string | null
   contributors: string | null
+  source: ItemSource
   version: number
 }
 
@@ -49,6 +55,7 @@ export interface Deliverable {
   description: string | null
   milestone_id: number | null
   milestone_name: string | null
+  source: ItemSource
   version: number
 }
 
@@ -58,6 +65,7 @@ export interface EstimateLine {
   description: string
   category: EstimateCategory
   amount: string
+  source: ItemSource
   version: number
 }
 

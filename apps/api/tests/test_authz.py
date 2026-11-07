@@ -810,6 +810,7 @@ SAMPLES = {
     ("POST", f"{PROPOSAL}/withdraw"): _proposal_sample("/withdraw", body=DECISION),
     ("GET", f"{PROPOSAL}/versions"): _proposal_sample("/versions", "submitted"),
     ("POST", f"{PROPOSAL}/draft"): _proposal_sample("/draft?dry_run=true"),
+    ("POST", f"{PLAN}/draft"): _plan_sample("/draft?dry_run=true"),
     ("POST", f"{PROPOSAL}/sections/{{section}}/confirm"): _proposal_sample(
         "/sections/summary/confirm", body={"version": 1}, agent_summary=True
     ),
@@ -887,12 +888,13 @@ DELETED = {
 }
 
 
-# Allowed requests refused for another reason: the risk, intake and proposal agents are off in
-# tests.
+# Allowed requests refused for another reason: the risk, intake, proposal and planner agents are
+# off in tests.
 REFUSED = {
     ("POST", "/api/v1/projects/{project_id}/risks/suggest"),
     ("POST", "/api/v1/requests/{request_id}/draft"),
     ("POST", f"{PROPOSAL}/draft"),
+    ("POST", f"{PLAN}/draft"),
 }
 
 # Routes that also need a role the gates policy lists: other roles holding the action get 403.
@@ -990,6 +992,7 @@ def test_matrix_covers_the_existing_routes():
         ("GET", "/api/v1/inbox"),
         ("GET", "/api/v1/inbox/count"),
         ("GET", "/api/v1/board"),
+        ("POST", f"{PLAN}/draft"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ

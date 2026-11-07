@@ -181,6 +181,76 @@ valid JSON, misses a section or stopped early) is a 502, saves nothing and recor
 run or a refused run calls nothing; a refused run is recorded as a person's refused attempt (agent
 `proposal`).
 
+## Planner agent
+
+Code: `apps/api/app/agents/planner_agent.py`. Run by `POST /api/v1/projects/{id}/plan/draft`
+(`project:write`, a project in planning that isn't cancelled), and by the orchestrator's
+`draft_plan` step, which calls the same code.
+
+**What it reads.** One project's brief (purpose, objectives, scope in and out, wanted-by date,
+budget range), its assumptions that aren't known to be wrong, its stakeholders' roles (never their
+names or email addresses), its open risks' titles, today's date, and the plan as a re-draft would
+leave it: its scope, contingency and reporting plan, and the milestones, deliverables and estimate
+lines it keeps. All of it goes to the model inside one `<project>` data block that the prompt
+marks as data, not instructions; it is JSON-encoded and `<`, `>` and `&` are escaped so it can't
+close the block.
+
+**What it proposes.** Scope in and out text, 2 to 6 milestones with target dates, deliverables
+each tied to a milestone (one of its own, `draft:N`, or one the plan keeps, by its `ref`),
+estimate lines (description, category, amount) and a reporting period and due day.
+
+**What it may write.** Only in `AGENT_MODE=enforce`. Its milestones, deliverables and estimate
+lines are saved with `source = agent`, and the plan page marks each one "Drafted by the planner
+agent". The plan's scope in, scope out and reporting plan are filled only when empty; the audit
+row names which were filled and which were left alone. A re-draft replaces only the agent's own
+items: anything a person added or edited is `source = person` (an edit through the plan routes
+marks it so) and stays, items that existed before the agent are a person's, and an agent milestone
+that a person's deliverable is tied to is kept as it is. Replacing the old items and saving the
+new draft happen in one commit, with the run's audit row, so a failure leaves the old plan as it
+was. In `shadow` it saves nothing and the answer says what it would have done.
+
+**Limits, enforced in code.**
+
+- Anything outside the schema is dropped and recorded: an unknown key (an `owner`, say), an item
+  that isn't an object or misses a key, text that is empty or too long, an unknown category, an
+  amount that isn't a positive decimal string, a deliverable tied to no known milestone, a period
+  and due day that don't fit together.
+- Dates: a milestone after the brief's wanted-by date is moved to it, and the move is noted; a
+  milestone dated today or earlier is dropped, with the deliverables tied to it, and noted. If
+  fewer than 2 milestones are left, the run fails: it saves nothing and records why, so the
+  orchestrator retries and then hands the step to a person.
+- Money: amounts are rounded to cents (noted). The plan's total, computed as the plan page
+  computes it (the lines plus the contingency), must stay at or under the brief's top budget. If
+  it wouldn't, the agent's largest lines are brought down to a common level, to the cent, until
+  it fits, and each change is noted; a person's lines are never changed. If a person's lines alone
+  leave no room, no agent lines are saved, and that is noted.
+- Owners: each milestone's owner is the project's project manager, set by code; the model has no
+  owner field.
+- At most 6 milestones, 12 deliverables and 12 estimate lines per draft; the rest are dropped and
+  noted.
+- `PLANNER_AGENT_MAX_TOKENS` output tokens (default 8192). Cost ceiling for a dry run as for the
+  other agents, at `PLANNER_AGENT_INPUT_USD_PER_MTOK` and `PLANNER_AGENT_OUTPUT_USD_PER_MTOK`
+  (defaults $2 and $10 per million tokens), rounded up to the cent.
+
+**What it never does.** Choose a milestone owner, change a person's item, the contingency or the
+budget, or approve, submit or send anything. The plan stays a proposal until a person takes it
+through the go-ahead gate.
+
+**Modes.** `off` refuses (409, audited) and calls nothing. `shadow` calls Claude and returns the
+draft without saving it. `enforce` saves it as above. `?dry_run=true` returns the exact request
+and a cost ceiling and calls nothing. A project that isn't in planning, or is cancelled, is
+refused (409, audited).
+
+**Model.** `PLANNER_AGENT_MODEL`, default `claude-sonnet-5-5`. One call per run, with the JSON
+returned through structured outputs (a strict JSON schema); no sampling parameters are sent.
+
+**Record.** Every run that calls Claude writes one `pmo_audit` row, agent `planner_agent`, subject
+the project, success or failure: the data it read, model, prompt version, tokens, cost, the draft
+as code kept it, what code dropped or changed, and what it created, removed, kept, filled and left
+alone. A failed run (an API error, output that isn't valid JSON or misses a part, too few
+milestones, or an error while saving) is a 502, saves nothing and records the error. A refused
+run is recorded as a person's refused attempt (agent `project`).
+
 ## Orchestrator
 
 Code: `apps/api/app/orchestrator.py`. Run by `python -m app.orchestrator once` (one pass) or

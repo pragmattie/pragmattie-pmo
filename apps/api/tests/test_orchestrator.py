@@ -342,7 +342,7 @@ def test_every_step_id_comes_from_some_state(db, rules):
     assert (go_ahead.subject_type, go_ahead.waits_on) == ("project", "sponsor")
     plan = _found(steps, "draft_plan", ids["bare_project"])
     assert plan.reason == "the plan is incomplete: the project has no plan"
-    assert (plan.mode, plan.waits_on, plan.handoff) == (PERSON, "project_manager", NO_AGENT)
+    assert (plan.mode, plan.waits_on, plan.handoff) == (AGENT, "planner_agent", None)
     risks = _found(steps, "propose_risks", ids["bare_project"])
     assert (risks.mode, risks.waits_on) == (AGENT, "risk_agent")
     # The ready project's risks have been looked at, so it has no propose_risks step.
