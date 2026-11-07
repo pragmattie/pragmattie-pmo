@@ -200,6 +200,26 @@ class EstimateLineOut(BaseModel):
     version: int
 
 
+# The kinds of plan item a person can confirm, as `POST /projects/{id}/plan/confirm` names them.
+ItemKind = Literal["milestone", "deliverable", "estimate_line"]
+
+
+class PlanConfirm(PlanWrite):
+    """Confirm the planner agent's items as a person's, unchanged (item 6.6).
+
+    With `kind` and `id`, one item: `version` is that item's, as for an edit. With neither, every
+    agent item in the plan: `version` is the plan's, as for an addition."""
+
+    kind: ItemKind | None = None
+    id: int | None = None
+
+    @model_validator(mode="after")
+    def _both_or_neither(self) -> Self:
+        if (self.kind is None) != (self.id is None):
+            raise ValueError("send kind and id together, or neither to confirm every agent item")
+        return self
+
+
 class PlanDraftDropped(BaseModel):
     part: str
     reason: str

@@ -200,8 +200,9 @@ each tied to a milestone (one of its own, `draft:N`, or one the plan keeps, by i
 estimate lines (description, category, amount) and a reporting period and due day.
 
 **What it may write.** Only in `AGENT_MODE=enforce`. Its milestones, deliverables and estimate
-lines are saved with `source = agent`, and the plan page marks each one "Drafted by the planner
-agent". The plan's scope in, scope out and reporting plan are filled only when empty; the audit
+lines are saved with `source = agent`, and the plan page marks each one with an "Agent draft"
+chip until a person edits or confirms it (`POST /api/v1/projects/{id}/plan/confirm`, one item or
+all of them, audited; it marks them `person` without changing them). The plan's scope in, scope out and reporting plan are filled only when empty; the audit
 row names which were filled and which were left alone. A re-draft replaces only the agent's own
 items: anything a person added or edited is `source = person` (an edit through the plan routes
 marks it so) and stays, items that existed before the agent are a person's, and an agent milestone

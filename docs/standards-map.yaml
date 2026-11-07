@@ -164,6 +164,10 @@ features:
     title: The planner agent
     rules: [R1, R2, R4, R5]
     notes: Drafts milestones, deliverables, estimate lines and reporting as agent items; code sets owners, dates, caps and the top budget; a person's items stay; every run audited.
+  - id: P6-plan-editing
+    title: Editing the plan in the web
+    rules: [R1, R5]
+    notes: project:write edits the plan in planning through the plan routes; Confirm marks agent items a person's unchanged, one audit row naming who; read-only otherwise.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports

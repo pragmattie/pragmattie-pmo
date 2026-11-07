@@ -26,6 +26,12 @@ Each milestone, deliverable and estimate line has a `source`: `agent` for the pl
 draft, `person` for anything a person added or edited. An edit through these routes marks the
 item `person`, so a re-draft never replaces it.
 
+`POST /projects/{id}/plan/confirm` (`project:write`, item 6.6) marks the agent's items `person`
+without changing anything else in them: one item (`kind`, `id` and the item's `version`) or, with
+neither, every agent item (the plan's `version`). The same planning and version rules apply; it is
+one audit row (action `confirm`, subject the item, or the plan for all) listing what it marked.
+Confirming an item that is already a person's changes nothing.
+
 `POST /projects/{id}/plan/draft` (`project:write`, item 6.5) runs the planner agent
 (`app.agents.planner_agent`) on a project in planning, gated by `AGENT_MODE`: `off` refuses (409,
 audited) and calls nothing; `shadow` returns the draft and saves nothing; `enforce` replaces the
@@ -68,7 +74,7 @@ from app.models import (
     User,
 )
 from app.models.base import utcnow
-from app.models.plan import DUE_DAY_MAX, PERSON_SOURCE
+from app.models.plan import AGENT_SOURCE, DUE_DAY_MAX, PERSON_SOURCE
 from app.models.portfolio import CANCELLED
 from app.plans import budget_fit, compute_total, missing, subtotal
 from app.projects import STAGE
@@ -83,6 +89,7 @@ from app.schemas.plan import (
     MilestoneCreate,
     MilestoneOut,
     MilestoneUpdate,
+    PlanConfirm,
     PlanDraftResult,
     PlanOut,
     PlanUpdate,
@@ -628,6 +635,78 @@ def delete_estimate_line(
     _check_version(row, version)
     _delete(db, plan, row, version, "plan_estimate_line", LINE_FIELDS, user)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- Confirming the agent's items (item 6.6)
+
+# Each kind a person can confirm: its model, audit subject type, fields and not-found message.
+CONFIRMABLE = {
+    "milestone": (PlanMilestone, "plan_milestone", MILESTONE_FIELDS, MILESTONE_NOT_FOUND),
+    "deliverable": (PlanDeliverable, "plan_deliverable", DELIVERABLE_FIELDS, DELIVERABLE_NOT_FOUND),
+    "estimate_line": (PlanEstimateLine, "plan_estimate_line", LINE_FIELDS, LINE_NOT_FOUND),
+}
+
+
+@router.post("/{project_id}/plan/confirm", response_model=PlanOut)
+def confirm_plan_items(project_id: int, body: PlanConfirm, user: Writer, db: Db) -> PlanOut:
+    plan = _writable_plan(db, project_id)
+    if body.kind is not None and body.id is not None:
+        model, subject_type, fields, not_found = CONFIRMABLE[body.kind]
+        row = _item(db, model, plan, body.id, not_found)
+        _check_version(row, body.version)
+        if row.source != AGENT_SOURCE:
+            return _plan_out(db, plan)
+        before = _snapshot(row, fields)
+        row.source = PERSON_SOURCE
+        _save(db)
+        _touch(db, plan)
+        _record(
+            db,
+            plan=plan,
+            subject_type=subject_type,
+            subject_id=row.id,
+            version=row.version,
+            action="confirm",
+            user=user,
+            before=before,
+            after=_snapshot(row, fields),
+        )
+        _commit(db)
+        return _plan_out(db, plan)
+
+    _check_version(plan, body.version)
+    confirmed: dict[str, list[int]] = {}
+    for kind, (model, _subject, _fields, _missing) in CONFIRMABLE.items():
+        rows = list(
+            db.scalars(
+                select(model)
+                .where(model.plan_id == plan.id, model.source == AGENT_SOURCE)
+                .order_by(model.id)
+                .with_for_update()
+            )
+        )
+        for row in rows:
+            row.source = PERSON_SOURCE
+        if rows:
+            confirmed[kind] = [row.id for row in rows]
+    if not confirmed:
+        return _plan_out(db, plan)
+    _save(db)
+    _touch(db, plan)
+    _record(
+        db,
+        plan=plan,
+        subject_type="project_plan",
+        subject_id=plan.id,
+        version=plan.version,
+        action="confirm",
+        user=user,
+        before={"source": AGENT_SOURCE},
+        after={"source": PERSON_SOURCE},
+        confirmed=confirmed,
+    )
+    _commit(db)
+    return _plan_out(db, plan)
 
 
 # --- The planner agent (item 6.5)
