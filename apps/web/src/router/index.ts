@@ -5,6 +5,7 @@ import { setUnauthorizedHandler } from '../lib/api'
 import { NAV_ITEMS } from '../lib/nav'
 import { safeRedirect } from '../lib/redirect'
 import { useAuthStore } from '../stores/auth'
+import BoardView from '../views/BoardView.vue'
 import HomeView from '../views/HomeView.vue'
 import InboxView from '../views/InboxView.vue'
 import IntakeView from '../views/IntakeView.vue'
@@ -18,6 +19,7 @@ import RisksView from '../views/RisksView.vue'
 // Menu pages that have a real view; the rest show a placeholder.
 const VIEWS: Record<string, Component> = {
   inbox: InboxView,
+  board: BoardView,
   projects: ProjectView,
   intake: IntakeView,
   risks: RisksView,

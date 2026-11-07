@@ -156,6 +156,10 @@ features:
     title: The decision inbox
     rules: [R1, R2, R3]
     notes: Lists each decision waiting on a person, with facts and a coded recommendation; decided through existing routes; window actions can be held.
+  - id: P6-board
+    title: The portfolio board
+    rules: [R1, R5, R12]
+    notes: Read-only cards by stage, computed fresh; what each waits on is the orchestrator's next step, agent or person, simulated labelled; a person decides on the linked page.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports

@@ -989,6 +989,7 @@ def test_matrix_covers_the_existing_routes():
         ("POST", HOLD),
         ("GET", "/api/v1/inbox"),
         ("GET", "/api/v1/inbox/count"),
+        ("GET", "/api/v1/board"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -1080,6 +1081,8 @@ def test_matrix_covers_the_existing_routes():
     # Every role reads its own inbox; an admin's or auditor's is always empty.
     assert by_method[("GET", "/api/v1/inbox")] == Action.PROJECT_READ
     assert by_method[("GET", "/api/v1/inbox/count")] == Action.PROJECT_READ
+    # Every role that reads projects sees the whole board.
+    assert by_method[("GET", "/api/v1/board")] == Action.PROJECT_READ
     # Any role that can be a step's `who` gets past the guard; the route checks it is this one's.
     assert by_method[("POST", HOLD)] == frozenset(
         {Action.PROJECT_WRITE, Action.GATE_DECIDE, Action.PROPOSAL_APPROVE, Action.RISK_ACCEPT}

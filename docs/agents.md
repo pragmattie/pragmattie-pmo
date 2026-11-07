@@ -301,3 +301,35 @@ a proposal's included, refreshes the list and the count at once. A window action
 "happens at HH:MM unless you hold it", and only the step's role gets the Hold button, which calls
 the orchestrator's hold route. The menu's count refreshes every 15 seconds while the tab is
 visible, and at once when it becomes visible again.
+
+## Portfolio board
+
+Code: `apps/api/app/board.py`, route `GET /api/v1/board` (`project:read`), page **Board** in the
+web. Like the inbox it is not an agent, calls no model and decides nothing: every card links to
+the request's or project's page, where a person acts.
+
+**Columns.** Requests (draft and submitted requests, and any project still at `intake`), Approval
+gate (a submitted request whose approval gate checks are all met), Planning, Go-ahead gate (a
+planning project whose next steps include its gate, which the orchestrator gives only when every
+go-ahead check is met), Delivery, Closure, Closed. An approved request is shown as the project
+its approval made. Declined and withdrawn requests and cancelled projects are hidden unless
+`show_stopped=true`; then they sit in their stage's column, marked stopped, and count in no
+value, risk or decision total.
+
+**What a card waits on.** The orchestrator's `next_steps` for the request, or for the project and
+its risks, proposals and change requests, read on each request: "Agent drafting the plan" (an
+agent step), "Agent will submit the proposal at 14:20 UTC unless held" (a window step; the time
+appears once a pass has started the window), "Waiting on the sponsor: go-ahead gate" (a person
+step). An agent step a person held, or whose retries are used up, has an open inbox item and
+waits on a person. A card a person holds has a solid gold edge; one an agent holds a dashed teal
+edge. A step the simulated client takes is labelled simulated.
+
+**Money and the summary.** A plan total is the estimate lines plus contingency, computed in code
+as on the plan page, against the brief's top budget (a request shows its own top budget). The
+summary bar counts each column and adds up plan totals in planning (both planning columns) and in
+delivery, open risks in every band above the lowest (Medium and High), and the steps waiting on a
+person. Filters: client, project manager, waiting on a person, waiting on an agent. A card waiting
+on both a person and an agent is person-held, and the waiting filter follows who holds the card,
+so it shows under "waiting on a person" only. The page refreshes every 15 seconds and briefly
+highlights a card that changed column or waiting state; a response asked for before the latest
+request is dropped, so an old filter's board never comes back.
