@@ -102,6 +102,8 @@ AGENT_ALREADY_RAN = "an agent already did this step, but it is still open"
 NO_LONGER_NEEDED = "the step is no longer needed"
 AGENT_BACK = "agent available again"
 NOT_APPLIED = "a person held the action during the agent call, so its result was not applied"
+LEASE_LOST = "another pass took over the lease during the agent call, so its result was not applied"
+LEASE_LOST_BEFORE = "another pass took over the lease, so this pass stopped before the agent call"
 PASS_CAP = "waiting for the next pass: this pass reached its cap of {n} agent calls"
 DAY_CAP = "waiting for the next UTC day: today's agent runs reached the cap of {cap} US dollars"
 
@@ -504,6 +506,16 @@ def _take_lease(db: Session, holder: str, now: datetime) -> bool:
     return True
 
 
+def _renew_lease(db: Session, holder: str, now: datetime) -> bool:
+    """Lock the lease and, while this pass still holds it, extend it from `now`. False when
+    another pass has taken it over. The caller commits, together with what it guards."""
+    lease = db.get(OrchestratorLease, LEASE_NAME, with_for_update=True, populate_existing=True)
+    if lease is None or lease.holder != holder:
+        return False
+    lease.expires_at = max(lease.expires_at, now + LEASE_TTL)
+    return True
+
+
 def _release_lease(db: Session, holder: str) -> None:
     db.rollback()
     lease = db.get(OrchestratorLease, LEASE_NAME, with_for_update=True, populate_existing=True)
@@ -513,7 +525,8 @@ def _release_lease(db: Session, holder: str) -> None:
 
 
 def _last_shadow(db: Session, step: NextStep) -> dict[str, Any] | None:
-    """The signals of the newest shadow row for this step and subject."""
+    """The signals of the newest shadow row for this step and subject. Only shadow rows count:
+    an enforce pass's `skipped` row (a step waiting for a cap) is not one."""
     stmt = (
         select(AuditDecision.signals)
         .where(
@@ -525,7 +538,9 @@ def _last_shadow(db: Session, step: NextStep) -> dict[str, Any] | None:
         .order_by(AuditDecision.id.desc())
     )
     for signals in db.scalars(stmt):
-        if isinstance(signals, dict) and signals.get("step") == step.step:
+        if not isinstance(signals, dict) or signals.get("orchestrator_mode") != "shadow":
+            continue
+        if signals.get("step") == step.step:
             return signals
     return None
 
@@ -563,6 +578,7 @@ class _Pass:
         policy: AutonomyPolicy,
         now: datetime,
         report: PassReport,
+        holder: str,
     ):
         self.db = db
         self.settings = settings
@@ -570,7 +586,10 @@ class _Pass:
         self.policy = policy
         self.now = now
         self.report = report
+        self.holder = holder
         self.calls = 0
+        # Set once another pass takes over the lease: this pass then stops.
+        self.lost_lease = False
 
     def outcome(self, step: NextStep, outcome: str, detail: str) -> None:
         self.report.outcomes.append(
@@ -687,6 +706,13 @@ class _Pass:
         action = self.db.get(OrchestratorAction, action_id)
         self.db.refresh(action, with_for_update=True)
         return action
+
+    def keep_lease(self) -> bool:
+        """Renew the pass's lease (locked until the caller commits), or note that it is lost."""
+        if _renew_lease(self.db, self.holder, max(self.now, utcnow())):
+            return True
+        self.lost_lease = True
+        return False
 
     # The caps
 
@@ -805,11 +831,24 @@ class _Pass:
                     self.db.rollback()
                 self.outcome(step, "waiting", wait)
                 return
+        # Renew the lease before the call, so a long pass never runs out of it; if another pass
+        # has taken it over, that pass does the step and this one stops.
+        action_id = action.id
+        if not self.keep_lease():
+            self.db.rollback()
+            self.audit(
+                step,
+                "skipped",
+                {"action": "run", "action_id": action_id, "reason": LEASE_LOST_BEFORE},
+            )
+            self.db.commit()
+            self.outcome(step, "skipped", LEASE_LOST_BEFORE)
+            return
+        if step_action.uses_claude:
             self.calls += 1
             self.report.agent_calls += 1
         # Release the action's row lock before the agent call (up to 120 seconds), so a person
         # can hold the action meanwhile without waiting for it. The row is re-read afterwards.
-        action_id = action.id
         self.db.commit()
         context = Context(self.db, self.settings, self.client)
         try:
@@ -827,6 +866,10 @@ class _Pass:
         if action.status != "pending":
             self.not_applied(step, action, agent_audit_id)
             return
+        if not self.keep_lease():
+            # Another pass now runs the steps; the action stays pending for it.
+            self.not_applied(step, action, agent_audit_id, LEASE_LOST)
+            return
         action.status = "done"
         action.open_key = None
         action.wait_reason = None
@@ -841,11 +884,16 @@ class _Pass:
         self.outcome(step, "done", f"the {action.agent} ran")
 
     def not_applied(
-        self, step: NextStep, action: OrchestratorAction, agent_audit_id: int | None
+        self,
+        step: NextStep,
+        action: OrchestratorAction,
+        agent_audit_id: int | None,
+        reason: str = NOT_APPLIED,
     ) -> None:
-        """A person held the action while its agent ran. The hold stands: the agent's changes
-        are rolled back, and its run is recorded again as `skipped`, not applied, keeping its
-        model, tokens and cost (so the daily cap still counts it)."""
+        """A person held the action while its agent ran (or another pass took over the lease).
+        The hold stands: the agent's changes are rolled back, and its run is recorded again as
+        `skipped`, not applied, keeping its model, tokens and cost (so the daily cap still
+        counts it)."""
         status, action_id = action.status, action.id
         kept = None
         run = self.db.get(AuditDecision, agent_audit_id) if agent_audit_id is not None else None
@@ -871,7 +919,7 @@ class _Pass:
             kept["action_taken"] = {
                 **(run.action_taken or {}),
                 "applied": False,
-                "not_applied_reason": NOT_APPLIED,
+                "not_applied_reason": reason,
             }
         self.db.rollback()
         run_id = None
@@ -886,11 +934,11 @@ class _Pass:
                 "agent_audit_id": run_id,
                 "applied": False,
                 "action_status": status,
-                "reason": NOT_APPLIED,
+                "reason": reason,
             },
         )
         self.db.commit()
-        self.outcome(step, "held", NOT_APPLIED)
+        self.outcome(step, "held" if reason == NOT_APPLIED else "skipped", reason)
 
     def failed(
         self, step: NextStep, action_id: int, error: str, agent_audit_id: int | None
@@ -969,9 +1017,11 @@ def run_pass(
         if mode == "shadow":
             _shadow(db, steps, rules.digest, report)
             return report
-        work = _Pass(db, settings, client, rules, now, report)
+        work = _Pass(db, settings, client, rules, now, report, holder)
         work.close_stale({step.key for step in steps})
         for step in steps:
+            if work.lost_lease:
+                break
             try:
                 work.handle(step)
             except Exception as exc:

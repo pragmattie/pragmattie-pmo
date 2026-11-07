@@ -237,11 +237,12 @@ pass records the run as not applied.
 
 **Modes.** `ORCHESTRATOR_MODE=off` (the default) does nothing. `shadow` records what it would do,
 as `skipped` audit rows, and changes nothing: a row is written when a step and subject first
-appear, and again only when the reason or route changes. `enforce` acts as above.
+appear, and again only when the reason or route changes. Only shadow rows count here, so
+switching from `enforce` to `shadow` records each step once. `enforce` acts as above.
 
 **Caps and retries, enforced in code.**
 
-- At most `ORCHESTRATOR_MAX_AGENT_CALLS` agent runs per pass (default 5).
+- At most `ORCHESTRATOR_MAX_AGENT_CALLS` agent runs per pass (default 5, and never more than 20).
 - `ORCHESTRATOR_DAILY_CAP_USD` (default 5.00): once the cost of today's (UTC) agent runs with
   `trigger = orchestrator`, summed from the audit rows, reaches it, agent steps wait for the next
   day. The pass records once per day that it stopped for the cap.
@@ -251,7 +252,10 @@ appear, and again only when the reason or route changes. `enforce` acts as above
 - An agent step that fails is retried at most 3 times, 5 minutes apart; then its action is
   cancelled and the step goes to a person.
 - Only one pass runs at a time: a pass takes a lease (15 minutes) first and gives up when another
-  pass holds it.
+  pass holds it. It renews the lease before each agent call, so a long pass keeps it. If another
+  pass has taken the lease over, the pass stops: before a call, it records the step as `skipped`
+  and leaves it to the other pass; after a call, the result is not applied (as for a hold) and the
+  action stays pending for the other pass.
 
 **Record.** A pass that does nothing writes nothing. Otherwise each action taken, opened, held,
 closed, skipped (in shadow, or left waiting for a cap) or failed is one `pmo_audit` row, agent `orchestrator`,

@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from test_intake import add_value_case
@@ -18,7 +19,7 @@ from app import orchestrator
 from app import policy as policy_module
 from app.agents import risk_agent
 from app.autonomy import AGENT, PERSON, STEPS, WINDOW, Step
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db import engine
 from app.main import app
 from app.models import (
@@ -553,6 +554,24 @@ def test_a_step_with_no_agent_yet_goes_to_a_person(db, settings, actions):
     assert {i.who for i in items.values()} == {"project_manager"}
 
 
+def test_switching_from_enforce_to_shadow_records_each_step_once(db, settings, monkeypatch):
+    # An enforce pass leaves a `skipped` row for a step waiting for its cap.
+    monkeypatch.setattr(settings, "orchestrator_max_agent_calls", 0)
+    request_id = _request(db, _user(db))
+    _pass(db, settings)
+    [wait] = _orchestrator_rows(db)
+    assert (wait.status, wait.signals["orchestrator_mode"]) == ("skipped", "enforce")
+    # The first shadow pass still records the step; the next one records nothing.
+    monkeypatch.setattr(settings, "orchestrator_mode", "shadow")
+    report = _pass(db, settings)
+    assert [(o.step, o.subject_id, o.outcome) for o in report.outcomes] == [
+        ("draft_value_case", request_id, "skipped")
+    ]
+    assert _orchestrator_rows(db)[-1].signals["orchestrator_mode"] == "shadow"
+    assert _pass(db, settings).outcomes == []
+    assert len(_orchestrator_rows(db)) == 2
+
+
 def test_agent_mode_off_sends_agent_steps_to_a_person_without_retries(db, settings, monkeypatch):
     monkeypatch.setattr(settings, "agent_mode", "off")
     pm = _user(db)
@@ -1065,6 +1084,98 @@ def test_a_pass_gives_up_while_another_holds_the_lease(db, settings, actions):
     db.commit()
     assert _pass(db, settings).ran
     assert len(fakes["draft_value_case"].subjects) == 1
+
+
+def _set_lease(holder: str | None, expires_in: timedelta) -> None:
+    """Change the lease from another session: `holder` None keeps this pass's."""
+    with Session(engine) as other:
+        lease = other.get(OrchestratorLease, "pass")
+        lease.holder = holder or lease.holder
+        lease.expires_at = utcnow() + expires_in
+        other.commit()
+
+
+def test_a_long_pass_renews_its_lease_before_each_agent_call(db, settings, actions):
+    pm = _user(db)
+    first, second = _request(db, pm), _request(db, pm)
+    calls: list[int] = []
+
+    def run(_ctx, subject_id: int):
+        calls.append(subject_id)
+        if len(calls) == 1:  # a call so long that the lease runs out, with no other pass
+            _set_lease(None, -timedelta(seconds=1))
+
+    actions(draft_value_case=run)
+    report = _pass(db, settings)
+    assert calls == [first, second]
+    assert [o.outcome for o in report.outcomes] == ["done", "done"]
+
+
+def test_a_pass_whose_lease_ran_out_does_no_step_twice(db, settings, monkeypatch, actions):
+    pm = _user(db)
+    first, second = _request(db, pm), _request(db, pm)
+    calls: list[int] = []
+    actions(draft_value_case=lambda _ctx, subject_id: calls.append(subject_id))
+    # The lease runs out just before the second step's agent call, and a second pass takes it.
+    spent_today = orchestrator.spent_today
+    checks = []
+
+    def spent_then_lose(db_, now):
+        checks.append(now)
+        if len(checks) == 2:
+            _set_lease("other", timedelta(minutes=5))
+        return spent_today(db_, now)
+
+    monkeypatch.setattr(orchestrator, "spent_today", spent_then_lose)
+    report = _pass(db, settings)
+    assert calls == [first]
+    assert [(o.subject_id, o.outcome, o.detail) for o in report.outcomes][1:] == [
+        (second, "skipped", orchestrator.LEASE_LOST_BEFORE)
+    ]
+    row = _orchestrator_rows(db)[-1]
+    assert (row.status, row.action_taken["reason"]) == ("skipped", orchestrator.LEASE_LOST_BEFORE)
+    # The pass that took over does the second step, once.
+    monkeypatch.setattr(orchestrator, "spent_today", spent_today)
+    _set_lease("other", -timedelta(seconds=1))
+    _pass(db, settings)
+    _pass(db, settings)
+    assert calls == [first, second]
+
+
+def test_a_result_is_not_applied_when_the_lease_is_lost_during_the_call(db, settings, actions):
+    pm = _user(db)
+    first, second = _request(db, pm), _request(db, pm)
+    calls: list[int] = []
+
+    def run(_ctx, subject_id: int):
+        calls.append(subject_id)
+        if len(calls) == 1:
+            _set_lease("other", timedelta(minutes=5))
+
+    actions(draft_value_case=run)
+    report = _pass(db, settings)
+    # The result is not applied, the action stays pending, and the pass stops there.
+    assert calls == [first]
+    assert [(o.subject_id, o.outcome, o.detail) for o in report.outcomes] == [
+        (first, "skipped", orchestrator.LEASE_LOST)
+    ]
+    [action] = _actions(db)
+    assert (action.status, action.attempts) == ("pending", 0)
+    row = _orchestrator_rows(db)[-1]
+    assert (row.status, row.action_taken["applied"]) == ("skipped", False)
+    assert row.action_taken["reason"] == orchestrator.LEASE_LOST
+    # The pass that took over runs each step once.
+    _set_lease("other", -timedelta(seconds=1))
+    _pass(db, settings)
+    _pass(db, settings)
+    assert calls == [first, first, second]
+    assert {a.status for a in _actions(db)} == {"done"}
+
+
+def test_the_per_pass_cap_is_at_most_20():
+    with pytest.raises(ValidationError):
+        Settings(orchestrator_max_agent_calls=21)
+    assert Settings(orchestrator_max_agent_calls=20).orchestrator_max_agent_calls == 20
 
 
 def test_admin_runs_a_pass_on_demand(db, web, settings, sign_in):

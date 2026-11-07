@@ -117,10 +117,11 @@ class Settings(BaseSettings):
 
     # The orchestrator (app/orchestrator.py): `off` runs nothing, `shadow` records what it would
     # do and changes nothing, `enforce` acts. The loop's pause between passes, the most Claude
-    # calls one pass may make, and the most its agent runs may cost in one UTC day, in US dollars.
+    # calls one pass may make (at most 20, so a pass stays well inside its lease), and the most its
+    # agent runs may cost in one UTC day, in US dollars.
     orchestrator_mode: AgentMode = "off"
     orchestrator_interval_seconds: int = Field(default=30, ge=1)
-    orchestrator_max_agent_calls: int = Field(default=5, ge=0)
+    orchestrator_max_agent_calls: int = Field(default=5, ge=0, le=20)
     orchestrator_daily_cap_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
 
     # Governance policy files; read only by app/policy.py, on first use.
