@@ -1,15 +1,19 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import PlanSection from '../components/PlanSection.vue'
 import {
+  amountError,
   budgetFitText,
+  canEditPlan,
   type Milestone,
   ownerText,
   type Plan,
   reportingText,
 } from '../lib/plans'
 import { makeVuetify } from '../plugins/vuetify'
+import { useAuthStore } from '../stores/auth'
 
 global.ResizeObserver = class {
   observe() {}
@@ -99,11 +103,25 @@ function fakeApi(found: Plan | null, lines: unknown[] = LINES) {
   })
 }
 
-async function mountPlan(found: Plan | null = plan()) {
+// A signed-in user holding `actions`; none by default, so the plan reads only.
+function signedIn(actions: string[] = []) {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  useAuthStore().user = {
+    id: 7,
+    email: 'pm@pragmattie.example',
+    display_name: 'Pat Manager',
+    role: actions.length ? 'project_manager' : 'auditor',
+    actions,
+  }
+  return pinia
+}
+
+async function mountPlan(found: Plan | null = plan(), actions: string[] = []) {
   vi.stubGlobal('fetch', fakeApi(found))
   const wrapper = mount(PlanSection, {
     props: { projectId: 5 },
-    global: { plugins: [makeVuetify()] },
+    global: { plugins: [signedIn(actions), makeVuetify()] },
     attachTo: document.body,
   })
   await flushPromises()
@@ -142,6 +160,25 @@ describe('the plan helpers', () => {
     expect(budgetFitText('no_range')).toBe('The brief has no budget range')
   })
 
+  it('checks an amount typed as text', () => {
+    expect(amountError('25000')).toBeNull()
+    expect(amountError(' 25000.5 ')).toBeNull()
+    expect(amountError('0.01')).toBeNull()
+    expect(amountError('')).toBe('Required')
+    expect(amountError('12,000')).toBe('An amount such as 25000 or 25000.50')
+    expect(amountError('1.234')).toBe('An amount such as 25000 or 25000.50')
+    expect(amountError('-5')).toBe('An amount such as 25000 or 25000.50')
+    expect(amountError('12345678901')).toBe('An amount such as 25000 or 25000.50')
+    expect(amountError('0.00')).toBe('The amount must be above zero')
+  })
+
+  it('lets only project:write edit, and only an editable plan', () => {
+    expect(canEditPlan(plan(), true)).toBe(true)
+    expect(canEditPlan(plan(), false)).toBe(false)
+    expect(canEditPlan(plan({ editable: false }), true)).toBe(false)
+    expect(canEditPlan(null, true)).toBe(false)
+  })
+
   it('names an owner, a missing one and one no longer active', () => {
     expect(ownerText(milestone())).toBe('Pat Manager')
     expect(ownerText(milestone({ owner_user_id: null, owner_name: null }))).toBe('No owner')
@@ -169,9 +206,9 @@ describe('the plan section', () => {
     await mountPlan()
     const marked = (testId: string) =>
       findAll(testId).map((row) => row.querySelector('[data-test="plan-agent-drafted"]')?.textContent?.trim() ?? null)
-    expect(marked('plan-milestone')).toEqual([null, 'Drafted by the planner agent'])
-    expect(marked('plan-deliverable')).toEqual(['Drafted by the planner agent', null])
-    expect(marked('plan-line')).toEqual([null, 'Drafted by the planner agent'])
+    expect(marked('plan-milestone')).toEqual([null, 'Agent draft'])
+    expect(marked('plan-deliverable')).toEqual(['Agent draft', null])
+    expect(marked('plan-line')).toEqual([null, 'Agent draft'])
   })
 
   it('shows the total the API computed against the budget range', async () => {
@@ -240,7 +277,7 @@ describe('the plan section', () => {
     vi.stubGlobal('fetch', api)
     mount(PlanSection, {
       props: { projectId: 5 },
-      global: { plugins: [makeVuetify()] },
+      global: { plugins: [signedIn(), makeVuetify()] },
       attachTo: document.body,
     })
     await flushPromises()

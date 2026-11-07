@@ -1,8 +1,9 @@
 // A project's plan (item 5.1): scope and deliverables, milestones, the estimate, who does what and
 // the reporting plan. The API computes the total and the `missing` list; the web only shows them.
 
-import type { Page } from './risks'
-import { call } from './risks'
+import { apiFetch } from './api'
+import type { Page, Person } from './risks'
+import { apiError, call } from './risks'
 
 export type ReportPeriod = 'weekly' | 'fortnightly' | 'monthly'
 export type BudgetFit = 'within' | 'below' | 'above' | 'no_range'
@@ -10,8 +11,9 @@ export type EstimateCategory = 'people' | 'software' | 'services' | 'other'
 // Who wrote a plan item (item 6.5): the planner agent's draft, or a person who added or edited it.
 export type ItemSource = 'agent' | 'person'
 
-// How the plan marks an item the planner agent drafted, so a person can tell it apart.
-export const DRAFTED_BY_AGENT = 'Drafted by the planner agent'
+// How the plan marks an item the planner agent drafted (item 6.5) until a person edits or
+// confirms it (item 6.6), so a person can tell it apart.
+export const DRAFTED_BY_AGENT = 'Agent draft'
 
 export interface Plan {
   id: number
@@ -69,7 +71,7 @@ export interface EstimateLine {
   version: number
 }
 
-const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+export const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
 function ordinal(day: number): string {
   if (day % 100 >= 11 && day % 100 <= 13) return `${day}th`
@@ -101,6 +103,74 @@ export function ownerText(milestone: Milestone): string {
   return milestone.owner_active ? name : `${name} (no longer active)`
 }
 
+// The kinds of plan item: the name the confirm route uses, and the path of each one's list.
+export type ItemKind = 'milestone' | 'deliverable' | 'estimate_line'
+export const ITEM_PATHS: Record<ItemKind, string> = {
+  milestone: 'milestones',
+  deliverable: 'deliverables',
+  estimate_line: 'estimate-lines',
+}
+
+export const REPORT_PERIODS: ReportPeriod[] = ['weekly', 'fortnightly', 'monthly']
+export const CATEGORIES: EstimateCategory[] = ['people', 'software', 'services', 'other']
+// The API's limits (app/models/plan.py and the brief's long text).
+export const CONTINGENCY_MAX = 50
+export const NAME_MAX = 200
+export const DESCRIPTION_MAX = 500
+export const LONG_TEXT_MAX = 2000
+
+// The highest due day each period allows: a weekday (1 is Monday), or a day every month has.
+export function dueDayMax(period: ReportPeriod): number {
+  return period === 'monthly' ? 28 : 7
+}
+
+// An amount as a person types it: digits with up to 2 decimal places, above zero and within the
+// 12 digits the API stores. The API checks it again.
+const MONEY = /^\d{1,10}(\.\d{1,2})?$/
+export function amountError(value: string | null | undefined): string | null {
+  const text = (value ?? '').trim()
+  if (!text) return 'Required'
+  if (!MONEY.test(text)) return 'An amount such as 25000 or 25000.50'
+  if (Number(text) <= 0) return 'The amount must be above zero'
+  return null
+}
+
+// Whether a person may change the plan here: project:write, and the API says it is editable (in
+// planning and not cancelled). The web only hides the controls; the API checks both again.
+export function canEditPlan(plan: Pick<Plan, 'editable'> | null, canWrite: boolean): boolean {
+  return !!plan && plan.editable && canWrite
+}
+
+export interface PlanFieldsInput {
+  scope_in: string | null
+  scope_out: string | null
+  contingency_pct: number
+  report_period: ReportPeriod | null
+  report_due_day: number | null
+}
+
+export interface MilestoneInput {
+  name: string
+  target_date: string
+  owner_user_id: number | null
+  description: string | null
+  contributors: string | null
+}
+
+export interface DeliverableInput {
+  name: string
+  description: string | null
+  milestone_id: number | null
+}
+
+export interface EstimateLineInput {
+  description: string
+  category: EstimateCategory
+  amount: string
+}
+
+export type ItemInput = MilestoneInput | DeliverableInput | EstimateLineInput
+
 const base = (id: number) => `/api/v1/projects/${id}/plan`
 const PAGE = 100 // The most the API sends in one page.
 
@@ -115,9 +185,39 @@ export async function allPages<T>(path: string): Promise<T[]> {
   }
 }
 
+// A DELETE answers 204 with no body.
+async function remove(path: string): Promise<void> {
+  const response = await apiFetch(path, { method: 'DELETE' })
+  if (!response.ok) throw await apiError(response)
+}
+
 export const planApi = {
   get: (id: number) => call<Plan>(base(id)),
   milestones: (id: number) => allPages<Milestone>(`${base(id)}/milestones`),
   deliverables: (id: number) => allPages<Deliverable>(`${base(id)}/deliverables`),
   estimateLines: (id: number) => allPages<EstimateLine>(`${base(id)}/estimate-lines`),
+  people: () => allPages<Person>('/api/v1/users'),
+  // Every write carries a version: the plan's for the plan itself or an addition, the item's for
+  // an edit, delete or confirmation of one item. A stale one is a 409.
+  update: (id: number, version: number, body: Partial<PlanFieldsInput>) =>
+    call<Plan>(base(id), { method: 'PATCH', body: JSON.stringify({ ...body, version }) }),
+  addItem: (id: number, kind: ItemKind, version: number, body: ItemInput) =>
+    call<unknown>(`${base(id)}/${ITEM_PATHS[kind]}`, {
+      method: 'POST',
+      body: JSON.stringify({ ...body, version }),
+    }),
+  updateItem: (id: number, kind: ItemKind, itemId: number, version: number, body: ItemInput) =>
+    call<unknown>(`${base(id)}/${ITEM_PATHS[kind]}/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ ...body, version }),
+    }),
+  deleteItem: (id: number, kind: ItemKind, itemId: number, version: number) =>
+    remove(`${base(id)}/${ITEM_PATHS[kind]}/${itemId}?version=${version}`),
+  // Marks the agent's items a person's without changing them: one item, or all with the plan's
+  // version.
+  confirm: (id: number, version: number, item?: { kind: ItemKind; id: number }) =>
+    call<Plan>(`${base(id)}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ ...(item ?? {}), version }),
+    }),
 }
