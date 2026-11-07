@@ -10,6 +10,7 @@ from app.api import (
     audit,
     auth,
     autonomy,
+    board,
     changes,
     gates,
     health,
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     api.include_router(auth.router)
     api.include_router(audit.router)
     api.include_router(autonomy.router)
+    api.include_router(board.router)
     api.include_router(changes.router)
     api.include_router(inbox.router)
     api.include_router(intake.router)
