@@ -290,7 +290,9 @@ agent, why ("no agent does this yet", "the risk_agent is switched off", "held by
 "the intake_agent failed after 3 retries"), in the words its audit row uses. Then the facts the
 decision rests on, read from the subject now (a gate's checks, a risk's score and band, a
 proposal's checker flags, a change's effect, a draft's gaps), and a one-line recommendation
-written by code from those facts: one function per step, in `RECOMMENDERS`.
+written by code from those facts: one function per step, in `RECOMMENDERS`. A proposal whose
+project has no plan shows "checker: not run", and its recommendation says to read it closely
+because the checker hasn't run; it never says "no flags" without a check.
 
 **Deciding.** Each item opens the existing form for its step inside the inbox (the gate decision,
 the risk's accept, open and reject, the proposal section, the change requests), which calls the

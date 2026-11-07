@@ -212,6 +212,31 @@ def test_an_item_follows_its_steps_who_when_a_risk_is_re_escalated(
     assert _steps(web) == [("accept_risk", "risk", risk.id)]
 
 
+def test_other_roles_items_are_not_recomputed(db, web, settings, actions, sign_in, monkeypatch):
+    """A role with no items costs no per-subject work, however many items other roles have; a
+    role with items works out each subject's steps once."""
+    actions()
+    pm = _user(db)
+    requests = [_request(db, pm, status="submitted") for _ in range(6)]
+    _pass(db, settings)
+    assert len(_items(db, "open")) == len(requests)
+    calls: list[tuple[str, int]] = []
+    real = orchestrator.subject_steps
+
+    def counted(db, policy, subject_type, subject_id, **kwargs):
+        calls.append((subject_type, subject_id))
+        return real(db, policy, subject_type, subject_id, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "subject_steps", counted)
+    sign_in(web, db, "ethics_reviewer")
+    assert _steps(web) == [] and _count(web) == 0
+    assert calls == []
+    web.cookies.clear()
+    sign_in(web, db, "sponsor")
+    assert len(_steps(web)) == len(requests)
+    assert sorted(calls) == sorted(("request", r) for r in requests)
+
+
 # --- The case: facts and the recommendation
 
 
@@ -321,6 +346,24 @@ def _facts(**values) -> list[Fact]:
             "Approve it if the price (1200.00) and terms are right: no flags.",
         ),
         (
+            "approve_proposal",
+            _facts(price="1200.00", checker="not run"),
+            "Read it closely: the checker hasn't run: check the price (1200.00) and terms "
+            "yourself.",
+        ),
+        (
+            "send_proposal",
+            _facts(checker="not run"),
+            "Read it closely: the checker hasn't run, so check it yourself before you send it "
+            "and mark it sent.",
+        ),
+        (
+            "submit_proposal",
+            _facts(),
+            "Read it closely: the checker hasn't run, so check it yourself before you submit it "
+            "for approval.",
+        ),
+        (
             "send_proposal",
             _facts(flags=1),
             "Clear the 1 open flag(s) first: it can't be marked sent while they're open.",
@@ -410,6 +453,20 @@ def test_a_proposal_shows_its_flags(db, settings, actions):
     # The proposal copied nothing from the plan, so the checker flags it.
     assert flags.met is False and int(flags.value) > 0
     assert recommend("approve_proposal", facts).startswith("Return it:")
+
+
+def test_a_proposal_without_a_plan_says_the_checker_has_not_run(db, settings, actions):
+    actions()
+    pm = _user(db)
+    project = _project(db, stage="delivery", client=True)
+    proposal_id = _proposal(db, project, pm, "submitted", filled=True)
+    facts = inbox.facts_for(db, "approve_proposal", "proposal", proposal_id)
+    keys = {f.key: f.value for f in facts}
+    assert keys["checker"] == "not run" and "flags" not in keys
+    for step in ("approve_proposal", "send_proposal", "submit_proposal"):
+        line = recommend(step, facts)
+        assert line.startswith("Read it closely: the checker hasn't run")
+        assert "no flags" not in line
 
 
 def test_a_change_shows_its_effect(db):

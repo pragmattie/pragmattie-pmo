@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app import orchestrator
@@ -56,6 +56,8 @@ from app.roles import Role
 ITEM = "item"
 WINDOW = "window"
 DEFAULT_RECOMMENDATION = "Review and decide."
+NOT_RUN = "not run"
+CHECKER_NOT_RUN = "Read it closely: the checker hasn't run"
 
 # The gate each subject type's `pass_gate` step is decided at.
 GATES = {REQUEST: "approval", PROJECT: "go_ahead"}
@@ -207,6 +209,9 @@ def _proposal_facts(db: Session, proposal: ProjectProposal) -> list[Fact]:
             Fact(f"flag_{n}", f"Flag: {flag.section}", flag.text, False)
             for n, flag in enumerate(flags, start=1)
         )
+    else:
+        # No plan to check against: say so, so nobody reads a missing check as a clean one.
+        facts.append(Fact("checker", "Checker", NOT_RUN))
     return facts
 
 
@@ -323,12 +328,18 @@ def _score_risk(facts: list[Fact]) -> str:
     return "Score its probability and impact so it gets a band and an owner."
 
 
-def _flags(facts: list[Fact]) -> int:
-    return int(_value(facts, "flags", "0"))
+def _flags(facts: list[Fact]) -> int | None:
+    """The checker's open flags; None when it hasn't run (no flags fact, or "checker: not run")."""
+    value = _value(facts, "flags")
+    if not value or _value(facts, "checker") == NOT_RUN:
+        return None
+    return int(value)
 
 
 def _approve_proposal(facts: list[Fact]) -> str:
     flags = _flags(facts)
+    if flags is None:
+        return f"{CHECKER_NOT_RUN}: check the price ({_value(facts, 'price')}) and terms yourself."
     if flags:
         return f"Return it: the checker has {flags} flag(s) open."
     return f"Approve it if the price ({_value(facts, 'price')}) and terms are right: no flags."
@@ -336,6 +347,8 @@ def _approve_proposal(facts: list[Fact]) -> str:
 
 def _send_proposal(facts: list[Fact]) -> str:
     flags = _flags(facts)
+    if flags is None:
+        return f"{CHECKER_NOT_RUN}, so check it yourself before you send it and mark it sent."
     if flags:
         return f"Clear the {flags} open flag(s) first: it can't be marked sent while they're open."
     return "Send it to the client and mark it sent: the checker has no flags open."
@@ -343,6 +356,8 @@ def _send_proposal(facts: list[Fact]) -> str:
 
 def _submit_proposal(facts: list[Fact]) -> str:
     flags = _flags(facts)
+    if flags is None:
+        return f"{CHECKER_NOT_RUN}, so check it yourself before you submit it for approval."
     if flags:
         return f"Clear the {flags} checker flag(s), then submit it for approval."
     return "Submit it for approval: every section is written and reviewed, with no flags open."
@@ -449,11 +464,14 @@ def entries(
     """The signed-in person's inbox, oldest first, without facts (see `with_case`). Raises
     `PolicyError` when the autonomy or risk policy can't be loaded."""
     rules = risk_rules or orchestrator.risk_policy()
-    # Every open item, not just the role's: an item whose step now waits on another role (a risk
-    # escalated elsewhere) goes to that role at once, before the next pass reopens it for them.
+    # The role's open items, plus every open risk item: only a risk's step can move to another
+    # role (re-escalated), and it goes to that role at once, before the next pass reopens it.
     items = db.scalars(
         select(InboxItem)
-        .where(InboxItem.status == "open")
+        .where(
+            InboxItem.status == "open",
+            or_(InboxItem.who == user.role, InboxItem.subject_type == RISK),
+        )
         .order_by(InboxItem.created_at, InboxItem.id)
     ).all()
     windows = db.scalars(
@@ -474,7 +492,9 @@ def entries(
         )
         if a.held_by is not None
     }
+    # Each subject's steps and scope are worked out once per request, however many rows share it.
     steps_cache: dict[tuple[str, int], dict[str, orchestrator.NextStep]] = {}
+    scope_cache: dict[tuple[str, int, str], Scope | None] = {}
 
     def live(step: str, subject_type: str, subject_id: int) -> orchestrator.NextStep | None:
         key = (subject_type, subject_id)
@@ -499,7 +519,10 @@ def entries(
         if who != user.role:
             continue
         moved = who != row.who
-        scope = _scope(db, row.subject_type, subject_id, who)
+        scope_key = (row.subject_type, subject_id, who)
+        if scope_key not in scope_cache:
+            scope_cache[scope_key] = _scope(db, row.subject_type, subject_id, who)
+        scope = scope_cache[scope_key]
         if scope is None:
             continue
         if scope.named_user_id is not None and scope.named_user_id != user.id:
