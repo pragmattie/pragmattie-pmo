@@ -17,6 +17,7 @@ import {
   type ItemKind,
   LONG_TEXT_MAX,
   type Milestone,
+  type MilestoneInput,
   NAME_MAX,
   ownerText,
   type Plan,
@@ -255,13 +256,18 @@ function startItem(kind: ItemKind, item: AnyItem | null = null) {
 
 function itemBody(kind: ItemKind): ItemInput {
   if (kind === 'milestone') {
-    return {
+    const body: Partial<MilestoneInput> = {
       name: itemForm.name.trim(),
       target_date: itemForm.target_date,
       owner_user_id: itemForm.owner_user_id,
       description: orNull(itemForm.description),
       contributors: orNull(itemForm.contributors),
     }
+    // An edit sends the owner only when it changed: an owner no longer active is not in the list,
+    // and the API refuses one, so resending it would block every other change to the milestone.
+    const current = itemForm.item as Milestone | null
+    if (current && current.owner_user_id === itemForm.owner_user_id) delete body.owner_user_id
+    return body as ItemInput
   }
   if (kind === 'deliverable') {
     return {

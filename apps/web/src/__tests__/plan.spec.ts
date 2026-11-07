@@ -496,10 +496,25 @@ describe('editing the plan', () => {
       version: 1,
       name: 'Go live in both warehouses',
       target_date: '2027-06-01',
-      owner_user_id: null,
       description: 'The pilot warehouse runs on the forecast',
       contributors: 'Data team',
     })
+  })
+
+  it('leaves an unchanged owner out of an edit, so an owner no longer active does not block it', async () => {
+    const inactive = milestone({ owner_user_id: 9, owner_name: 'Former Lead', owner_active: false })
+    MILESTONES.splice(0, 1, inactive)
+    try {
+      const { wrapper, api } = await mountWritable()
+      await click(rowButton('plan-milestone', 0, 'plan-item-edit'))
+      await wrapper.get('[data-test="plan-field-name"] input').setValue('Pilot in one warehouse')
+      await click(find('plan-item-save'))
+      const body = sent(api, 'PATCH', `${PLAN_PATH}/milestones/1`)
+      expect(body.name).toBe('Pilot in one warehouse')
+      expect(body).not.toHaveProperty('owner_user_id')
+    } finally {
+      MILESTONES.splice(0, 1, milestone())
+    }
   })
 
   it('adds a deliverable with the plan version', async () => {
