@@ -332,7 +332,7 @@ export class ApiError extends Error {
   }
 }
 
-async function apiError(response: Response): Promise<ApiError> {
+export async function apiError(response: Response): Promise<ApiError> {
   try {
     const body = await response.json()
     const detail = body.detail

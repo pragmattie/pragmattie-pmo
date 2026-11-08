@@ -811,6 +811,7 @@ SAMPLES = {
     ("GET", f"{PROPOSAL}/versions"): _proposal_sample("/versions", "submitted"),
     ("POST", f"{PROPOSAL}/draft"): _proposal_sample("/draft?dry_run=true"),
     ("POST", f"{PLAN}/draft"): _plan_sample("/draft?dry_run=true"),
+    ("POST", f"{PLAN}/confirm"): _plan_sample("/confirm", {"version": 1}),
     ("POST", f"{PROPOSAL}/sections/{{section}}/confirm"): _proposal_sample(
         "/sections/summary/confirm", body={"version": 1}, agent_summary=True
     ),
@@ -993,6 +994,7 @@ def test_matrix_covers_the_existing_routes():
         ("GET", "/api/v1/inbox/count"),
         ("GET", "/api/v1/board"),
         ("POST", f"{PLAN}/draft"),
+        ("POST", f"{PLAN}/confirm"),
     } <= paths
     guards = {path: guard for _, path, guard in GUARDED}
     assert guards["/api/v1/audit"] == Action.AUDIT_READ
@@ -1058,6 +1060,7 @@ def test_matrix_covers_the_existing_routes():
     for path in (PLAN, *(f"{PLAN}/{name}" for name in lists)):
         assert by_method[("GET", path)] == Action.PROJECT_READ
     assert by_method[("PATCH", PLAN)] == Action.PROJECT_WRITE
+    assert by_method[("POST", f"{PLAN}/confirm")] == Action.PROJECT_WRITE
     for name, item in zip(lists, items, strict=True):
         assert by_method[("POST", f"{PLAN}/{name}")] == Action.PROJECT_WRITE
         for method in ("PATCH", "DELETE"):
