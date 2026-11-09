@@ -887,6 +887,10 @@ describe("the risk agent's suggested score", () => {
     expect(card.get('[data-test="agent-suggestion-impact"]').text()).toBe(
       'Impact 2. A week of delay on a non-critical task.',
     )
+    expect(card.get('[data-test="agent-suggestion-caption"]').text()).toBe(
+      "The risk's own score stays empty until a person sets it, or, for a Low suggestion, " +
+        'until the objection window applies it.',
+    )
     expect(wrapper.get('[data-test="field-Probability"]').text()).toBe('—')
     expect(wrapper.get('[data-test="field-Impact"]').text()).toBe('—')
     await openRow(wrapper, 2)

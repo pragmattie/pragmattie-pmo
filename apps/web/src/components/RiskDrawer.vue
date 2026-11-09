@@ -162,8 +162,9 @@ function describe(entry: HistoryEntry) {
         <p class="mb-2" data-test="agent-suggestion-impact">
           <strong>Impact {{ suggestion.impact }}.</strong> {{ suggestion.impactReason }}
         </p>
-        <p class="text-caption text-medium-emphasis mb-0">
-          A suggestion only: the risk's own score stays empty until a person sets it.
+        <p class="text-caption text-medium-emphasis mb-0" data-test="agent-suggestion-caption">
+          The risk's own score stays empty until a person sets it, or, for a Low suggestion,
+          until the objection window applies it.
         </p>
       </v-card-text>
       <v-card-actions v-if="canWrite">
