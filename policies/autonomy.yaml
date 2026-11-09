@@ -94,3 +94,4 @@ agents:
     enabled: true
   simulated_client:
     enabled: true
+    answer: accepted
