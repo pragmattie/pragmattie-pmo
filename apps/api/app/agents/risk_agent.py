@@ -920,7 +920,11 @@ def score(
                     "mode": mode,
                     "saved": save and not judged,
                     "needs_judgement": judged,
-                    **({"reason": result.judgement_reason} if judged else {}),
+                    **(
+                        {"judgement": result.judgement, "reason": result.judgement_reason}
+                        if judged
+                        else {}
+                    ),
                 },
             )
             if save and judged:

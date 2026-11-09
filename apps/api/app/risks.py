@@ -228,12 +228,14 @@ def decide_proposed(
     actor_user_id: int | None,
     details: dict[str, Any] | None = None,
     trigger: str = "human",
+    before: dict[str, Any] | None = None,
 ) -> None:
     """Open or reject a `proposed` risk: the open and reject routes and the orchestrator's
     `open_low_risk` all come through here, so the band and escalation rules are the same for
     each. The caller has checked the risk is proposed and locked it; it flushes here (raising
-    `StaleDataError` when a parallel write landed first) and the caller commits."""
-    before = snapshot(risk)
+    `StaleDataError` when a parallel write landed first) and the caller commits. `before` is the
+    risk's snapshot when the caller changed it first (the orchestrator applying a suggestion)."""
+    before = before if before is not None else snapshot(risk)
     risk.status = new_status
     escalated = settle_escalation(risk, policy, before=before)
     db.flush()

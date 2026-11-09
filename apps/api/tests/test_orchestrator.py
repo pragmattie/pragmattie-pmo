@@ -350,7 +350,7 @@ def test_every_step_id_comes_from_some_state(db, rules):
         s for s in steps if s.step == "propose_risks" and s.subject_id == ids["ready_project"]
     ]
     score = _found(steps, "score_risk", ids["score_risk"])
-    assert (score.subject_type, score.mode, score.handoff) == ("risk", PERSON, NO_AGENT)
+    assert (score.subject_type, score.mode, score.handoff) == ("risk", WINDOW, None)
     low = _found(steps, "open_low_risk", ids["open_low_risk"])
     assert low.reason == "the risk is proposed and scored Low"
     accept = _found(steps, "accept_risk", ids["accept_risk"])
