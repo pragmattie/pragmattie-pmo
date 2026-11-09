@@ -110,7 +110,7 @@ def test_only_the_simulated_client_has_an_answer():
 
 
 def test_the_proposed_file_is_todays_file_plus_the_answer():
-    proposed = (Path(__file__).resolve().parents[3] / "ci/proposed/policies/autonomy.yaml")
+    proposed = Path(__file__).resolve().parents[3] / "ci/proposed/policies/autonomy.yaml"
     if not proposed.exists():
         pytest.skip("the proposed autonomy file has been applied")
     today = (APPLIED / "autonomy.yaml").read_text()

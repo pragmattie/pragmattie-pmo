@@ -332,9 +332,7 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         risk_columns = {c["name"]: c for c in inspector.get_columns("risks")}
         assert all(risk_columns[name]["nullable"] for name in suggested)
         # 0024: the simulated client, an event's source, and proposals with no person.
-        assert not {c["name"]: c for c in inspector.get_columns("clients")}["simulated"][
-            "nullable"
-        ]
+        assert not {c["name"]: c for c in inspector.get_columns("clients")}["simulated"]["nullable"]
         event_columns = {c["name"]: c for c in inspector.get_columns("proposal_events")}
         assert event_columns["actor_user_id"]["nullable"]
         assert not event_columns["source"]["nullable"]

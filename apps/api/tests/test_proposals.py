@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 from app.api.proposals import (
     EXISTS,
     FINAL,
-    HAS_FLAGS,
     NO_CLIENT,
     OWN,
     SENT_HAS_FLAGS,
@@ -38,7 +37,7 @@ from app.models import (
     Risk,
     User,
 )
-from app.proposals import PlanFacts, check
+from app.proposals import HAS_FLAGS, PlanFacts, check
 from app.security import SESSION_COOKIE
 
 PROJECTS = "/api/v1/projects"
