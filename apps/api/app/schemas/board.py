@@ -39,7 +39,9 @@ class CardOut(BaseModel):
     top_budget: MoneyStr | None
     stopped: bool
     held_by: Literal["agent", "person"] | None
+    # The simulated client takes one of its steps, or the card's client is simulated (item 6.8).
     simulated: bool
+    client_simulated: bool
     waiting: list[WaitingOut]
 
 

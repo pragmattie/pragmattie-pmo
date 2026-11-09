@@ -394,16 +394,7 @@ def create_proposal(project_id: int, user: Creator, db: Db) -> ProposalOut:
         raise _refuse(
             db, existing, user, action="create", refusal="exists", code=409, detail=EXISTS
         )
-    proposal = ProjectProposal(
-        project_id=project_id,
-        status="draft",
-        scope_in=plan.scope_in,
-        scope_out=plan.scope_out,
-        created_by=user.id,
-    )
-    refresh_from_plan(proposal, plan_facts(db, plan))
-    db.add(proposal)
-    _save(db)
+    proposal = rules.new_proposal(db, plan, user.id)
     _record(db, proposal, user, action="create", before=None)
     _commit(db)
     return _proposal_out(db, proposal)

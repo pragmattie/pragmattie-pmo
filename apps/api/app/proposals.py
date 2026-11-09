@@ -471,6 +471,22 @@ class Refusal:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+def new_proposal(db: Session, plan: ProjectPlan, created_by: int | None) -> ProjectProposal:
+    """A draft proposal for the plan's project, with the plan's facts copied and scope in and out
+    prefilled from it; added and flushed. `created_by` is None when the orchestrator makes it."""
+    proposal = ProjectProposal(
+        project_id=plan.project_id,
+        status="draft",
+        scope_in=plan.scope_in,
+        scope_out=plan.scope_out,
+        created_by=created_by,
+    )
+    refresh_from_plan(proposal, plan_facts(db, plan))
+    db.add(proposal)
+    db.flush()
+    return proposal
+
+
 def empty_sections(proposal: ProjectProposal) -> list[str]:
     return [name for name in TEXT_SECTIONS if not (getattr(proposal, name) or "").strip()]
 

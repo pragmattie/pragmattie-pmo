@@ -130,6 +130,10 @@ class Settings(BaseSettings):
     orchestrator_max_agent_calls: int = Field(default=5, ge=0, le=20)
     orchestrator_daily_cap_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
 
+    # The simulated client (app/simulated_client.py, item 6.8): how long after a proposal to a
+    # simulated client is marked sent before the simulation answers it.
+    simulated_client_delay_minutes: int = Field(default=10, ge=0, le=7 * 24 * 60)
+
     # Governance policy files; read only by app/policy.py, on first use.
     policies_dir: Path = Field(default_factory=_default_policies_dir)
     # Standards traceability map; read only by app/standards.py, on first use.

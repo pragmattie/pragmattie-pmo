@@ -77,6 +77,7 @@ from app.proposals import (
     _MONTH,
     PlanFacts,
     _amounts,
+    is_unreviewed,
     may_replace,
 )
 
@@ -89,6 +90,7 @@ ASSUMPTIONS_MAX = 30
 NOT_DRAFT = "the proposal is no longer a draft"
 PERSON_OWNS = "a person has edited or confirmed it"
 FROM_PLAN = "it was copied from the plan; clear it to let the agent draft it"
+WAITS_FOR_REVIEW = "it is an agent draft waiting for a person's review"
 
 _SECTION = {
     "type": ["string", "null"],
@@ -409,15 +411,20 @@ def validate(raw: Any, facts: PlanFacts) -> Checked:
 
 
 def sort_sections(
-    proposal: ProjectProposal, checked: Checked
+    proposal: ProjectProposal, checked: Checked, *, only_empty: bool = False
 ) -> tuple[list[str], list[dict[str, str]]]:
-    """Which drafted sections the agent may replace, and which it keeps and why."""
+    """Which drafted sections the agent may replace, and which it keeps and why. With
+    `only_empty` (the orchestrator, item 6.8) it fills only empty sections: a written section
+    that isn't reviewed yet waits for a person and is never drafted again."""
     if proposal.status != "draft":
         return [], [{"section": name, "reason": NOT_DRAFT} for name in checked.sections]
     replaced: list[str] = []
     kept: list[dict[str, str]] = []
     for name in checked.sections:
-        if may_replace(proposal, name):
+        written = bool((getattr(proposal, name) or "").strip())
+        if only_empty and written and is_unreviewed(proposal, name):
+            kept.append({"section": name, "reason": WAITS_FOR_REVIEW})
+        elif may_replace(proposal, name):
             replaced.append(name)
         else:
             # A non-empty section with no source was copied from the plan when it was created.
@@ -427,11 +434,11 @@ def sort_sections(
 
 
 def save(
-    db: Session, proposal: ProjectProposal, checked: Checked
+    db: Session, proposal: ProjectProposal, checked: Checked, *, only_empty: bool = False
 ) -> tuple[list[str], list[dict[str, str]]]:
     """Save each drafted section the agent may replace, as an unreviewed agent draft."""
     db.refresh(proposal, with_for_update=True)
-    replaced, kept = sort_sections(proposal, checked)
+    replaced, kept = sort_sections(proposal, checked, only_empty=only_empty)
     if replaced:
         sources = dict(proposal.section_sources or {})
         for name in replaced:
@@ -489,6 +496,7 @@ def run(
     save_it: bool,
     actor_user_id: int | None,
     trigger: str = "human",
+    only_empty: bool = False,
 ) -> RunResult:
     """One run: one Claude call, checked in code, one audit row. With `save_it`, the kept
     sections are saved as unreviewed agent drafts where no person has edited or confirmed one.
@@ -545,9 +553,9 @@ def run(
         # The sections and the run's row stand or fall together.
         with db.begin_nested():
             if save_it:
-                replaced, kept = save(db, proposal, checked)
+                replaced, kept = save(db, proposal, checked, only_empty=only_empty)
             else:
-                replaced, kept = sort_sections(proposal, checked)
+                replaced, kept = sort_sections(proposal, checked, only_empty=only_empty)
             row = audit(
                 "ok",
                 input_tokens=reply.input_tokens,

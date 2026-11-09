@@ -15,6 +15,14 @@ agent steps the autonomy policy allows, and hands every other step to a person.
 - A person step is never performed here, whatever the policy says (R1): the floor steps and the
   steps no agent may do (`PERSON_ONLY`) are refused at import if anyone registers an action for
   them, and a pass sends them to a person.
+- The proposal (item 6.8): `draft_proposal` creates a client project's proposal once its plan is
+  complete and has the proposal agent fill only its empty sections; `submit_proposal` submits a
+  draft once every section is written and reviewed by a person and the checker has no open flags
+  (open flags send it to the project manager until fixed); `client_answer` is the simulated
+  client's answer (`app.simulated_client`), for a simulated client only and only after its delay;
+  a real client's answer goes to a person. Each action checks again when it runs and, when its
+  subject changed, writes a skipped row and changes nothing. Approving and sending stay with
+  people.
 
 Run it with `python -m app.orchestrator once` (one pass) or `run` (a pass every
 `ORCHESTRATOR_INTERVAL_SECONDS` until Ctrl+C).
@@ -35,6 +43,8 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app import proposals as proposal_rules
+from app import simulated_client
 from app.agents import intake_agent, planner_agent, proposal_agent, risk_agent
 from app.audit import next_attempt, record_decision
 from app.autonomy import (
@@ -47,7 +57,7 @@ from app.autonomy import (
     AutonomyPolicy,
     effective_mode,
 )
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.gates import PROJECT_CHECKS
 from app.models import (
     AuditDecision,
@@ -66,10 +76,9 @@ from app.models import (
 )
 from app.models.orchestrator import REASON_MAX, open_key
 from app.models.portfolio import CANCELLED
-from app.models.proposal import TEXT_SECTIONS
 from app.plans import missing
 from app.policy import RiskPolicy, score_risk
-from app.proposals import plan_facts, unreviewed_sections
+from app.proposals import empty_sections, plan_facts, submit_refusal, unreviewed_sections
 from app.risks import (
     apply_score,
     band_owner,
@@ -181,11 +190,14 @@ def _make(
     risk: Risk | None = None,
     who: str | None = None,
     person: str | None = None,
+    blocked: bool = False,
 ) -> NextStep:
     """One next step. `person` sends it to a person whatever the policy says, with that text as
-    the reason why (a Medium or High risk agent suggestion, which only a person may open)."""
+    the reason why (a Medium or High risk agent suggestion, which only a person may open).
+    `blocked` marks that only until the agent may act again (open checker flags a person fixes),
+    so the inbox item gives way to the agent then, as for a switched-off agent."""
     if person is not None:
-        mode, handoff, unavailable = PERSON, person, False
+        mode, handoff, unavailable = PERSON, person, blocked
     else:
         mode, handoff, unavailable = _handoff(policy, step, agent_mode, risk)
     rule = policy.steps[step]
@@ -237,6 +249,28 @@ def _request_steps(db: Session, request: ProjectRequest, make: Callable) -> list
     return []
 
 
+def _plan_complete(db: Session, project_id: int) -> bool:
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project_id))
+    return plan is not None and not missing(db, plan)
+
+
+def _has_proposal(db: Session, project_id: int) -> bool:
+    stmt = select(ProjectProposal.id).where(ProjectProposal.project_id == project_id)
+    return db.scalar(stmt.limit(1)) is not None
+
+
+NEEDS_PROPOSAL = "the plan is complete and the client project has no proposal yet"
+
+
+def _needs_proposal(db: Session, project: Project) -> bool:
+    """A client project whose plan is complete and which has no proposal (item 6.8)."""
+    return (
+        project.client_id is not None
+        and _plan_complete(db, project.id)
+        and not _has_proposal(db, project.id)
+    )
+
+
 def _planning_steps(db: Session, project: Project, make: Callable) -> list[NextStep]:
     steps = []
     plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
@@ -244,6 +278,8 @@ def _planning_steps(db: Session, project: Project, make: Callable) -> list[NextS
     if gaps and not _agent_ran(db, planner_agent.AGENT, planner_agent.AUDIT_SUBJECT, project.id):
         reason = "the plan is incomplete: " + "; ".join(gaps)
         steps.append(make("draft_plan", PROJECT, project.id, reason[:REASON_MAX]))
+    if not gaps and _needs_proposal(db, project):
+        steps.append(make("draft_proposal", PROJECT, project.id, NEEDS_PROPOSAL))
     if not _agent_ran(db, risk_agent.AGENT, risk_agent.AUDIT_SUBJECT, project.id):
         reason = "the risk agent hasn't looked at this project yet"
         steps.append(make("propose_risks", PROJECT, project.id, reason))
@@ -352,21 +388,79 @@ def _risk_steps(db: Session, risk: Risk, risk_rules: RiskPolicy, make: Callable)
     return []
 
 
-def _proposal_steps(proposal: ProjectProposal, make: Callable) -> list[NextStep]:
+FLAGS_OPEN = "the checker has {n} open flag(s), so the project manager fixes them first"
+REAL_CLIENT = "the client is real, so a person records its answer"
+TO_SIMULATED = (
+    "the proposal was sent to a simulated client {minutes} or more minutes ago and has no answer"
+)
+
+
+def _draft_steps(db: Session, proposal: ProjectProposal, make: Callable) -> list[NextStep]:
+    """A draft's next step. The agent drafts only empty sections, and only once the plan is
+    complete; a written section waits for a person's review; once every section is written and
+    reviewed it is submitted, unless the checker has flags open."""
+    empty = empty_sections(proposal)
+    if empty:
+        if not _plan_complete(db, proposal.project_id):
+            return []
+        reason = "the proposal has empty sections: " + ", ".join(empty)
+        return [make("draft_proposal", PROPOSAL, proposal.id, reason)]
+    if unreviewed_sections(proposal):
+        return []
+    reason = "every section is written and reviewed, so the proposal can be submitted"
+    refusal = submit_refusal(db, proposal, require_filled=True)
+    if refusal is not None and refusal.refusal == "flags_open":
+        flags = FLAGS_OPEN.format(n=len(refusal.extra["flags"]))
+        return [
+            make(
+                "submit_proposal",
+                PROPOSAL,
+                proposal.id,
+                reason,
+                person=flags,
+                who=PROJECT_MANAGER,
+                blocked=True,
+            )
+        ]
+    return [make("submit_proposal", PROPOSAL, proposal.id, reason)]
+
+
+def _answer_steps(
+    db: Session, proposal: ProjectProposal, make: Callable, now: datetime
+) -> list[NextStep]:
+    """A sent proposal waits for the client. A real client's answer is a person's to record; a
+    simulated client's is the simulation's once its delay is over (nothing to do until then)."""
+    reason = "the proposal was sent and is waiting for the client's answer"
+    if not simulated_client.is_simulated(db, proposal):
+        return [
+            make(
+                "client_answer",
+                PROPOSAL,
+                proposal.id,
+                reason,
+                person=REAL_CLIENT,
+                who=PROJECT_MANAGER,
+            )
+        ]
+    delay = get_settings().simulated_client_delay_minutes
+    due = simulated_client.due_at(db, proposal, delay)
+    if due is None or now < due:
+        return []
+    reason = TO_SIMULATED.format(minutes=delay)
+    return [make("client_answer", PROPOSAL, proposal.id, reason)]
+
+
+def _proposal_steps(
+    db: Session, proposal: ProjectProposal, make: Callable, now: datetime
+) -> list[NextStep]:
     status = proposal.status
     if status == "draft":
-        empty = [name for name in TEXT_SECTIONS if not (getattr(proposal, name) or "").strip()]
-        if empty:
-            reason = "the proposal has empty sections: " + ", ".join(empty)
-            return [make("draft_proposal", PROPOSAL, proposal.id, reason)]
-        if not unreviewed_sections(proposal):
-            reason = "every section is written and reviewed, so the proposal can be submitted"
-            return [make("submit_proposal", PROPOSAL, proposal.id, reason)]
-        return []
+        return _draft_steps(db, proposal, make)
+    if status == "sent":
+        return _answer_steps(db, proposal, make, now)
     reasons = {
         "submitted": ("approve_proposal", "the proposal is submitted and waiting for approval"),
         "approved": ("send_proposal", "the proposal is approved and waiting to be sent"),
-        "sent": ("client_answer", "the proposal was sent and is waiting for the client's answer"),
     }
     if status in reasons:
         step, reason = reasons[status]
@@ -387,11 +481,14 @@ def next_steps(
     *,
     agent_mode: str = "enforce",
     risk_rules: RiskPolicy | None = None,
+    now: datetime | None = None,
 ) -> list[NextStep]:
     """Every open subject's next steps, in a stable order: requests, then each live project with
     its risks, proposal and change requests. `agent_mode` is `AGENT_MODE`: unless it is
-    `enforce`, no agent may act, so agent and window steps go to a person."""
+    `enforce`, no agent may act, so agent and window steps go to a person. `now` (the pass's
+    time) decides whether the simulated client's delay is over."""
     rules = risk_rules or risk_policy()
+    now = now or utcnow()
 
     def make(*args: Any, **kwargs: Any) -> NextStep:
         return _make(policy, agent_mode, *args, **kwargs)
@@ -413,7 +510,7 @@ def next_steps(
             steps.extend(_risk_steps(db, risk, rules, make))
         proposals = select(ProjectProposal).where(ProjectProposal.project_id == project.id)
         for proposal in db.scalars(proposals.order_by(ProjectProposal.id)):
-            steps.extend(_proposal_steps(proposal, make))
+            steps.extend(_proposal_steps(db, proposal, make, now))
         changes = select(ChangeRequest).where(ChangeRequest.project_id == project.id)
         for change in db.scalars(changes.order_by(ChangeRequest.id)):
             steps.extend(_change_steps(change, make))
@@ -437,10 +534,12 @@ def subject_steps(
     *,
     agent_mode: str = "enforce",
     risk_rules: RiskPolicy | None = None,
+    now: datetime | None = None,
 ) -> list[NextStep]:
     """One subject's next steps, exactly as `next_steps` gives them, without reading the rest.
     The inbox uses it to drop an item a person has just decided, before the next pass."""
     rules = risk_rules or risk_policy()
+    now = now or utcnow()
 
     def make(*args: Any, **kwargs: Any) -> NextStep:
         return _make(policy, agent_mode, *args, **kwargs)
@@ -460,7 +559,7 @@ def subject_steps(
     if isinstance(row, Risk):
         return _risk_steps(db, row, rules, make) if row.status in ("proposed", "open") else []
     if isinstance(row, ProjectProposal):
-        return _proposal_steps(row, make)
+        return _proposal_steps(db, row, make, now)
     return _change_steps(row, make)
 
 
@@ -471,13 +570,16 @@ def subject_steps(
 class Context:
     """What an action gets. `policy` is the pass's autonomy policy; `planned_reason` is the
     reason the step had when its action was planned (a window's start), so an action can tell
-    whether its subject changed while it waited."""
+    whether its subject changed while it waited; `subject_type` is the step's subject type (a
+    step may have more than one), and `now` the pass's time."""
 
     db: Session
     settings: Settings
     client: risk_agent.ClaudeClient
     policy: AutonomyPolicy | None = None
     planned_reason: str = ""
+    subject_type: str = ""
+    now: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -530,20 +632,105 @@ def _draft_plan(ctx: Context, project_id: int) -> int:
     return result.audit_id
 
 
-def _draft_proposal(ctx: Context, proposal_id: int) -> int:
-    proposal = ctx.db.get(ProjectProposal, proposal_id)
-    plan = ctx.db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == proposal.project_id))
+PROPOSAL_EXISTS = (
+    "the project no longer needs a proposal from the orchestrator (it has one, its plan is no "
+    "longer complete, or it is no longer a live client project)"
+)
+NOTHING_TO_DRAFT = (
+    "the proposal no longer has an empty section to draft (or is no longer a draft, or its plan "
+    "is no longer complete)"
+)
+SUBMIT_CHANGED = "the proposal changed while the window waited, so it was not submitted"
+
+
+def _draft_proposal(ctx: Context, subject_id: int) -> int:
+    """Draft a client project's proposal (item 6.8). For a project with none, create it from the
+    plan (no person; its own audit row) first. The proposal agent then fills only the empty
+    sections, as unreviewed drafts for a person to review."""
+    db = ctx.db
+    if ctx.subject_type == PROJECT:
+        project = db.get(Project, subject_id, with_for_update=True, populate_existing=True)
+        if not (_live(project) and _needs_proposal(db, project)):
+            return _skipped(ctx, "draft_proposal", subject_id, PROPOSAL_EXISTS, subject=PROJECT)
+        plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+        proposal = proposal_rules.new_proposal(db, plan, None)
+        proposal_rules.record(
+            db,
+            proposal,
+            actor_user_id=None,
+            trigger=TRIGGER,
+            action="create",
+            before=None,
+            by=ORCHESTRATOR,
+        )
+    else:
+        proposal = db.get(ProjectProposal, subject_id, with_for_update=True, populate_existing=True)
+        project = db.get(Project, proposal.project_id) if proposal is not None else None
+        if (
+            proposal is None
+            or proposal.status != "draft"
+            or not empty_sections(proposal)
+            or not _live(project)
+            or not _plan_complete(db, proposal.project_id)
+        ):
+            return _skipped(ctx, "draft_proposal", subject_id, NOTHING_TO_DRAFT, subject=PROPOSAL)
+        plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == proposal.project_id))
     result = proposal_agent.run(
-        ctx.db,
+        db,
         ctx.client,
         proposal,
-        plan_facts(ctx.db, plan),
+        plan_facts(db, plan),
         settings=ctx.settings,
         save_it=True,
         actor_user_id=None,
         trigger=TRIGGER,
+        only_empty=True,
     )
     return result.audit_id
+
+
+def _submit_proposal(ctx: Context, proposal_id: int) -> int:
+    """Submit a draft after its window (item 6.8), through the submit route's rules: only while
+    it is still a draft with every section written and reviewed by a person and no checker flag
+    open. The frozen copy has no submitter; the proposal's row says the orchestrator did it."""
+    db = ctx.db
+    proposal = db.get(ProjectProposal, proposal_id, with_for_update=True, populate_existing=True)
+    project = db.get(Project, proposal.project_id) if proposal is not None else None
+    refusal = submit_refusal(db, proposal, require_filled=True) if proposal is not None else None
+    if proposal is None or not _live(project) or refusal is not None:
+        return _skipped(
+            ctx,
+            "submit_proposal",
+            proposal_id,
+            SUBMIT_CHANGED,
+            subject=PROPOSAL,
+            refusal=refusal.refusal if refusal is not None else None,
+        )
+    window = ctx.policy.steps["submit_proposal"].window_minutes if ctx.policy else None
+    return proposal_rules.submit(
+        db,
+        proposal,
+        actor_user_id=None,
+        trigger=TRIGGER,
+        by=ORCHESTRATOR,
+        step="submit_proposal",
+        window_minutes=window,
+    )
+
+
+def _client_answer(ctx: Context, proposal_id: int) -> int:
+    """The simulated client's answer (item 6.8), checked again now; skipped when it may not."""
+    answer = ctx.policy.simulated_answer if ctx.policy else "accepted"
+    try:
+        return simulated_client.answer_now(
+            ctx.db,
+            proposal_id,
+            answer=answer,
+            delay_minutes=ctx.settings.simulated_client_delay_minutes,
+            now=ctx.now or utcnow(),
+        )
+    except simulated_client.Skipped as exc:
+        return _skipped(ctx, "client_answer", proposal_id, str(exc), subject=PROPOSAL)
 
 
 SCORE_RISK_SKIPPED = "the risk agent may no longer score this risk"
@@ -553,11 +740,13 @@ LOW_RISK_CHANGED = (
 )
 
 
-def _skipped(ctx: Context, step: str, risk_id: int, reason: str, **details: Any) -> int:
+def _skipped(
+    ctx: Context, step: str, subject_id: int, reason: str, *, subject: str = RISK, **details: Any
+) -> int:
     """An orchestrator row saying an action found nothing to do, and why; nothing changes."""
     return _record(
         ctx.db,
-        subject=(RISK, str(risk_id)),
+        subject=(subject, str(subject_id)),
         status="skipped",
         signals={"step": step, "planned_reason": ctx.planned_reason},
         action_taken={"action": step, "applied": False, "reason": reason, **details},
@@ -623,8 +812,8 @@ def _open_low_risk(ctx: Context, risk_id: int) -> int | None:
     return None
 
 
-# The same functions the "Draft with the agent" buttons and the suggest-score route use. Item 6.8
-# adds submit_proposal and client_answer here.
+# The same functions the "Draft with the agent" buttons, the suggest-score route and the submit and
+# answer routes use.
 ACTIONS: dict[str, StepAction] = {
     "draft_value_case": StepAction(_draft_request),
     "draft_readiness": StepAction(_draft_request),
@@ -634,6 +823,9 @@ ACTIONS: dict[str, StepAction] = {
     # No Claude call: it applies a suggestion already made, so it doesn't count against the caps.
     "open_low_risk": StepAction(_open_low_risk, uses_claude=False),
     "draft_proposal": StepAction(_draft_proposal),
+    # No Claude call: rules only, so neither counts against the caps.
+    "submit_proposal": StepAction(_submit_proposal, uses_claude=False),
+    "client_answer": StepAction(_client_answer, uses_claude=False),
 }
 assert not PERSON_ONLY & ACTIONS.keys(), "a person always takes these steps (R1)"
 
@@ -1103,7 +1295,15 @@ class _Pass:
         # Release the action's row lock before the agent call (up to 120 seconds), so a person
         # can hold the action meanwhile without waiting for it. The row is re-read afterwards.
         self.db.commit()
-        context = Context(self.db, self.settings, self.client, self.policy, planned_reason)
+        context = Context(
+            self.db,
+            self.settings,
+            self.client,
+            self.policy,
+            planned_reason,
+            step.subject_type,
+            self.now,
+        )
         try:
             agent_audit_id = step_action.run(context, step.subject_id)
         except risk_agent.AgentError as exc:
@@ -1264,7 +1464,7 @@ def run_pass(
         return report
     try:
         rules = policy or get_autonomy()
-        steps = next_steps(db, rules, agent_mode=settings.agent_mode)
+        steps = next_steps(db, rules, agent_mode=settings.agent_mode, now=now)
         report.ran = True
         report.steps = len(steps)
         if mode == "shadow":
