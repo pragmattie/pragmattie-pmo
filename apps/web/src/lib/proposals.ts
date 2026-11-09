@@ -65,6 +65,10 @@ export interface Proposal extends ProposalContent {
   latest_version: number | null
   submitted_by: number | null
   submitted_by_name: string | null
+  // Everyone who contributed to the latest copy (who submitted it, or wrote, edited or reviewed
+  // a section), and their names in the same order. None of them may approve or return it.
+  contributors: number[]
+  contributor_names: string[]
   approved_version: number | null
   approval_current: boolean
   version: number
@@ -95,6 +99,8 @@ export interface ProposalVersion {
   // Null when the orchestrator submitted it.
   submitted_by: number | null
   submitted_by_name: string | null
+  contributors: number[]
+  contributor_names: string[]
   submitted_at: string
   events: ProposalEvent[]
 }
@@ -194,8 +200,22 @@ export interface ProposalButtons {
   withdraw: boolean
 }
 
+// Whether the user contributed to the latest copy: submitted it, or wrote, edited or reviewed a
+// section.
+export function contributed(proposal: Proposal, userId: number | null): boolean {
+  if (userId === null) return false
+  return proposal.submitted_by === userId || (proposal.contributors ?? []).includes(userId)
+}
+
+// "Pat Manager and Sam Writer", or "nobody recorded" for a copy with none.
+export function contributorsText(names: string[]): string {
+  if (!names.length) return 'nobody recorded'
+  if (names.length === 1) return names[0]
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
 // The buttons a role sees for a proposal's status. The API decides; this only hides. A sponsor
-// never sees the decision buttons on a copy they submitted themselves.
+// never sees the decision buttons on a copy they contributed to (submitted or reviewed).
 export function buttonsFor(
   proposal: Proposal,
   can: (action: string) => boolean,
@@ -208,7 +228,7 @@ export function buttonsFor(
     agent: writer && status === 'draft',
     submit: writer && status === 'draft',
     decide:
-      can('proposal:approve') && status === 'submitted' && proposal.submitted_by !== userId,
+      can('proposal:approve') && status === 'submitted' && !contributed(proposal, userId),
     sent: writer && status === 'approved',
     answer: writer && status === 'sent',
     withdraw: writer && ['draft', 'submitted', 'approved', 'sent'].includes(status),

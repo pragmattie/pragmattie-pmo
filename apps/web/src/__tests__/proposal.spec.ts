@@ -7,6 +7,7 @@ import {
   approvalText,
   approvedCopy,
   buttonsFor,
+  contributorsText,
   type DraftResult,
   draftText,
   flagsFor,
@@ -96,6 +97,8 @@ function proposal(changes: Partial<Proposal> = {}): Proposal {
     latest_version: null,
     submitted_by: null,
     submitted_by_name: null,
+    contributors: [],
+    contributor_names: [],
     approved_version: null,
     approval_current: false,
     version: 2,
@@ -126,6 +129,8 @@ function version(number: number, kinds: string[] = []): ProposalVersion {
     },
     submitted_by: PM_ID,
     submitted_by_name: 'Pat Manager',
+    contributors: [PM_ID],
+    contributor_names: ['Pat Manager'],
     submitted_at: '2026-11-05T09:00:00',
     events: kinds.map((kind, index) => ({
       id: index + 1,
@@ -273,6 +278,10 @@ describe('the proposal helpers', () => {
     for (const role of ['project_manager', 'auditor', 'ethics_reviewer', 'admin']) {
       expect(buttonsFor(submitted, can(role), USER_ID).decide).toBe(false)
     }
+    // Nor on a copy they reviewed a section of, even when the orchestrator submitted it.
+    const reviewed = proposal({ status: 'submitted', submitted_by: null, contributors: [USER_ID] })
+    expect(buttonsFor(reviewed, can('sponsor'), USER_ID).decide).toBe(false)
+    expect(buttonsFor(reviewed, can('sponsor'), 99).decide).toBe(true)
     const approved = proposal({ status: 'approved' })
     expect(buttonsFor(approved, can('project_manager'), PM_ID).sent).toBe(true)
     expect(buttonsFor(approved, can('sponsor'), USER_ID).sent).toBe(false)
@@ -535,6 +544,42 @@ describe('the proposal section', () => {
     expect(buttons.map((button) => button.getAttribute('data-test'))).toEqual(shown)
   })
 
+  it('hides Approve and Return from a sponsor who contributed, and says who did', async () => {
+    await mountAs('sponsor', {
+      stored: proposal({
+        status: 'submitted',
+        latest_version: 1,
+        submitted_by: null,
+        contributors: [PM_ID, USER_ID],
+        contributor_names: ['Pat Manager', 'Test User'],
+      }),
+      versions: [version(1)],
+    })
+    const buttons = Array.from(find('proposal-buttons')?.querySelectorAll('[data-test]') ?? [])
+    expect(buttons.map((button) => button.getAttribute('data-test'))).toEqual([])
+    expect(find('proposal-contributors')?.textContent).toContain(
+      'Contributors to this copy: Pat Manager and Test User',
+    )
+    expect(find('proposal-contributed')?.textContent).toContain('You contributed to this copy')
+    expect(find('proposal-version-contributors')?.textContent).toContain('Contributors: Pat Manager')
+  })
+
+  it('shows a sponsor who did not contribute who did, and the decision buttons', async () => {
+    await mountAs('sponsor', {
+      stored: proposal({
+        status: 'submitted',
+        latest_version: 1,
+        submitted_by: PM_ID,
+        contributors: [PM_ID],
+        contributor_names: ['Pat Manager'],
+      }),
+      versions: [version(1)],
+    })
+    expect(find('proposal-approve')).not.toBeNull()
+    expect(find('proposal-contributors')?.textContent).toContain('Contributors to this copy: Pat Manager')
+    expect(find('proposal-contributed')).toBeNull()
+  })
+
   it('lets the sponsor approve with a reason', async () => {
     const { wrapper, fetchMock } = await mountAs('sponsor', {
       stored: proposal({ status: 'submitted', latest_version: 1, submitted_by: PM_ID }),
@@ -731,5 +776,14 @@ describe('the print view', () => {
   it('says when nothing has been approved', async () => {
     await mountPrint([version(1, ['return'])])
     expect(find('proposal-print-none')).not.toBeNull()
+  })
+})
+
+describe('contributorsText', () => {
+  it('names everyone who contributed', () => {
+    expect(contributorsText([])).toBe('nobody recorded')
+    expect(contributorsText(['Pat Manager'])).toBe('Pat Manager')
+    expect(contributorsText(['Pat Manager', 'Sam Writer'])).toBe('Pat Manager and Sam Writer')
+    expect(contributorsText(['A', 'B', 'C'])).toBe('A, B and C')
   })
 })

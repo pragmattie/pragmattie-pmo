@@ -105,7 +105,7 @@ from app.policy import (
     get_policies,
 )
 from app.projects import decision_rights
-from app.proposals import new_proposal, values_of
+from app.proposals import contributors, new_proposal, values_of
 from app.risks import apply_score, record_risk_change, risk_policy, snapshot
 from app.schemas.change import ChangeSet
 from app.security import hash_password
@@ -887,6 +887,9 @@ def _seed_proposal(
         number=1,
         content={"project_name": project.name, "client_name": client.name, **values_of(proposal)},
         submitted_by=pm.id,
+        # The project manager wrote and submitted it; the sponsor who approves it did not
+        # contribute (item 6.10).
+        contributors=contributors(proposal, pm.id),
         submitted_at=at + timedelta(hours=2),
     )
     db.add(copy)

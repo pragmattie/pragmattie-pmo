@@ -18,6 +18,7 @@ from app.api.proposals import (
     FINAL,
     NO_CLIENT,
     OWN,
+    REVIEWED,
     SENT_HAS_FLAGS,
     STALE,
 )
@@ -129,6 +130,13 @@ def _get(web: TestClient, project: Project) -> dict:
 
 def _post(web: TestClient, project: Project, suffix: str, **body):
     return web.post(_url(project, suffix), json={"version": _get(web, project)["version"], **body})
+
+
+def sign_in_as(web: TestClient, user: User) -> None:
+    """Give `web` a session for an existing user."""
+    from app.security import issue_token
+
+    web.cookies.set(SESSION_COOKIE, issue_token(user.id, user.role).token)
 
 
 def _rules(proposal: dict) -> list[str]:
@@ -791,6 +799,178 @@ def test_a_sponsor_cannot_decide_their_own_submission(web, db, project, pm):
     assert response.json()["detail"] == OWN
     assert _audit(db)[-1].action_taken["refusal"] == "own_submission"
     assert _get(web, project)["status"] == "submitted"
+
+
+# --- Nobody decides a copy they contributed to (item 6.10)
+
+
+def _edit(web: TestClient, project: Project, **sections) -> dict:
+    response = web.patch(_url(project), json={"version": _get(web, project)["version"], **sections})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _orchestrator_submits(db: Session, project: Project) -> None:
+    """Submit the draft as the orchestrator does: no person submits it."""
+    from app import proposals as rules
+
+    db.expire_all()
+    proposal = db.scalar(select(ProjectProposal).where(ProjectProposal.project_id == project.id))
+    assert rules.submit_refusal(db, proposal) is None
+    rules.submit(db, proposal, actor_user_id=None, trigger="orchestrator")
+    db.commit()
+
+
+def _make_sponsor(db: Session, user: User) -> None:
+    """The role is read from the database on every request, so the same session now holds
+    proposal:approve."""
+    db.expire_all()
+    db.get(User, user.id).role = "sponsor"
+    db.commit()
+
+
+@pytest.mark.parametrize("decision", ["approve", "return"])
+def test_a_person_who_reviewed_a_section_cannot_decide_the_orchestrators_copy(
+    web, db, sign_in, project, pm, decision
+):
+    _create(web, project)
+    _edit(web, project, summary="A two-warehouse forecasting pilot")
+    _orchestrator_submits(db, project)
+    body = _get(web, project)
+    assert (body["submitted_by"], body["contributors"]) == (None, [pm.id])
+    assert body["contributor_names"] == [pm.display_name]
+
+    _make_sponsor(db, pm)
+    response = _post(web, project, f"/{decision}", reason=REASON)
+    assert response.status_code == 403
+    assert response.json()["detail"] == REVIEWED
+    row = _audit(db)[-1]
+    assert row.status == "rejected" and row.actor_user_id == pm.id
+    assert row.action_taken["action"] == f"{decision}_refused"
+    assert row.action_taken["refusal"] == "own_submission"
+    assert row.action_taken["contributors"] == [pm.id]
+    assert _get(web, project)["status"] == "submitted"
+
+    # A sponsor who did not contribute can.
+    sign_in(web, db, "sponsor", email="other.sponsor@pmo.example")
+    response = _post(web, project, f"/{decision}", reason=REASON)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == ("approved" if decision == "approve" else "draft")
+
+
+def test_a_reviewer_who_confirmed_an_agent_draft_is_a_contributor(web, db, sign_in, project, pm):
+    from app.proposals import mark_section
+
+    _create(web, project)
+    db.expire_all()
+    proposal = db.scalar(select(ProjectProposal).where(ProjectProposal.project_id == project.id))
+    proposal.summary = "A pilot drafted by the proposal agent"
+    mark_section(proposal, "summary", source="agent", reviewed_by=None, reviewed_at=None)
+    db.commit()
+    response = _post(web, project, "/sections/summary/confirm")
+    assert response.status_code == 200, response.text
+    _orchestrator_submits(db, project)
+    _make_sponsor(db, pm)
+    response = _post(web, project, "/approve", reason=REASON)
+    assert (response.status_code, response.json()["detail"]) == (403, REVIEWED)
+
+
+def test_a_person_submitted_copy_blocks_its_submitter_and_every_reviewer(
+    web, db, sign_in, project, pm
+):
+    _create(web, project)
+    writer = sign_in(web, db, "project_manager", email="writer.pm@pmo.example")
+    _edit(web, project, terms="Payment within 30 days of each milestone")
+    submitter = sign_in(web, db, "project_manager", email="submitter.pm@pmo.example")
+    assert _post(web, project, "/submit").status_code == 200
+    body = _get(web, project)
+    assert body["submitted_by"] == submitter.id
+    assert body["contributors"] == sorted([writer.id, submitter.id])
+
+    # The submitter, as today.
+    _make_sponsor(db, submitter)
+    response = _post(web, project, "/approve", reason=REASON)
+    assert (response.status_code, response.json()["detail"]) == (403, OWN)
+    assert _audit(db)[-1].action_taken["refusal"] == "own_submission"
+    # And the person who wrote a section.
+    _make_sponsor(db, writer)
+    sign_in_as(web, writer)
+    response = _post(web, project, "/return", reason=REASON)
+    assert (response.status_code, response.json()["detail"]) == (403, REVIEWED)
+    assert _audit(db)[-1].action_taken["refusal"] == "own_submission"
+    assert _get(web, project)["status"] == "submitted"
+    # The project manager who only created it wrote no section, so is not a contributor.
+    assert pm.id not in body["contributors"]
+
+
+@pytest.mark.parametrize("decision", ["approve", "return"])
+def test_a_writer_stays_a_contributor_after_someone_else_edits_the_section(
+    web, db, sign_in, project, pm, decision
+):
+    """Each section keeps everyone who touched it, not only its latest `reviewed_by`."""
+    _create(web, project)
+    _edit(web, project, summary="A pilot written by the first project manager")
+    editor = sign_in(web, db, "project_manager", email="editor.pm@pmo.example")
+    _edit(web, project, summary="A pilot edited by the second project manager")
+    _orchestrator_submits(db, project)
+    body = _get(web, project)
+    assert body["contributors"] == sorted([pm.id, editor.id])
+
+    for person in (pm, editor):
+        _make_sponsor(db, person)
+        sign_in_as(web, person)
+        response = _post(web, project, f"/{decision}", reason=REASON)
+        assert (response.status_code, response.json()["detail"]) == (403, REVIEWED)
+        row = _audit(db)[-1]
+        assert row.actor_user_id == person.id
+        assert row.action_taken["refusal"] == "own_submission"
+        assert _get(web, project)["status"] == "submitted"
+
+    sign_in(web, db, "sponsor", email="other.sponsor@pmo.example")
+    response = _post(web, project, f"/{decision}", reason=REASON)
+    assert response.status_code == 200, response.text
+
+
+def test_touched_by_only_grows_across_a_return_and_an_agent_redraft(web, db, sign_in, project, pm):
+    from app.agents import proposal_agent
+    from app.proposals import contributors, touched_by
+
+    _create(web, project)
+    _edit(web, project, summary="Written by the first project manager")
+    _orchestrator_submits(db, project)
+    sign_in(web, db, "sponsor")
+    assert _post(web, project, "/return", reason=REASON).status_code == 200
+    editor = sign_in(web, db, "project_manager", email="editor.pm@pmo.example")
+    _edit(web, project, summary="Edited by the second project manager")
+    db.expire_all()
+    proposal = db.scalar(select(ProjectProposal).where(ProjectProposal.project_id == project.id))
+    assert proposal.section_sources["summary"]["touched_by"] == sorted([pm.id, editor.id])
+
+    # The agent redrafts the section once it is empty; whoever touched it before still counts.
+    proposal.summary = None
+    db.commit()
+    checked = proposal_agent.Checked(sections={"summary": "Drafted by the proposal agent"})
+    proposal_agent.save(db, proposal, checked)
+    db.commit()
+    entry = proposal.section_sources["summary"]
+    assert (entry["source"], entry["reviewed_by"]) == ("agent", None)
+    assert entry["touched_by"] == sorted([pm.id, editor.id])
+    assert contributors(proposal, None) == sorted([pm.id, editor.id])
+    # A source saved before the list existed counts its `reviewed_by`.
+    assert touched_by({"source": "person", "reviewed_by": pm.id}) == [pm.id]
+
+
+def test_contributors_are_frozen_with_the_copy(web, db, sign_in, project, pm):
+    """A later edit to the draft doesn't change who contributed to an earlier copy."""
+    _submitted(web, db, sign_in, project)
+    assert _post(web, project, "/return", reason=REASON).status_code == 200
+    editor = sign_in(web, db, "project_manager", email="editor.pm@pmo.example")
+    _edit(web, project, summary="A two-warehouse forecasting pilot")
+    versions = web.get(_url(project, "/versions")).json()["items"]
+    assert [(v["number"], v["contributors"]) for v in versions] == [(1, [pm.id])]
+    assert versions[0]["contributor_names"] == [pm.display_name]
+    assert _post(web, project, "/submit").status_code == 200
+    assert _get(web, project)["contributors"] == [editor.id]
 
 
 def test_a_decision_on_a_draft_or_a_stale_version_is_refused_and_audited(web, db, sign_in, project):

@@ -9,7 +9,7 @@ that row, never from the token, so a role change or deactivation applies at once
 carries a `pmo_guard` attribute so a test can check that every route has one.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from enum import StrEnum
 from typing import Annotated
 
@@ -215,11 +215,17 @@ def signed_in(user: Annotated[User, Depends(current_user)]) -> User:
 signed_in.pmo_guard = "signed_in"  # type: ignore[attr-defined]
 
 
-def not_own_submission(actor_id: int, submitter_id: int | None) -> None:
-    """Separation of duties: nobody approves or decides on their own submission (403).
+OWN_SUBMISSION = "you cannot decide on your own submission"
 
-    The approval gate calls it (a sponsor can't decide a request they raised); later items
-    (proposals) will too.
+
+def not_own_submission(
+    actor_id: int, contributors: Collection[int | None], reason: str = OWN_SUBMISSION
+) -> None:
+    """Separation of duties: nobody approves or decides on what they helped make (403).
+
+    `contributors` are the user ids that made the subject. A gate passes only its requester
+    (`{requested_by}`), so nobody decides a request they raised. A proposal passes everyone who
+    contributed to the submitted copy (item 6.10), with `reason` saying which way they did.
     """
-    if submitter_id is not None and actor_id == submitter_id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "you cannot decide on your own submission")
+    if actor_id in contributors:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, reason)

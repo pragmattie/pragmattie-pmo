@@ -15,7 +15,10 @@ A project with a client has at most one proposal; a project with no client has n
   refused (409, with the flags) while the checker has any flag open.
 - `POST .../approve` and `.../return` (`proposal:approve`, a reason of at least 20 characters)
   are the sponsor's decision on a submitted proposal. Returning sends it back to draft. Nobody
-  decides on a copy they submitted themselves (`app.authz.not_own_submission`, 403).
+  decides on a copy they contributed to (item 6.10): they submitted it, or they are in the
+  `touched_by` of one of its sections, having written, edited or reviewed it at any point, even
+  if someone touched it after them (`app.authz.not_own_submission`, 403, audited as
+  `own_submission`).
 - `POST .../sent` (`project:write`) records that a person sent the approved copy: to whom, on what
   date, by what means. Nothing is sent from here. Like submit, it is refused (409, with the flags)
   while the checker has any flag open, for example after the plan changed. `POST .../answer`
@@ -128,7 +131,12 @@ STALE = "This proposal has changed since you loaded it. Reload and try again."
 FINAL = "a proposal that has been sent, answered or withdrawn can't change"
 SENT_HAS_FLAGS = "the proposal can't be marked sent while the checker has flags open"
 NOT_SUBMITTED = "only a submitted proposal can be approved or returned"
-OWN = "you cannot decide on your own submission"
+# Why a contributor to the copy may not decide it (item 6.10).
+OWN = "you cannot approve or return this proposal: you submitted this copy"
+REVIEWED = (
+    "you cannot approve or return this proposal: "
+    "you wrote, edited or reviewed a section of this copy"
+)
 NOT_APPROVED = "only an approved proposal can be marked sent"
 CANT_WITHDRAW = "this proposal has already been answered or withdrawn"
 AGENT_OFF = "the proposal agent is off (AGENT_MODE=off); a person can write the proposal by hand"
@@ -197,6 +205,10 @@ def _section_states(proposal: ProjectProposal) -> dict[str, SectionState]:
     }
 
 
+def _contributor_names(contributors: list[int], names: dict[Any, str]) -> list[str]:
+    return [names.get(user_id) or f"User {user_id}" for user_id in contributors]
+
+
 def _proposal_out(db: Session, proposal: ProjectProposal) -> ProposalOut:
     project, client = _client_project(db, proposal.project_id)
     plan = _plan(db, proposal.project_id)
@@ -205,11 +217,10 @@ def _proposal_out(db: Session, proposal: ProjectProposal) -> ProposalOut:
     latest = latest_version(db, proposal.id)
     approval = _latest_approval(db, proposal.id)
     approved = db.get(ProposalVersion, approval.version_id) if approval else None
-    submitter = None
-    if latest is not None:
-        submitter = _names(db, User, {latest.submitted_by}, User.display_name).get(
-            latest.submitted_by
-        )
+    contributors = list(latest.contributors or []) if latest is not None else []
+    people = set(contributors) | ({latest.submitted_by} if latest is not None else set())
+    names = _names(db, User, people - {None}, User.display_name)
+    submitter = names.get(latest.submitted_by) if latest is not None else None
     return ProposalOut(
         id=proposal.id,
         project_id=project.id,
@@ -226,6 +237,8 @@ def _proposal_out(db: Session, proposal: ProjectProposal) -> ProposalOut:
         latest_version=latest.number if latest else None,
         submitted_by=latest.submitted_by if latest else None,
         submitted_by_name=submitter,
+        contributors=contributors,
+        contributor_names=_contributor_names(contributors, names),
         approved_version=approved.number if approved else None,
         approval_current=bool(
             approved and latest and approved.id == latest.id and proposal.status in APPROVED_ONWARDS
@@ -590,9 +603,22 @@ def _decide(
 ) -> ProposalOut:
     proposal = _for_decision(db, project_id, body.version, user, action, ("submitted",))
     latest = latest_version(db, proposal.id)
-    if latest is not None and latest.submitted_by == user.id:
-        _refuse(db, proposal, user, action=action, refusal="own_submission", code=403, detail=OWN)
-        not_own_submission(user.id, latest.submitted_by)
+    contributors = set(latest.contributors or ()) if latest is not None else set()
+    if latest is not None and latest.submitted_by is not None:
+        contributors.add(latest.submitted_by)
+    if user.id in contributors:
+        reason = OWN if latest.submitted_by == user.id else REVIEWED
+        _refuse(
+            db,
+            proposal,
+            user,
+            action=action,
+            refusal="own_submission",
+            code=403,
+            detail=reason,
+            contributors=sorted(contributors),
+        )
+        not_own_submission(user.id, contributors, reason)
     event = ProposalEvent(
         proposal_id=proposal.id,
         version_id=latest.id if latest else None,
@@ -820,7 +846,11 @@ def list_versions(
                 .order_by(ProposalEvent.id)
             )
         )
-    people = ({r.submitted_by for r in rows} | {e.actor_user_id for e in events}) - {None}
+    people = (
+        {r.submitted_by for r in rows}
+        | {user_id for r in rows for user_id in r.contributors or ()}
+        | {e.actor_user_id for e in events}
+    ) - {None}
     names = _names(db, User, people, User.display_name)
     items = [
         VersionOut(
@@ -829,6 +859,8 @@ def list_versions(
             content=row.content,
             submitted_by=row.submitted_by,
             submitted_by_name=names.get(row.submitted_by),
+            contributors=list(row.contributors or []),
+            contributor_names=_contributor_names(list(row.contributors or []), names),
             submitted_at=row.submitted_at,
             events=[
                 EventOut.model_validate(e).model_copy(

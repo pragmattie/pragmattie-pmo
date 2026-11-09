@@ -9,7 +9,9 @@ import {
   type InboxEntry,
   mayHold,
   NO_DECISIONS,
+  NOT_YOURS_TO_DECIDE,
   POLL_MS,
+  receivesItems,
   waitsOnText,
 } from '../lib/inbox'
 import { makeVuetify } from '../plugins/vuetify'
@@ -113,6 +115,25 @@ const ITEMS: Record<string, InboxEntry[]> = {
   auditor: [],
 }
 
+// The no-deadlock item (item 6.10): every approver contributed to the copy, so it goes to the admin.
+const NO_FREE_APPROVER =
+  'every approver contributed to this copy, so none of them may approve or return it: make a ' +
+  'sponsor who did not contribute the decider'
+const ADMIN_ITEM = entry({
+  id: 21,
+  step: 'approve_proposal',
+  subject_type: 'proposal',
+  subject_id: 5,
+  subject_title: 'Proposal for Pilot',
+  project_id: 2,
+  project_name: 'Pilot',
+  who: 'admin',
+  reason: 'the proposal is submitted and waiting for approval',
+  handoff: NO_FREE_APPROVER,
+  facts: [],
+  recommendation: 'Approve it: the checker has no flags open.',
+})
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -184,13 +205,40 @@ describe('the Needs you page', () => {
     },
   )
 
-  it.each(['admin', 'auditor'])('tells the %s plainly that nothing will appear', async (role) => {
+  it('tells the auditor plainly that nothing will appear', async () => {
+    const role = 'auditor'
     const fetch = signedInAs(role)
     vi.stubGlobal('fetch', fetch)
     const { wrapper } = await mountAt('/inbox')
     expect(wrapper.find('[data-test="inbox-no-decisions"]').text()).toBe(NO_DECISIONS)
     expect(wrapper.findAll('[data-test^="inbox-item-"]')).toHaveLength(0)
     expect(fetch.mock.calls.some(([path]) => String(path).startsWith('/api/v1/inbox?'))).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows the admin a proposal decision routed to them, and why, with no decision buttons', async () => {
+    const fetch = signedInAs('admin', [ADMIN_ITEM])
+    vi.stubGlobal('fetch', fetch)
+    const { wrapper } = await mountAt('/inbox')
+    expect(wrapper.find('[data-test="inbox-no-decisions"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test^="inbox-item-"]')).toHaveLength(1)
+    await expandAll(wrapper)
+    expect(wrapper.find('[data-test="inbox-handoff"]').text()).toContain(NO_FREE_APPROVER)
+    expect(wrapper.find('[data-test="inbox-not-yours"]').text()).toBe(NOT_YOURS_TO_DECIDE)
+    const body = wrapper.find('[data-test="inbox-item-item-21"] .v-expansion-panel-text')
+    const buttons = body.findAll('button').map((button) => button.text())
+    expect(wrapper.find('[data-test^="proposal-approve"]').exists()).toBe(false)
+    expect(buttons.some((text) => /approve|return/i.test(text))).toBe(false)
+    // The proposal's own form is never loaded for them.
+    expect(fetch.mock.calls.some(([path]) => String(path).includes('/proposal'))).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('tells the admin nothing needs them when nothing is routed to them', async () => {
+    vi.stubGlobal('fetch', signedInAs('admin'))
+    const { wrapper } = await mountAt('/inbox')
+    expect(wrapper.find('[data-test="inbox-no-decisions"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="inbox-empty"]').exists()).toBe(true)
     wrapper.unmount()
   })
 
@@ -301,6 +349,13 @@ describe('the inbox helpers', () => {
     expect(mayHold(WINDOW, 'project_manager')).toBe(true)
     expect(mayHold(WINDOW, 'sponsor')).toBe(false)
     expect(mayHold(entry({ who: 'project_manager' }), 'project_manager')).toBe(false)
+  })
+
+  it('loads the inbox for anyone the API can route an item to', () => {
+    const can = (role: string) => (action: string) => ACTIONS[role].includes(action)
+    expect(receivesItems(can('admin'), 'admin')).toBe(true)
+    expect(receivesItems(can('sponsor'), 'sponsor')).toBe(true)
+    expect(receivesItems(can('auditor'), 'auditor')).toBe(false)
   })
 
   it('says when a window action happens', () => {

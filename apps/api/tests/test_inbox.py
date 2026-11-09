@@ -170,6 +170,118 @@ def test_a_sponsor_never_sees_another_projects_named_sponsor_items(db, web, sett
         assert named["project_name"] == "Pilot"
 
 
+def _sign_in_as(web: TestClient, user) -> None:
+    web.cookies.set(SESSION_COOKIE, issue_token(user.id, user.role).token)
+    web.cookies.set(CSRF_COOKIE, "test-csrf-value")
+
+
+def _copy(db: Session, proposal_id: int, contributors: list[int], submitted_by=None) -> None:
+    from app.models import ProposalVersion
+
+    db.add(
+        ProposalVersion(
+            proposal_id=proposal_id,
+            number=1,
+            content={},
+            submitted_by=submitted_by,
+            contributors=contributors,
+        )
+    )
+    db.commit()
+
+
+def _decision(web: TestClient, proposal_id: int) -> dict | None:
+    return next(
+        (
+            e
+            for e in _inbox(web)["items"]
+            if (e["step"], e["subject_id"]) == ("approve_proposal", proposal_id)
+        ),
+        None,
+    )
+
+
+def test_a_proposal_decision_skips_a_named_sponsor_who_contributed(
+    db, web, settings, actions, sign_in
+):
+    actions()
+    named = _user(db, role="sponsor", name="named-sponsor")
+    free = _user(db, role="sponsor", name="free-sponsor")
+    project = _project(db, client=True, sponsor_user_id=named.id)
+    proposal_id = _proposal(db, project, named, "submitted", filled=True)
+    _copy(db, proposal_id, [named.id])
+    _pass(db, settings)
+
+    _sign_in_as(web, named)
+    assert _decision(web, proposal_id) is None
+    _sign_in_as(web, free)
+    entry = _decision(web, proposal_id)
+    assert entry is not None and entry["who"] == "sponsor"
+    assert entry["named_user_id"] is None
+    assert entry["handoff"] == inbox._named_contributed("named-sponsor")
+
+
+def test_a_named_sponsor_who_did_not_contribute_still_gets_the_decision(
+    db, web, settings, actions, sign_in
+):
+    actions()
+    named = _user(db, role="sponsor", name="named-sponsor")
+    other = _user(db, role="sponsor", name="other-sponsor")
+    pm = _user(db)
+    project = _project(db, client=True, sponsor_user_id=named.id)
+    proposal_id = _proposal(db, project, pm, "submitted", filled=True)
+    _copy(db, proposal_id, [pm.id], submitted_by=pm.id)
+    _pass(db, settings)
+    _sign_in_as(web, named)
+    entry = _decision(web, proposal_id)
+    assert entry is not None and entry["named_user_id"] == named.id
+    _sign_in_as(web, other)
+    assert _decision(web, proposal_id) is None
+
+
+def test_when_every_approver_contributed_the_decision_goes_to_the_admin(
+    db, web, settings, actions, sign_in
+):
+    actions()
+    named = _user(db, role="sponsor", name="named-sponsor")
+    second = _user(db, role="sponsor", name="second-sponsor")
+    away = _user(db, role="sponsor", name="away-sponsor")
+    away.is_active = False
+    admin = _user(db, role="admin", name="admin")
+    project = _project(db, client=True, sponsor_user_id=named.id)
+    proposal_id = _proposal(db, project, named, "submitted", filled=True)
+    _copy(db, proposal_id, [named.id, second.id])
+    _pass(db, settings)
+
+    for sponsor in (named, second):
+        _sign_in_as(web, sponsor)
+        assert _decision(web, proposal_id) is None
+    _sign_in_as(web, admin)
+    entry = _decision(web, proposal_id)
+    assert entry is not None and entry["who"] == "admin"
+    assert entry["handoff"] == inbox.NO_FREE_APPROVER
+    assert "make a sponsor who did not contribute the decider" in entry["handoff"]
+    assert "nothing is decided automatically" in entry["handoff"]
+    assert _count(web) == 1
+    # Nothing was decided, and the admin still can't approve it.
+    from app.models import ProjectProposal
+
+    db.expire_all()
+    assert db.get(ProjectProposal, proposal_id).status == "submitted"
+    web.headers["X-CSRF-Token"] = "test-csrf-value"
+    response = web.post(
+        f"/api/v1/projects/{project.id}/proposal/approve",
+        json={"version": 1, "reason": "Approving because nobody else can do it"},
+    )
+    assert response.status_code == 403
+
+    # Once a sponsor who did not contribute exists, the decision goes to them.
+    fresh = _user(db, role="sponsor", name="fresh-sponsor")
+    assert _decision(web, proposal_id) is None
+    _sign_in_as(web, fresh)
+    assert _decision(web, proposal_id) is not None
+
+
 def test_an_item_follows_its_steps_who_when_a_risk_is_re_escalated(
     db, web, settings, actions, sign_in
 ):

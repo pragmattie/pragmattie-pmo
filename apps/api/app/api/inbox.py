@@ -6,7 +6,9 @@
 - `GET /inbox/count` (`project:read`) is how many there are, for the navigation badge.
 
 Neither decides anything: each item is decided through its step's existing route. An admin or
-auditor holds `project:read` but decides nothing, so their inbox is always empty.
+auditor holds `project:read` but decides nothing, so their inbox is empty, except that a proposal
+decision every approver contributed to goes to the admin, to make a non-contributor the decider
+(item 6.10).
 """
 
 import logging

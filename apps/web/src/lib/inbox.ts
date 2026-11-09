@@ -38,6 +38,10 @@ export const POLL_MS = 15_000
 export const MIN_HOLD_REASON = 10
 export const NO_DECISIONS =
   "Your role doesn't decide anything here; nothing will appear in this inbox."
+// On an item for someone who decides nothing (the admin, when every approver contributed to a
+// proposal copy): they act on why it came to them, outside the inbox.
+export const NOT_YOURS_TO_DECIDE =
+  "You don't approve or return this. Act on why it came to you; a person who may decide it will."
 export const EMPTY = 'Nothing needs you right now.'
 
 // The actions that let a role decide something; a role with none of them has an empty inbox.
@@ -51,6 +55,12 @@ const DECIDING_ACTIONS = [
 
 export function decidesAnything(can: (action: string) => boolean): boolean {
   return DECIDING_ACTIONS.some(can)
+}
+
+// Whether the API can route any item to this user: anyone who decides something, and the admin,
+// who gets a proposal decision every approver contributed to (item 6.10) but never decides it.
+export function receivesItems(can: (action: string) => boolean, role: string | undefined) {
+  return decidesAnything(can) || role === 'admin'
 }
 
 const STEP_TITLES: Record<string, string> = {

@@ -162,6 +162,10 @@ class ProposalOut(BaseModel):
     latest_version: int | None
     submitted_by: int | None
     submitted_by_name: str | None
+    # Everyone who contributed to the latest copy (item 6.10), who may not approve or return it,
+    # and their names in the same order. Empty before the first submit.
+    contributors: list[int]
+    contributor_names: list[str]
     approved_version: int | None
     approval_current: bool
     version: int
@@ -194,6 +198,9 @@ class VersionOut(BaseModel):
     # None when the orchestrator submitted it (item 6.8).
     submitted_by: int | None
     submitted_by_name: str | None
+    # Everyone who contributed to this copy (item 6.10), and their names in the same order.
+    contributors: list[int]
+    contributor_names: list[str]
     submitted_at: datetime
     events: list[EventOut]
 

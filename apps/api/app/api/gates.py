@@ -143,7 +143,7 @@ class RequestSubject:
         return "own_submission" if self.row.requested_by == user.id else None
 
     def own_error(self, user: User) -> None:
-        not_own_submission(user.id, self.row.requested_by)
+        not_own_submission(user.id, {self.row.requested_by})
 
     def refusals(self, version: int) -> list[tuple[str, bool, str]]:
         return [

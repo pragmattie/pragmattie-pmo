@@ -19,6 +19,11 @@ rests on and a one-line recommendation.
   score and band, a proposal's flags, a change's effect, a draft's gaps). The recommendation is
   written by code from those facts (`recommend`), one function per step; no model is involved.
 
+- **Nobody decides a proposal they helped make** (item 6.10). An `approve_proposal` item never
+  goes to someone who contributed to the latest copy. When the named sponsor did, it goes to any
+  active sponsor who did not, saying so; when every approver did, it goes to the admin, who is
+  asked to make a non-contributor the decider (`_proposal_route`). The admin never decides it.
+
 Nothing here decides anything: each item is decided through the existing route for its step.
 """
 
@@ -31,6 +36,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app import orchestrator
+from app.authz import Action, allowed_actions
 from app.autonomy import AutonomyPolicy
 from app.gates import CHECKS_BY_SUBJECT
 from app.models import (
@@ -50,7 +56,7 @@ from app.models.proposal import TEXT_SECTIONS
 from app.orchestrator import CHANGE_REQUEST, PROJECT, PROPOSAL, REQUEST, RISK
 from app.plans import missing
 from app.policy import PolicyError, RiskPolicy, get_policies
-from app.proposals import check, plan_facts, unreviewed_sections, values_of
+from app.proposals import check, latest_version, plan_facts, unreviewed_sections, values_of
 from app.roles import Role
 
 ITEM = "item"
@@ -147,6 +153,63 @@ def _scope(db: Session, subject_type: str, subject_id: int, who: str) -> Scope |
     else:
         title = row.title
     return Scope(title, project, _named(project, who))
+
+
+# --- A proposal's decision never goes to someone who contributed to the copy (item 6.10)
+
+APPROVE_PROPOSAL = "approve_proposal"
+NO_FREE_APPROVER = (
+    "every approver contributed to this copy, so none of them may approve or return it: make a "
+    "sponsor who did not contribute the decider (reassign the project's sponsor, or give the "
+    "approve role to someone who did not contribute). The admin never approves or returns it, "
+    "and nothing is decided automatically"
+)
+
+
+@dataclass(frozen=True)
+class Route:
+    """Where an `approve_proposal` item goes instead of its usual person: the role, the people
+    in it who may see it (None for anyone in the role), and why it went there."""
+
+    who: str
+    user_ids: frozenset[int] | None
+    handoff: str
+
+
+def _named_contributed(name: str) -> str:
+    return (
+        f"the named sponsor, {name}, contributed to this copy, so a sponsor who did not "
+        "contribute decides it"
+    )
+
+
+def _proposal_route(db: Session, proposal_id: int, named_user_id: int | None) -> Route | None:
+    """None when the person the item would go to may decide the latest copy. Otherwise any
+    active approver who did not contribute to it, or, when every approver contributed, the
+    admin, who is asked to make a non-contributor the decider. Nothing is decided here."""
+    latest = latest_version(db, proposal_id)
+    if latest is None:
+        return None
+    contributors = set(latest.contributors or ()) | {latest.submitted_by} - {None}
+    if not contributors or (named_user_id is not None and named_user_id not in contributors):
+        return None
+    roles = [r for r in Role if Action.PROPOSAL_APPROVE in allowed_actions(r)]
+    approvers = db.execute(
+        select(User.id, User.display_name, User.role).where(
+            User.is_active.is_(True), User.role.in_(roles)
+        )
+    ).all()
+    free = [a for a in approvers if a.id not in contributors]
+    if not free:
+        return Route(Role.ADMIN, None, NO_FREE_APPROVER)
+    if named_user_id is None:
+        if not contributors & {a.id for a in approvers}:
+            return None
+        handoff = "a sponsor who contributed to this copy may not decide it"
+    else:
+        named = db.get(User, named_user_id)
+        handoff = _named_contributed(named.display_name if named else f"User {named_user_id}")
+    return Route(free[0].role, frozenset(a.id for a in free), handoff)
 
 
 # --- The facts each step's decision rests on
@@ -516,7 +579,13 @@ def entries(
         select(InboxItem)
         .where(
             InboxItem.status == "open",
-            or_(InboxItem.who == user.role, InboxItem.subject_type == RISK),
+            # And every open proposal decision: it goes to someone else when the person it
+            # would go to contributed to the copy (`_proposal_route`).
+            or_(
+                InboxItem.who == user.role,
+                InboxItem.subject_type == RISK,
+                InboxItem.step == APPROVE_PROPOSAL,
+            ),
         )
         .order_by(InboxItem.created_at, InboxItem.id)
     ).all()
@@ -541,6 +610,7 @@ def entries(
     # Each subject's steps and scope are worked out once per request, however many rows share it.
     steps_cache: dict[tuple[str, int], dict[str, orchestrator.NextStep]] = {}
     scope_cache: dict[tuple[str, int, str], Scope | None] = {}
+    route_cache: dict[tuple[int, str], Route | None] = {}
 
     def live(step: str, subject_type: str, subject_id: int) -> orchestrator.NextStep | None:
         key = (subject_type, subject_id)
@@ -562,7 +632,15 @@ def entries(
         # The step's `who` now, which an open item follows: when it has changed, the old role
         # stops seeing the item and the new role sees the step.
         who = orchestrator.person_who(policy, step) if is_item else row.who
-        if who != user.role:
+        route = None
+        if row.step == APPROVE_PROPOSAL and row.subject_type == PROPOSAL:
+            route_key = (subject_id, who)
+            if route_key not in route_cache:
+                scope = _scope(db, row.subject_type, subject_id, who)
+                named = scope.named_user_id if scope is not None else None
+                route_cache[route_key] = _proposal_route(db, subject_id, named)
+            route = route_cache[route_key]
+        if (route.who if route else who) != user.role:
             continue
         moved = who != row.who
         scope_key = (row.subject_type, subject_id, who)
@@ -571,7 +649,10 @@ def entries(
         scope = scope_cache[scope_key]
         if scope is None:
             continue
-        if scope.named_user_id is not None and scope.named_user_id != user.id:
+        if route is not None:
+            if route.user_ids is not None and user.id not in route.user_ids:
+                continue
+        elif scope.named_user_id is not None and scope.named_user_id != user.id:
             continue
         found.append(
             Entry(
@@ -580,16 +661,18 @@ def entries(
                 step=row.step,
                 subject_type=row.subject_type,
                 subject_id=subject_id,
-                who=who,
+                who=route.who if route else who,
                 reason=step.reason,
-                handoff=None if moved or not is_item else _handoff(db, row, step, names),
+                handoff=route.handoff
+                if route
+                else (None if moved or not is_item else _handoff(db, row, step, names)),
                 created_at=row.created_at,
                 action_id=row.action_id if is_item else row.id,
                 due_at=None if is_item else row.due_at,
                 subject_title=scope.title,
                 project_id=scope.project.id if scope.project is not None else None,
                 project_name=scope.project.name if scope.project is not None else None,
-                named_user_id=scope.named_user_id,
+                named_user_id=None if route else scope.named_user_id,
             )
         )
     found.sort(key=lambda e: (e.created_at, e.kind != ITEM, e.id))

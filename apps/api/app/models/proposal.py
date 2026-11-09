@@ -14,7 +14,9 @@
 (item 6.8); only such an event has no person.
 
 `section_sources` says who wrote each text section (item 5.3): `{"source": "agent" | "person",
-"reviewed_by": user id or null, "reviewed_at": ISO time or null}` by section name. An agent's
+"reviewed_by": user id or null, "reviewed_at": ISO time or null, "touched_by": [user ids]}` by
+section name. `touched_by` is everyone who ever wrote, edited or reviewed the section and only
+grows (item 6.10); older entries without it count their `reviewed_by`. An agent's
 section with no `reviewed_by` is an unreviewed draft, which blocks submit. A section with no entry
 was prefilled from the plan, or is empty.
 
@@ -113,6 +115,10 @@ class ProposalVersion(Base):
     submitted_by: Mapped[int | None] = mapped_column(
         ForeignKey(f"{USERS_TABLE}.id", name="fk_proposal_versions_submitted_by"), index=True
     )
+    # Everyone who helped make this copy, sorted user ids (item 6.10): the submitter, if a
+    # person, and every section's `touched_by` (whoever wrote, edited or reviewed it, even if
+    # their text was later edited) when it was submitted. None of them may decide it.
+    contributors: Mapped[list[int]] = mapped_column(JSON, default=list)
     submitted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

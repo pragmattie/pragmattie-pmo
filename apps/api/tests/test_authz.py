@@ -156,11 +156,23 @@ def test_allowed_actions_are_sorted_and_empty_for_an_unknown_role():
 
 
 def test_not_own_submission():
-    not_own_submission(1, 2)
-    not_own_submission(1, None)
+    not_own_submission(1, {2})
+    not_own_submission(1, {None})
+    not_own_submission(1, set())
     with pytest.raises(HTTPException) as caught:
-        not_own_submission(3, 3)
+        not_own_submission(3, {3})
     assert caught.value.status_code == 403
+    assert caught.value.detail == "you cannot decide on your own submission"
+
+
+def test_not_own_submission_refuses_any_contributor_with_the_reason_given():
+    not_own_submission(4, [1, 2, 3])
+    reason = "you wrote, edited or reviewed a section of this copy"
+    for contributor in (1, 2, 3):
+        with pytest.raises(HTTPException) as caught:
+            not_own_submission(contributor, [1, 2, 3], reason)
+        assert caught.value.status_code == 403
+        assert caught.value.detail == reason
 
 
 # --- Every route has a guard
