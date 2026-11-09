@@ -8,6 +8,8 @@ import {
   buttonsFor,
   draftText,
   eventText,
+  SIMULATED_CLIENT,
+  submitterText,
   flagsFor,
   type Proposal,
   proposalApi,
@@ -199,6 +201,14 @@ const withdraw = () =>
       <div class="d-flex flex-wrap align-center ga-2 mb-2">
         <v-chip color="primary" variant="tonal" data-test="proposal-status">
           {{ STATUS_TEXT[proposal.status] }}
+        </v-chip>
+        <v-chip
+          v-if="proposal.client_simulated"
+          color="secondary"
+          variant="outlined"
+          data-test="proposal-simulated"
+        >
+          {{ SIMULATED_CLIENT }}
         </v-chip>
         <span v-if="proposal.latest_version" class="text-body-2" data-test="proposal-latest">
           Latest submitted version: {{ proposal.latest_version }}
@@ -494,7 +504,7 @@ const withdraw = () =>
         <v-list-item v-for="item in versions" :key="item.id" data-test="proposal-version">
           <v-list-item-title>
             Version {{ item.number }}, submitted by
-            {{ item.submitted_by_name ?? `User ${item.submitted_by}` }} on
+            {{ submitterText(item) }} on
             {{ item.submitted_at.slice(0, 10) }} (price {{ item.content.price }})
           </v-list-item-title>
           <ul class="pl-4 text-body-2">

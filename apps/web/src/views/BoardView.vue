@@ -236,7 +236,7 @@ onUnmounted(() => {
                   variant="outlined"
                   data-test="card-simulated"
                 >
-                  Simulated
+                  Simulated client
                 </v-chip>
               </div>
               <div class="text-body-2 d-flex align-center ga-1" data-test="card-risks">
