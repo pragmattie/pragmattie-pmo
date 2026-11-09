@@ -348,8 +348,9 @@ def _open_low_risk(facts: list[Fact]) -> str:
     if _value(facts, "suggested_band"):
         score, band = _value(facts, "suggested_score"), _value(facts, "suggested_band")
         return (
-            f"Open it in the risk register with the risk agent's suggested score ({score}, "
-            f"{band}, which a project manager owns), or change the score first."
+            f"The risk agent suggested {band} (score {score}). Use the agent's score (Use this "
+            f"score, then Save) or set your own, then open the risk. A {band} risk stays with a "
+            "project manager."
         )
     return f"Open it in the risk register: scored {score}, {band}, which a project manager owns."
 
@@ -361,8 +362,9 @@ def _score_risk(facts: list[Fact]) -> str:
     if band:
         score, owner = _value(facts, "suggested_score"), _value(facts, "suggested_owner")
         return (
-            f"Open it or change it: the risk agent suggested {band} (score {score}), and opening "
-            f"it escalates it to the {owner}. To change it, set your own score, then open it."
+            f"The risk agent suggested {band} (score {score}). Use the agent's score (Use this "
+            "score, then Save) or set your own, then open the risk. Opening it escalates it to "
+            f"the {owner}."
         )
     return "Score its probability and impact so it gets a band and an owner."
 

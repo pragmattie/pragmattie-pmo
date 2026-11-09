@@ -347,14 +347,15 @@ def _facts(**values) -> list[Fact]:
                 suggested_band="Medium",
                 suggested_owner="sponsor",
             ),
-            "Open it or change it: the risk agent suggested Medium (score 12), and opening it "
-            "escalates it to the sponsor. To change it, set your own score, then open it.",
+            "The risk agent suggested Medium (score 12). Use the agent's score (Use this score, "
+            "then Save) or set your own, then open the risk. Opening it escalates it to the "
+            "sponsor.",
         ),
         (
             "open_low_risk",
             _facts(score="not scored", band="none", suggested_score=4, suggested_band="Low"),
-            "Open it in the risk register with the risk agent's suggested score (4, Low, which a "
-            "project manager owns), or change the score first.",
+            "The risk agent suggested Low (score 4). Use the agent's score (Use this score, then "
+            "Save) or set your own, then open the risk. A Low risk stays with a project manager.",
         ),
         ("approve_proposal", _facts(flags=2), "Return it: the checker has 2 flag(s) open."),
         (
@@ -651,4 +652,7 @@ def test_a_risk_with_a_suggestion_shows_it_as_the_agents(db):
     assert facts["suggested_probability_reason"] == "It happened on the last project."
     assert facts["suggested_model"] == "claude-sonnet-5-5"
     advice = recommend("score_risk", inbox.facts_for(db, "score_risk", "risk", risk.id))
-    assert advice.startswith("Open it or change it")
+    assert advice == (
+        "The risk agent suggested Medium (score 12). Use the agent's score (Use this score, "
+        "then Save) or set your own, then open the risk. Opening it escalates it to the sponsor."
+    )
