@@ -40,6 +40,7 @@ from app.models import (
     User,
     utcnow,
 )
+from app.models.portfolio import CANCELLED
 from app.models.proposal import TEXT_SECTIONS
 from app.orchestrator import next_steps
 from app.schemas.portfolio import ClientOut
@@ -470,6 +471,23 @@ def test_the_answer_checks_again_when_it_is_due(db, settings, rules):
     row = db.get(AuditDecision, orchestrator._client_answer(ctx, proposal.id))
     assert row.action_taken["reason"] == simulated_client.NOT_SENT
     assert _fresh(db, proposal.id).status == "withdrawn"
+
+
+def test_a_cancelled_project_is_not_answered_by_the_simulation(db, settings, rules):
+    project, proposal = _sent_proposal(db)
+    ctx = orchestrator.Context(db, settings, FakeClaude(), rules, "", "proposal", utcnow())
+    # The project was cancelled after the step was found.
+    project.status = CANCELLED
+    db.commit()
+    row = db.get(AuditDecision, orchestrator._client_answer(ctx, proposal.id))
+    assert row.status == "skipped"
+    assert row.action_taken["reason"] == simulated_client.NOT_LIVE
+    assert _fresh(db, proposal.id).status == "sent"
+    assert db.scalar(select(ProposalEvent).where(ProposalEvent.kind == "answer")) is None
+    with pytest.raises(simulated_client.Skipped, match="cancelled"):
+        simulated_client.answer_now(
+            db, proposal.id, answer="accepted", delay_minutes=0, now=utcnow()
+        )
 
 
 def test_only_a_simulated_answer_may_have_no_person(db):

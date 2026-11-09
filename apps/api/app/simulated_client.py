@@ -8,9 +8,10 @@ event, with the answer in the autonomy policy (`agents.simulated_client.answer`:
 The answer goes through the answer route's rules (`app.proposals.answer_refusal` and `answer`),
 with no person and `source = simulated`, so the proposal page, the board and the audit rows say
 "Simulated client". The orchestrator's `client_answer` step calls `answer_now`, which checks again
-at its due time that the proposal is still `sent`, the client is still simulated, nothing has
-answered it yet and the delay is over; otherwise it changes nothing and says why. It answers at
-most once.
+at its due time that the proposal is still `sent`, its project is still live (not cancelled, and
+in planning or delivery, as for drafting and submitting), the client is still simulated, nothing
+has answered it yet and the delay is over; otherwise it changes nothing and says why. It answers
+at most once.
 """
 
 from datetime import datetime, timedelta
@@ -27,6 +28,7 @@ TRIGGER = "orchestrator"
 LABEL = "Simulated client"
 
 NOT_SENT = "the proposal is no longer waiting for an answer"
+NOT_LIVE = "the project is cancelled or no longer in planning or delivery"
 NOT_SIMULATED = "the client is not simulated, so a person records its answer"
 ANSWERED = "the proposal already has an answer"
 NOT_DUE = "the delay after the proposal was sent is not over yet"
@@ -70,8 +72,13 @@ def skip_reason(
     db: Session, proposal: ProjectProposal, *, delay_minutes: int, now: datetime
 ) -> str | None:
     """Why the simulated client may not answer the proposal now, or None when it may."""
+    # Imported here: the orchestrator imports this module, and its liveness rule is the one used.
+    from app.orchestrator import _live
+
     if rules.answer_refusal(proposal) is not None:
         return NOT_SENT
+    if not _live(db.get(Project, proposal.project_id)):
+        return NOT_LIVE
     if not is_simulated(db, proposal):
         return NOT_SIMULATED
     if _answered(db, proposal):
