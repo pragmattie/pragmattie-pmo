@@ -438,8 +438,8 @@ def contributors(proposal: ProjectProposal, submitter: int | None) -> list[int]:
     """Everyone who helped make the proposal as it stands, sorted user ids (item 6.10): the
     submitter (None when the orchestrator submits) and every section's `reviewed_by`, which is
     set both when a person reviewed an agent's draft and when a person wrote or edited the text."""
-    found = {(entry or {}).get("reviewed_by") for entry in (proposal.section_sources or {}).values()}
-    found.add(submitter)
+    sources = (proposal.section_sources or {}).values()
+    found = {(entry or {}).get("reviewed_by") for entry in sources} | {submitter}
     return sorted(int(user_id) for user_id in found if user_id is not None)
 
 
