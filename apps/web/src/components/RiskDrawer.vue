@@ -3,6 +3,7 @@ import { computed } from 'vue'
 
 import {
   AGENT_PROPOSAL,
+  agentSuggestion,
   bandColor,
   canCloseRisk,
   canEditRisk,
@@ -13,12 +14,15 @@ import {
   label,
   type Risk,
   scoreText,
+  SUGGESTED_BY_AGENT,
 } from '../lib/risks'
 
 // Every field of one risk and its history from the audit trail. The edit, close, open, reject and
 // accept buttons are only rendered for a role that may use them; the API refuses everyone else
 // anyway. `canAccept` and `canClearEscalation` are worked out by the page, which knows each band's
 // owner: a person who can't clear an escalation gets no Close risk, and a line saying who can.
+// While a risk is proposed, the risk agent's suggested score shows apart from the real one, with
+// "Use this score", which only fills the person's edit form: nothing is applied until they save.
 const props = defineProps<{
   risk: Risk | null
   history: HistoryEntry[]
@@ -38,10 +42,12 @@ const emit = defineEmits<{
   accept: []
   openProposed: []
   reject: []
+  useSuggestion: []
   moreHistory: []
 }>()
 
 const proposed = computed(() => props.canWrite && props.risk?.status === 'proposed')
+const suggestion = computed(() => (props.risk ? agentSuggestion(props.risk) : null))
 
 const fields = computed(() => {
   const risk = props.risk
@@ -133,6 +139,45 @@ function describe(entry: HistoryEntry) {
         {{ escalationLine(risk) }}.
       </span>
     </v-alert>
+    <v-card
+      v-if="suggestion"
+      variant="outlined"
+      color="secondary"
+      class="mb-3"
+      data-test="agent-suggestion"
+    >
+      <v-card-item>
+        <v-card-title class="text-subtitle-2" data-test="agent-suggestion-title">
+          {{ SUGGESTED_BY_AGENT }}
+        </v-card-title>
+        <v-card-subtitle v-if="suggestion.model" data-test="agent-suggestion-model">
+          Model: {{ suggestion.model }}
+        </v-card-subtitle>
+      </v-card-item>
+      <v-card-text class="text-body-2">
+        <p class="mb-1" data-test="agent-suggestion-probability">
+          <strong>Probability {{ suggestion.probability }}.</strong>
+          {{ suggestion.probabilityReason }}
+        </p>
+        <p class="mb-2" data-test="agent-suggestion-impact">
+          <strong>Impact {{ suggestion.impact }}.</strong> {{ suggestion.impactReason }}
+        </p>
+        <p class="text-caption text-medium-emphasis mb-0" data-test="agent-suggestion-caption">
+          The risk's own score stays empty until a person sets it, or, for a Low suggestion,
+          until the objection window applies it.
+        </p>
+      </v-card-text>
+      <v-card-actions v-if="canWrite">
+        <v-btn
+          variant="tonal"
+          size="small"
+          data-test="use-suggestion"
+          @click="emit('useSuggestion')"
+        >
+          Use this score
+        </v-btn>
+      </v-card-actions>
+    </v-card>
     <div v-if="canWrite || canAccept" class="d-flex flex-wrap ga-2 mb-4">
       <v-btn
         v-if="canAccept"

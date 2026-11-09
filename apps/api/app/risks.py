@@ -4,6 +4,9 @@
 Run it after the risk policy file changes: stored scores and bands are otherwise only refreshed
 when a risk is next edited.
 
+`drop_stale_suggestion` clears the risk agent's suggested score when a person's edit changes the
+text it was made for (title, cause or effect); the edit's audit row records what was cleared.
+
 `risk_from_template` turns a starter risk library template into a `proposed`, unscored risk.
 
 Every create, change, close, decision and re-score of a risk is one audit row: agent
@@ -113,6 +116,37 @@ def snapshot(risk: Risk) -> dict[str, Any]:
     return values
 
 
+# The text the risk agent scores from: a change to any of it makes its suggestion stale.
+SCORED_TEXT = ("title", "cause", "effect")
+SUGGESTION_FIELDS = (
+    "suggested_probability",
+    "suggested_impact",
+    "suggested_probability_reason",
+    "suggested_impact_reason",
+    "suggested_model",
+    "suggested_audit_id",
+)
+
+
+def drop_stale_suggestion(risk: Risk, before: dict[str, Any]) -> dict[str, Any] | None:
+    """Clear the risk agent's suggestion when an edit changed the text it was made for (`before`
+    is the risk's snapshot before the edit). Returns what was cleared, for the edit's audit row,
+    or None when nothing was. With no suggestion left, the orchestrator plans `score_risk` again
+    and a pending `open_low_risk` window skips, since its suggestion is gone."""
+    if risk.suggested_probability is None and risk.suggested_audit_id is None:
+        return None
+    if all(getattr(risk, name) == before[name] for name in SCORED_TEXT):
+        return None
+    cleared = {
+        "probability": risk.suggested_probability,
+        "impact": risk.suggested_impact,
+        "audit_id": risk.suggested_audit_id,
+    }
+    for name in SUGGESTION_FIELDS:
+        setattr(risk, name, None)
+    return cleared
+
+
 def band_owner(policy: RiskPolicy, band: str | None) -> str | None:
     """The role a band escalates to, from the policy; none for no band or an unknown one."""
     return next((b.escalation_owner for b in policy.priority_bands if b.name == band), None)
@@ -175,13 +209,14 @@ def record_risk_change(
     before: dict[str, Any] | None,
     actor_user_id: int | None,
     details: dict[str, Any] | None = None,
+    trigger: str = "human",
 ) -> None:
     """One audit row for a change already flushed to `risk` (so its version is the new one).
     `details` adds to the recorded action, e.g. the library template a risk came from."""
     record_decision(
         db,
         agent=AUDIT_AGENT,
-        trigger="human",
+        trigger=trigger,
         subject_type=AUDIT_SUBJECT,
         subject_id=str(risk.id),
         version=risk.version,
@@ -194,12 +229,14 @@ def record_risk_change(
     )
 
 
-def record_escalation(db: Session, risk: Risk, *, actor_user_id: int | None) -> None:
+def record_escalation(
+    db: Session, risk: Risk, *, actor_user_id: int | None, trigger: str = "human"
+) -> None:
     """The escalation audit row: the band, the role it now goes to, and the risk."""
     record_decision(
         db,
         agent=AUDIT_AGENT,
-        trigger="human",
+        trigger=trigger,
         subject_type=AUDIT_SUBJECT,
         subject_id=str(risk.id),
         version=risk.version,
@@ -214,6 +251,39 @@ def record_escalation(db: Session, risk: Risk, *, actor_user_id: int | None) -> 
             "owner_role": risk.escalated_to,
         },
     )
+
+
+def decide_proposed(
+    db: Session,
+    policy: RiskPolicy,
+    risk: Risk,
+    *,
+    new_status: str,
+    actor_user_id: int | None,
+    details: dict[str, Any] | None = None,
+    trigger: str = "human",
+    before: dict[str, Any] | None = None,
+) -> None:
+    """Open or reject a `proposed` risk: the open and reject routes and the orchestrator's
+    `open_low_risk` all come through here, so the band and escalation rules are the same for
+    each. The caller has checked the risk is proposed and locked it; it flushes here (raising
+    `StaleDataError` when a parallel write landed first) and the caller commits. `before` is the
+    risk's snapshot when the caller changed it first (the orchestrator applying a suggestion)."""
+    before = before if before is not None else snapshot(risk)
+    risk.status = new_status
+    escalated = settle_escalation(risk, policy, before=before)
+    db.flush()
+    record_risk_change(
+        db,
+        risk,
+        action="open" if new_status == "open" else "reject",
+        before=before,
+        actor_user_id=actor_user_id,
+        details=details,
+        trigger=trigger,
+    )
+    if escalated:
+        record_escalation(db, risk, actor_user_id=actor_user_id, trigger=trigger)
 
 
 def rescore(db: Session, policy: RiskPolicy) -> int:

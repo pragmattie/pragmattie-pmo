@@ -186,6 +186,33 @@ def _risk_facts(risk: Risk) -> list[Fact]:
     ]
     if risk.escalated_to:
         facts.append(Fact("escalated_to", "Escalated to", risk.escalated_to.replace("_", " ")))
+    suggestion = None
+    # Never on a judgement risk: a person scores it, so no agent score is shown beside it (R9).
+    if risk.status == "proposed" and risk.score is None and not risk.needs_judgement:
+        try:
+            suggestion = orchestrator.suggested_score(risk, get_policies().risk)
+        except PolicyError:
+            suggestion = None
+    if suggestion is not None:
+        score, band = suggestion
+        owner = orchestrator.band_owner(get_policies().risk, band) or ""
+        facts += [
+            Fact(
+                "suggested",
+                "Suggested by the risk agent",
+                f"probability {risk.suggested_probability}, impact {risk.suggested_impact}",
+            ),
+            Fact("suggested_score", "Suggested score", str(score)),
+            Fact("suggested_band", "Suggested band", band),
+            Fact("suggested_owner", "Opening it escalates to", owner.replace("_", " ")),
+            Fact(
+                "suggested_probability_reason",
+                "Why that probability",
+                risk.suggested_probability_reason or "",
+            ),
+            Fact("suggested_impact_reason", "Why that impact", risk.suggested_impact_reason or ""),
+            Fact("suggested_model", "Model", risk.suggested_model or ""),
+        ]
     return facts
 
 
@@ -319,12 +346,27 @@ def _accept_risk(facts: list[Fact]) -> str:
 
 def _open_low_risk(facts: list[Fact]) -> str:
     score, band = _value(facts, "score"), _value(facts, "band")
+    if _value(facts, "suggested_band"):
+        score, band = _value(facts, "suggested_score"), _value(facts, "suggested_band")
+        return (
+            f"The risk agent suggested {band} (score {score}). Use the agent's score (Use this "
+            f"score, then Save) or set your own, then open the risk. A {band} risk stays with a "
+            "project manager."
+        )
     return f"Open it in the risk register: scored {score}, {band}, which a project manager owns."
 
 
 def _score_risk(facts: list[Fact]) -> str:
     if _value(facts, "needs_judgement") == "yes":
         return "Score it yourself: it needs a person's judgement, so no agent may score it."
+    band = _value(facts, "suggested_band")
+    if band:
+        score, owner = _value(facts, "suggested_score"), _value(facts, "suggested_owner")
+        return (
+            f"The risk agent suggested {band} (score {score}). Use the agent's score (Use this "
+            "score, then Save) or set your own, then open the risk. Opening it escalates it to "
+            f"the {owner}."
+        )
     return "Score its probability and impact so it gets a band and an owner."
 
 

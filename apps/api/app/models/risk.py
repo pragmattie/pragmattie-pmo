@@ -45,6 +45,7 @@ RESPONSES_BY_KIND = {"threat": THREAT_RESPONSES, "opportunity": OPPORTUNITY_RESP
 RESPONSES = tuple(dict.fromkeys(THREAT_RESPONSES + OPPORTUNITY_RESPONSES))
 STATUSES = ("proposed", "open", "accepted", "closed", "rejected")
 SOURCES = ("person", "agent")
+SUGGESTED_REASON_MAX = 500
 
 
 def _check(name: str, sql: Any) -> CheckConstraint:
@@ -103,6 +104,15 @@ class Risk(Base):
     escalated_band: Mapped[str | None] = mapped_column(String(32))
     # When an accepted risk is next looked at; set by the accept route.
     review_date: Mapped[date | None] = mapped_column(Date)
+    # The risk agent's suggested score (item 6.7), kept apart from the real one: it never sets
+    # `probability` or `impact`. A person applies it, or the orchestrator's `open_low_risk`
+    # window does for a Low one. `suggested_audit_id` names the agent run that made it.
+    suggested_probability: Mapped[int | None]
+    suggested_impact: Mapped[int | None]
+    suggested_probability_reason: Mapped[str | None] = mapped_column(String(SUGGESTED_REASON_MAX))
+    suggested_impact_reason: Mapped[str | None] = mapped_column(String(SUGGESTED_REASON_MAX))
+    suggested_model: Mapped[str | None] = mapped_column(String(64))
+    suggested_audit_id: Mapped[int | None]
     version: Mapped[int] = mapped_column(default=1)
     # Set only on demo risks made by `python -m app.seed`; risks people add leave it empty.
     seed_key: Mapped[str | None] = mapped_column(String(64))

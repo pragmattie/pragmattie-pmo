@@ -22,8 +22,11 @@ import {
   type Risk,
   type RiskSuggestion,
   scoreText,
+  SUGGESTED_BY_AGENT,
   suggestionMessage,
+  agentSuggestion,
   toggleCell,
+  withSuggestedScore,
 } from '../lib/risks'
 import { bandColors, makeVuetify } from '../plugins/vuetify'
 import { makeRouter } from '../router'
@@ -112,6 +115,12 @@ const RISKS = [
     escalated_band: null,
     title: 'Proposed by the agent',
     source: 'agent',
+    suggested_probability: 3,
+    suggested_impact: 2,
+    suggested_probability_reason: 'The supplier has slipped twice this year.',
+    suggested_impact_reason: 'A week of delay on a non-critical task.',
+    suggested_model: 'claude-test',
+    suggested_audit_id: 40,
   }),
   risk(7, {
     status: 'rejected',
@@ -182,6 +191,8 @@ interface FakeOptions {
   patchStatus?: number
   stored?: Risk
   projects?: { id: number; name: string }[]
+  // The register's list, when a test needs other risks than RISKS.
+  risks?: Risk[]
 }
 
 function fakeApi(role: string, options: FakeOptions = {}) {
@@ -227,7 +238,8 @@ function fakeApi(role: string, options: FakeOptions = {}) {
       )
     }
     if (path === '/api/v1/projects/3/risks' && method === 'GET') {
-      return json({ items: RISKS, total: RISKS.length, limit: 25, offset: 0 })
+      const items = options.risks ?? RISKS
+      return json({ items, total: items.length, limit: 25, offset: 0 })
     }
     const history = path.match(/^\/api\/v1\/projects\/3\/risks\/(\d+)\/history$/)
     if (history) {
@@ -839,6 +851,91 @@ describe('risk agent', () => {
       'The risk agent suggested 1 risk (shadow mode, so nothing was saved): Model answers drift.',
     )
     expect(suggestionMessage(SUGGESTION)).toContain(`"${AGENT_PROPOSAL}"`)
+  })
+})
+
+describe("the risk agent's suggested score", () => {
+  const proposed = RISKS.find((r) => r.id === 6)!
+
+  it('reads a suggestion only from a proposed risk that has one', () => {
+    expect(agentSuggestion(proposed)).toEqual({
+      probability: 3,
+      impact: 2,
+      probabilityReason: 'The supplier has slipped twice this year.',
+      impactReason: 'A week of delay on a non-critical task.',
+      model: 'claude-test',
+    })
+    expect(agentSuggestion({ ...proposed, status: 'open' })).toBeNull()
+    expect(agentSuggestion({ ...proposed, suggested_impact: null })).toBeNull()
+    expect(agentSuggestion(risk(2))).toBeNull()
+    // A judgement risk is a person's to score: no agent score shows beside it.
+    expect(agentSuggestion({ ...proposed, needs_judgement: true })).toBeNull()
+  })
+
+  it('fills the form copy with the suggested score and leaves the risk itself alone', () => {
+    const filled = withSuggestedScore(proposed)
+    expect(filled).toMatchObject({ probability: 3, impact: 2 })
+    expect(proposed.probability).toBeNull()
+    expect(proposed.impact).toBeNull()
+    expect(withSuggestedScore(risk(2))).toEqual(risk(2))
+  })
+
+  it("shows the suggestion apart from the real score, labelled as the agent's", async () => {
+    const { wrapper } = await mountRisks('project_manager')
+    await openRow(wrapper, 6)
+    const card = wrapper.get('[data-test="agent-suggestion"]')
+    expect(card.get('[data-test="agent-suggestion-title"]').text()).toBe(SUGGESTED_BY_AGENT)
+    expect(card.get('[data-test="agent-suggestion-model"]').text()).toBe('Model: claude-test')
+    expect(card.get('[data-test="agent-suggestion-probability"]').text()).toBe(
+      'Probability 3. The supplier has slipped twice this year.',
+    )
+    expect(card.get('[data-test="agent-suggestion-impact"]').text()).toBe(
+      'Impact 2. A week of delay on a non-critical task.',
+    )
+    expect(card.get('[data-test="agent-suggestion-caption"]').text()).toBe(
+      "The risk's own score stays empty until a person sets it, or, for a Low suggestion, " +
+        'until the objection window applies it.',
+    )
+    expect(wrapper.get('[data-test="field-Probability"]').text()).toBe('—')
+    expect(wrapper.get('[data-test="field-Impact"]').text()).toBe('—')
+    await openRow(wrapper, 2)
+    expect(has(wrapper, 'agent-suggestion')).toBe(false)
+  })
+
+  it('"Use this score" fills the edit form, and saves only when the person saves', async () => {
+    const { wrapper, fetchMock } = await mountRisks('project_manager')
+    await openRow(wrapper, 6)
+    await wrapper.get('[data-test="use-suggestion"]').trigger('click')
+    await flushPromises()
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false)
+    expect(document.querySelector('[data-test="risk-form"]')).not.toBeNull()
+    ;(document.querySelector('[data-test="form-save"]') as HTMLElement).click()
+    await flushPromises()
+    const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')!
+    expect(String(patch[0])).toBe('/api/v1/projects/3/risks/6')
+    expect(JSON.parse(String(patch[1]!.body))).toMatchObject({
+      probability: 3,
+      impact: 2,
+      version: 1,
+    })
+  })
+
+  it('hides the suggestion and "Use this score" on a risk that needs judgement', async () => {
+    const judged = { ...proposed, needs_judgement: true }
+    const { wrapper } = await mountRisks('project_manager', {
+      risks: RISKS.map((r) => (r.id === 6 ? judged : r)),
+    })
+    await openRow(wrapper, 6)
+    expect(has(wrapper, 'agent-suggestion')).toBe(false)
+    expect(has(wrapper, 'use-suggestion')).toBe(false)
+    expect(withSuggestedScore(judged)).toEqual(judged)
+  })
+
+  it('shows a reader the suggestion without "Use this score"', async () => {
+    const { wrapper } = await mountRisks('auditor')
+    await openRow(wrapper, 6)
+    expect(has(wrapper, 'agent-suggestion')).toBe(true)
+    expect(has(wrapper, 'use-suggestion')).toBe(false)
   })
 })
 

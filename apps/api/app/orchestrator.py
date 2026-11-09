@@ -68,9 +68,16 @@ from app.models.orchestrator import REASON_MAX, open_key
 from app.models.portfolio import CANCELLED
 from app.models.proposal import TEXT_SECTIONS
 from app.plans import missing
-from app.policy import RiskPolicy
+from app.policy import RiskPolicy, score_risk
 from app.proposals import plan_facts, unreviewed_sections
-from app.risks import band_owner, risk_library, risk_policy
+from app.risks import (
+    apply_score,
+    band_owner,
+    decide_proposed,
+    risk_library,
+    risk_policy,
+    snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +180,14 @@ def _make(
     *,
     risk: Risk | None = None,
     who: str | None = None,
+    person: str | None = None,
 ) -> NextStep:
-    mode, handoff, unavailable = _handoff(policy, step, agent_mode, risk)
+    """One next step. `person` sends it to a person whatever the policy says, with that text as
+    the reason why (a Medium or High risk agent suggestion, which only a person may open)."""
+    if person is not None:
+        mode, handoff, unavailable = PERSON, person, False
+    else:
+        mode, handoff, unavailable = _handoff(policy, step, agent_mode, risk)
     rule = policy.steps[step]
     waits_on = (who or rule.who) if mode == PERSON else rule.agent
     return NextStep(
@@ -240,15 +253,98 @@ def _planning_steps(db: Session, project: Project, make: Callable) -> list[NextS
     return steps
 
 
-def _risk_steps(risk: Risk, risk_rules: RiskPolicy, make: Callable) -> list[NextStep]:
+SUGGESTION_TO_PERSON = "so the project manager opens it or changes the score"
+
+
+def suggested_score(risk: Risk, risk_rules: RiskPolicy) -> tuple[int, str] | None:
+    """The score and band of the risk agent's suggestion, from the risk policy; none without one."""
+    if risk.suggested_probability is None or risk.suggested_impact is None:
+        return None
+    score, band = score_risk(risk_rules, risk.suggested_probability, risk.suggested_impact)
+    return (score, band) if score is not None and band is not None else None
+
+
+def low_risk_reason(risk: Risk, risk_rules: RiskPolicy) -> str | None:
+    """Why `open_low_risk` applies to the risk now, or None when it doesn't: a proposed risk
+    with no judgement needed, whose own score, or else the agent's suggestion, is in a band the
+    project manager owns. The reason names the suggestion's audit row, so a window planned for
+    one suggestion never applies another (`_open_low_risk` compares it)."""
+    if risk.status != "proposed" or risk.needs_judgement:
+        return None
+    if risk.probability is not None and risk.impact is not None:
+        if band_owner(risk_rules, risk.band) != PROJECT_MANAGER:
+            return None
+        return f"the risk is proposed and scored {risk.band}"
+    suggestion = suggested_score(risk, risk_rules)
+    if suggestion is None or band_owner(risk_rules, suggestion[1]) != PROJECT_MANAGER:
+        return None
+    score, band = suggestion
+    return (
+        f"the risk agent suggested {band} (probability {risk.suggested_probability}, impact "
+        f"{risk.suggested_impact}, score {score}; suggestion {risk.suggested_audit_id})"
+    )
+
+
+def judgement_reason(db: Session, risk: Risk) -> str | None:
+    """The reason the risk agent gave when it judged the risk ethical or reputational, from its
+    newest scoring run on the risk; none when its newest run made no such judgement."""
+    stmt = (
+        select(AuditDecision.action_taken)
+        .where(
+            AuditDecision.agent == risk_agent.AGENT,
+            AuditDecision.subject_type == risk_agent.SCORE_SUBJECT,
+            AuditDecision.subject_id == str(risk.id),
+            AuditDecision.status == "ok",
+        )
+        .order_by(AuditDecision.id.desc())
+        .limit(1)
+    )
+    action = db.scalar(stmt)
+    if not isinstance(action, dict) or action.get("mode") != "enforce":
+        return None
+    if not action.get("needs_judgement"):
+        return None
+    return f"the risk agent judged it {action.get('judgement')}: {action.get('reason')}"
+
+
+def _risk_steps(db: Session, risk: Risk, risk_rules: RiskPolicy, make: Callable) -> list[NextStep]:
     if risk.status == "proposed":
         if risk.probability is None or risk.impact is None:
+            if risk.needs_judgement:
+                # Never the agent (R9): `score_risk` goes to a person for this risk.
+                reason = "the risk is proposed and not scored"
+                judged = judgement_reason(db, risk)
+                if judged is not None:
+                    reason = f"{reason}; {judged}"
+                return [make("score_risk", RISK, risk.id, reason[:REASON_MAX], risk=risk)]
+            low = low_risk_reason(risk, risk_rules)
+            if low is not None:
+                return [make("open_low_risk", RISK, risk.id, low[:REASON_MAX], risk=risk)]
+            suggestion = suggested_score(risk, risk_rules)
+            if suggestion is None:
+                reason = "the risk is proposed and not scored"
+                return [make("score_risk", RISK, risk.id, reason, risk=risk)]
+            # A Medium or High suggestion: opening it escalates it, so a person decides.
+            score, band = suggestion
+            reason = (
+                f"the risk agent suggested {band} (probability {risk.suggested_probability}, "
+                f"impact {risk.suggested_impact}, score {score}); opening it escalates it to the "
+                f"{(band_owner(risk_rules, band) or 'owner').replace('_', ' ')}"
+            )
             return [
-                make("score_risk", RISK, risk.id, "the risk is proposed and not scored", risk=risk)
+                make(
+                    "score_risk",
+                    RISK,
+                    risk.id,
+                    reason,
+                    risk=risk,
+                    person=SUGGESTION_TO_PERSON,
+                    who=PROJECT_MANAGER,
+                )
             ]
-        if band_owner(risk_rules, risk.band) == PROJECT_MANAGER:
-            reason = f"the risk is proposed and scored {risk.band}"
-            return [make("open_low_risk", RISK, risk.id, reason, risk=risk)]
+        low = low_risk_reason(risk, risk_rules)
+        if low is not None:
+            return [make("open_low_risk", RISK, risk.id, low, risk=risk)]
         return []
     if risk.status == "open" and risk.escalated_to not in (None, PROJECT_MANAGER):
         reason = f"the risk is escalated to the {risk.escalated_to} and waiting for a decision"
@@ -314,7 +410,7 @@ def next_steps(
             Risk.project_id == project.id, Risk.status.in_(("proposed", "open"))
         )
         for risk in db.scalars(risks.order_by(Risk.id)):
-            steps.extend(_risk_steps(risk, rules, make))
+            steps.extend(_risk_steps(db, risk, rules, make))
         proposals = select(ProjectProposal).where(ProjectProposal.project_id == project.id)
         for proposal in db.scalars(proposals.order_by(ProjectProposal.id)):
             steps.extend(_proposal_steps(proposal, make))
@@ -362,7 +458,7 @@ def subject_steps(
     if row is None or not _live(db.get(Project, row.project_id)):
         return []
     if isinstance(row, Risk):
-        return _risk_steps(row, rules, make) if row.status in ("proposed", "open") else []
+        return _risk_steps(db, row, rules, make) if row.status in ("proposed", "open") else []
     if isinstance(row, ProjectProposal):
         return _proposal_steps(row, make)
     return _change_steps(row, make)
@@ -373,9 +469,15 @@ def subject_steps(
 
 @dataclass(frozen=True)
 class Context:
+    """What an action gets. `policy` is the pass's autonomy policy; `planned_reason` is the
+    reason the step had when its action was planned (a window's start), so an action can tell
+    whether its subject changed while it waited."""
+
     db: Session
     settings: Settings
     client: risk_agent.ClaudeClient
+    policy: AutonomyPolicy | None = None
+    planned_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -444,13 +546,93 @@ def _draft_proposal(ctx: Context, proposal_id: int) -> int:
     return result.audit_id
 
 
-# The same functions the "Draft with the agent" buttons use. Items 6.7 and 6.8 add score_risk,
-# open_low_risk, submit_proposal and client_answer here.
+SCORE_RISK_SKIPPED = "the risk agent may no longer score this risk"
+LOW_RISK_CHANGED = (
+    "the risk changed while the window waited (no longer proposed, scored by a person, needs "
+    "judgement, or a different suggestion), so it was not opened"
+)
+
+
+def _skipped(ctx: Context, step: str, risk_id: int, reason: str, **details: Any) -> int:
+    """An orchestrator row saying an action found nothing to do, and why; nothing changes."""
+    return _record(
+        ctx.db,
+        subject=(RISK, str(risk_id)),
+        status="skipped",
+        signals={"step": step, "planned_reason": ctx.planned_reason},
+        action_taken={"action": step, "applied": False, "reason": reason, **details},
+    )
+
+
+def _score_risk(ctx: Context, risk_id: int) -> int:
+    """The `suggest-score` route's code: the risk agent's score, kept as a suggestion."""
+    risk = ctx.db.get(Risk, risk_id)
+    try:
+        result = risk_agent.score(
+            ctx.db,
+            ctx.client,
+            risk,
+            policy=risk_policy(),
+            settings=ctx.settings,
+            save=True,
+            actor_user_id=None,
+            trigger=TRIGGER,
+        )
+    except risk_agent.ScoreRefused as exc:
+        # A person scored it, marked it or decided on it while the window waited.
+        return _skipped(ctx, "score_risk", risk_id, SCORE_RISK_SKIPPED, refusal=str(exc))
+    return result.audit_id
+
+
+def _open_low_risk(ctx: Context, risk_id: int) -> int | None:
+    """Open a proposed Low risk after its window, through the open route's code.
+
+    Only when the step is still the one planned (`low_risk_reason` unchanged): still proposed,
+    no judgement needed, and the same score, or the same suggestion while the real score is
+    empty. A suggestion becomes the real score here, as a person's would. The opening row is the
+    risk register's, with `trigger = orchestrator`, the window it waited and the suggestion's
+    audit row. Otherwise nothing changes and a skipped row says why."""
+    db = ctx.db
+    rules = risk_policy()
+    risk = db.get(Risk, risk_id, with_for_update=True, populate_existing=True)
+    now = low_risk_reason(risk, rules) if risk is not None else None
+    if now is None or now[:REASON_MAX] != ctx.planned_reason:
+        return _skipped(ctx, "open_low_risk", risk_id, LOW_RISK_CHANGED, now_reason=now)
+    window = ctx.policy.steps["open_low_risk"].window_minutes if ctx.policy else None
+    details: dict[str, Any] = {
+        "by": ORCHESTRATOR,
+        "step": "open_low_risk",
+        "window_minutes": window,
+    }
+    before = snapshot(risk)
+    if risk.probability is None:
+        risk.probability = risk.suggested_probability
+        risk.impact = risk.suggested_impact
+        apply_score(risk, rules)
+        details["suggested_audit_id"] = risk.suggested_audit_id
+    decide_proposed(
+        db,
+        rules,
+        risk,
+        new_status="open",
+        actor_user_id=None,
+        details=details,
+        trigger=TRIGGER,
+        before=before,
+    )
+    return None
+
+
+# The same functions the "Draft with the agent" buttons and the suggest-score route use. Item 6.8
+# adds submit_proposal and client_answer here.
 ACTIONS: dict[str, StepAction] = {
     "draft_value_case": StepAction(_draft_request),
     "draft_readiness": StepAction(_draft_request),
     "draft_plan": StepAction(_draft_plan),
     "propose_risks": StepAction(_propose_risks),
+    "score_risk": StepAction(_score_risk),
+    # No Claude call: it applies a suggestion already made, so it doesn't count against the caps.
+    "open_low_risk": StepAction(_open_low_risk, uses_claude=False),
     "draft_proposal": StepAction(_draft_proposal),
 }
 assert not PERSON_ONLY & ACTIONS.keys(), "a person always takes these steps (R1)"
@@ -904,6 +1086,7 @@ class _Pass:
         # Renew the lease before the call, so a long pass never runs out of it; if another pass
         # has taken it over, that pass does the step and this one stops.
         action_id = action.id
+        planned_reason = action.reason
         if not self.keep_lease():
             self.db.rollback()
             self.audit(
@@ -920,7 +1103,7 @@ class _Pass:
         # Release the action's row lock before the agent call (up to 120 seconds), so a person
         # can hold the action meanwhile without waiting for it. The row is re-read afterwards.
         self.db.commit()
-        context = Context(self.db, self.settings, self.client)
+        context = Context(self.db, self.settings, self.client, self.policy, planned_reason)
         try:
             agent_audit_id = step_action.run(context, step.subject_id)
         except risk_agent.AgentError as exc:

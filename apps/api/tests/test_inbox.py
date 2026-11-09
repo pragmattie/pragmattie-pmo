@@ -339,6 +339,24 @@ def _facts(**values) -> list[Fact]:
             _facts(needs_judgement="no"),
             "Score its probability and impact so it gets a band and an owner.",
         ),
+        (
+            "score_risk",
+            _facts(
+                needs_judgement="no",
+                suggested_score=12,
+                suggested_band="Medium",
+                suggested_owner="sponsor",
+            ),
+            "The risk agent suggested Medium (score 12). Use the agent's score (Use this score, "
+            "then Save) or set your own, then open the risk. Opening it escalates it to the "
+            "sponsor.",
+        ),
+        (
+            "open_low_risk",
+            _facts(score="not scored", band="none", suggested_score=4, suggested_band="Low"),
+            "The risk agent suggested Low (score 4). Use the agent's score (Use this score, then "
+            "Save) or set your own, then open the risk. A Low risk stays with a project manager.",
+        ),
         ("approve_proposal", _facts(flags=2), "Return it: the checker has 2 flag(s) open."),
         (
             "approve_proposal",
@@ -613,3 +631,48 @@ def test_the_risk_agent_ran_helper_keeps_propose_risks_out(db, web, settings, ac
     _pass(db, settings)
     sign_in(web, db, "project_manager")
     assert "propose_risks" not in {e["step"] for e in _inbox(web)["items"]}
+
+
+def test_a_risk_with_a_suggestion_shows_it_as_the_agents(db):
+    risk = _risk(
+        db,
+        _project(db, stage="delivery"),
+        suggested_probability=3,
+        suggested_impact=4,
+        suggested_probability_reason="It happened on the last project.",
+        suggested_impact_reason="It would delay the launch.",
+        suggested_model="claude-sonnet-5-5",
+        suggested_audit_id=1,
+    )
+    facts = {f.key: f.value for f in inbox.facts_for(db, "score_risk", "risk", risk.id)}
+    assert facts["score"] == "not scored"
+    assert facts["suggested"] == "probability 3, impact 4"
+    assert (facts["suggested_score"], facts["suggested_band"]) == ("12", "Medium")
+    assert facts["suggested_owner"] == "sponsor"
+    assert facts["suggested_probability_reason"] == "It happened on the last project."
+    assert facts["suggested_model"] == "claude-sonnet-5-5"
+    advice = recommend("score_risk", inbox.facts_for(db, "score_risk", "risk", risk.id))
+    assert advice == (
+        "The risk agent suggested Medium (score 12). Use the agent's score (Use this score, "
+        "then Save) or set your own, then open the risk. Opening it escalates it to the sponsor."
+    )
+
+
+def test_a_judgement_risk_leaves_the_agents_suggestion_out(db):
+    # A suggestion made before a person marked the risk: the person scores it, alone (R9).
+    risk = _risk(
+        db,
+        _project(db, stage="delivery"),
+        needs_judgement=True,
+        suggested_probability=1,
+        suggested_impact=2,
+        suggested_probability_reason="It is unlikely.",
+        suggested_impact_reason="It would be small.",
+        suggested_model="claude-sonnet-5-5",
+        suggested_audit_id=1,
+    )
+    facts = inbox.facts_for(db, "score_risk", "risk", risk.id)
+    assert not [f for f in facts if f.key.startswith("suggested")]
+    assert recommend("score_risk", facts) == (
+        "Score it yourself: it needs a person's judgement, so no agent may score it."
+    )

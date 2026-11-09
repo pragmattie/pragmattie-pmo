@@ -881,6 +881,50 @@ def test_a_patch_may_still_edit_and_score_a_proposed_risk(web, db, pm, project):
     assert (body["status"], body["band"], body["escalated_to"]) == ("proposed", "Medium", None)
 
 
+def _with_suggestion(db: Session, risk_id: int) -> int:
+    """The risk agent's suggestion, as `risk_agent.score` saves it; the risk's new version."""
+    row = db.get(Risk, risk_id)
+    row.suggested_probability, row.suggested_impact = 1, 2
+    row.suggested_probability_reason = "It is unlikely."
+    row.suggested_impact_reason = "It would be small."
+    row.suggested_model = "claude-test"
+    row.suggested_audit_id = 77
+    db.commit()
+    return row.version
+
+
+@pytest.mark.parametrize("field", ["title", "cause", "effect"])
+def test_a_text_edit_clears_the_agents_suggestion_and_says_so(web, db, pm, project, field):
+    risk = _proposed(web, project.id)
+    version = _with_suggestion(db, risk["id"])
+    response = web.patch(
+        _url(project.id, risk["id"]), json={"version": version, field: "New words", **MEDIUM}
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert all(body[f"suggested_{n}"] is None for n in ("probability", "impact", "audit_id"))
+    assert body["suggested_probability_reason"] is None and body["suggested_model"] is None
+    row = _audit(db)[-1]
+    assert row.action_taken == {
+        "action": "update",
+        "suggestion_cleared": {"probability": 1, "impact": 2, "audit_id": 77},
+    }
+
+
+def test_an_edit_that_keeps_the_text_keeps_the_suggestion(web, db, pm, project):
+    risk = _proposed(web, project.id)
+    version = _with_suggestion(db, risk["id"])
+    response = web.patch(
+        _url(project.id, risk["id"]), json={"version": version, "category": "project", **MEDIUM}
+    )
+    assert response.status_code == 200, response.text
+    assert (response.json()["suggested_probability"], response.json()["suggested_impact"]) == (
+        1,
+        2,
+    )
+    assert _audit(db)[-1].action_taken == {"action": "update"}
+
+
 def test_a_patch_never_opens_an_accepted_or_rejected_risk(web, db, pm, project):
     accepted = _accept(web, project.id, _create(web, project.id, **LOW).json()).json()
     response = web.patch(_url(project.id, accepted["id"]), json={"version": 2, "status": "open"})

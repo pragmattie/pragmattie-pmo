@@ -35,6 +35,14 @@ export interface Risk {
   escalated_band: string | null
   // When an accepted risk is next looked at.
   review_date: string | null
+  // The risk agent's suggested score, kept apart from the real one: the risk's probability and
+  // impact stay empty until a person (or the orchestrator's window, for a Low one) applies it.
+  suggested_probability?: number | null
+  suggested_impact?: number | null
+  suggested_probability_reason?: string | null
+  suggested_impact_reason?: string | null
+  suggested_model?: string | null
+  suggested_audit_id?: number | null
   version: number
   created_at: string
   updated_at: string
@@ -179,6 +187,39 @@ export function suggestionMessage(result: RiskSuggestion): string {
       .join('; ')}.`
   }
   return `The risk agent proposed ${risks}. Each is marked "${AGENT_PROPOSAL}": open or reject it.`
+}
+
+export const SUGGESTED_BY_AGENT = 'Suggested by the risk agent'
+
+export interface AgentSuggestion {
+  probability: number
+  impact: number
+  probabilityReason: string
+  impactReason: string
+  model: string
+}
+
+// The risk agent's suggested score, shown only while the risk is proposed and has one. Never on a
+// risk that needs a person's judgement: a person scores that one, with no agent score beside it.
+export function agentSuggestion(risk: Risk): AgentSuggestion | null {
+  if (risk.status !== 'proposed' || risk.needs_judgement) return null
+  const { suggested_probability: probability, suggested_impact: impact } = risk
+  if (probability == null || impact == null) return null
+  return {
+    probability,
+    impact,
+    probabilityReason: risk.suggested_probability_reason ?? '',
+    impactReason: risk.suggested_impact_reason ?? '',
+    model: risk.suggested_model ?? '',
+  }
+}
+
+// The risk as the person's edit form should start for "Use this score": the agent's probability
+// and impact filled in. Nothing is saved until the person saves the form.
+export function withSuggestedScore(risk: Risk): Risk {
+  const suggestion = agentSuggestion(risk)
+  if (!suggestion) return risk
+  return { ...risk, probability: suggestion.probability, impact: suggestion.impact }
 }
 
 export const NEEDS_JUDGEMENT = "Needs a person's judgement"

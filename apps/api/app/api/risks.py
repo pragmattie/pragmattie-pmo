@@ -32,6 +32,15 @@ nothing; `enforce` saves them as `proposed`, unscored risks with `source = agent
 `?dry_run=true` it returns the exact request and a cost ceiling and calls nothing (any mode but
 `off`). A failed run is audited and answered with a 502; it saves no risk.
 
+`POST .../risks/{id}/suggest-score` (`project:write`) asks the risk agent to score one proposed,
+unscored risk (`risk_agent.score`), with the same `AGENT_MODE` rules and dry run. `enforce` keeps
+the score as the risk's suggestion (`suggested_*`), never its real score; `shadow` returns it and
+saves nothing. A risk marked `needs_judgement`, one a person has scored or one that is not
+proposed is refused (409) before any call. The orchestrator's `score_risk` step calls the same
+code. A person uses a suggestion through the PATCH (their own score) and the open route. A PATCH
+that changes the title, cause or effect clears the suggestion in the same write
+(`drop_stale_suggestion`), and its audit row records what was cleared (`suggestion_cleared`).
+
 `POST .../risks/from-library` adds starter templates (`app.api.risk_library`) as `proposed`
 risks from a person, unscored, one audit row each; an unknown template id adds nothing (422).
 
@@ -71,6 +80,8 @@ from app.risks import (
     apply_score,
     band_owner,
     band_rank,
+    decide_proposed,
+    drop_stale_suggestion,
     record_escalation,
     record_risk_change,
     rescore_decisions,
@@ -97,8 +108,10 @@ from app.schemas.risk import (
     RiskOut,
     RiskProposalOut,
     RiskReject,
+    RiskScoreSuggestion,
     RiskSuggestion,
     RiskUpdate,
+    SuggestedScore,
 )
 
 logger = logging.getLogger(__name__)
@@ -343,6 +356,67 @@ def suggest_risks(
     )
 
 
+@router.post("/{risk_id}/suggest-score", response_model=RiskScoreSuggestion)
+def suggest_score(
+    project_id: int,
+    risk_id: int,
+    user: Annotated[User, Depends(require(Action.PROJECT_WRITE))],
+    db: Annotated[Session, Depends(get_db)],
+    claude: Annotated[risk_agent.ClaudeClient, Depends(get_claude_client)],
+    dry_run: bool = False,
+) -> RiskScoreSuggestion:
+    settings = get_settings()
+    if settings.agent_mode == "off":
+        raise HTTPException(status.HTTP_409_CONFLICT, AGENT_OFF)
+    policy = _policy()
+    # Not locked: the Claude call can take a while. A change to the risk meanwhile bumps its
+    # version, so saving the suggestion then fails (audited) rather than overwriting it.
+    risk = _risk(db, project_id, risk_id)
+    refusal = risk_agent.score_refusal(risk)
+    if refusal is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, refusal)
+    common = {
+        "mode": settings.agent_mode,
+        "dry_run": dry_run,
+        "model": settings.risk_agent_model,
+        "prompt_version": risk_agent.SCORE_PROMPT_VERSION,
+    }
+    if dry_run:
+        request = risk_agent.build_score_request(risk_agent.risk_data(db, risk, policy), settings)
+        ceiling = risk_agent.cost_ceiling(request, settings)
+        return RiskScoreSuggestion(
+            **common,
+            request=request,
+            cost_ceiling_usd=ceiling.quantize(Decimal("0.01"), rounding=ROUND_UP),
+        )
+    try:
+        result = risk_agent.score(
+            db,
+            claude,
+            risk,
+            policy=policy,
+            settings=settings,
+            save=settings.agent_mode == "enforce",
+            actor_user_id=user.id,
+        )
+    except risk_agent.AgentError:
+        logger.exception("risk agent scoring failed for risk %s", risk_id)
+        _commit(db)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, AGENT_FAILED) from None
+    _commit(db)
+    return RiskScoreSuggestion(
+        **common,
+        suggestion=SuggestedScore.model_validate(result.score),
+        adjusted=result.adjusted,
+        saved=result.saved,
+        risk=RiskOut.model_validate(risk),
+        audit_id=result.audit_id,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cost_usd=result.cost_usd,
+    )
+
+
 @router.get("/heatmap", response_model=RiskHeatmap)
 def heatmap(
     project_id: int,
@@ -549,17 +623,24 @@ def update_risk(
     escalated = rescore_decisions(risk, policy, before)
     if snapshot(risk) == before:
         return RiskOut.model_validate(risk)
+    # In the same write as the text change, so no window can apply a suggestion for old text.
+    cleared = drop_stale_suggestion(risk, before)
 
     _flush(db)
     closing = before["status"] != "closed" and risk.status == "closed"
     reopened = before["status"] == "accepted" and risk.status == "open"
+    details: dict = {}
+    if reopened:
+        details["reopened"] = True
+    if cleared is not None:
+        details["suggestion_cleared"] = cleared
     record_risk_change(
         db,
         risk,
         action="close" if closing else "update",
         before=before,
         actor_user_id=user.id,
-        details={"reopened": True} if reopened else None,
+        details=details or None,
     )
     if escalated:
         record_escalation(db, risk, actor_user_id=user.id)
@@ -621,20 +702,19 @@ def _decide_proposed(
 ) -> RiskOut:
     if risk.status != "proposed":
         raise HTTPException(status.HTTP_409_CONFLICT, NOT_PROPOSED)
-    before = snapshot(risk)
-    risk.status = new_status
-    escalated = settle_escalation(risk, policy, before=before)
-    _flush(db)
-    record_risk_change(
-        db,
-        risk,
-        action="open" if new_status == "open" else "reject",
-        before=before,
-        actor_user_id=user.id,
-        details={"reason": reason} if reason is not None else None,
-    )
-    if escalated:
-        record_escalation(db, risk, actor_user_id=user.id)
+    try:
+        decide_proposed(
+            db,
+            policy,
+            risk,
+            new_status=new_status,
+            actor_user_id=user.id,
+            details={"reason": reason} if reason is not None else None,
+        )
+    except StaleDataError:
+        # Another write changed the row between our read and this update.
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, STALE) from None
     _commit(db)
     return RiskOut.model_validate(risk)
 
