@@ -191,6 +191,8 @@ interface FakeOptions {
   patchStatus?: number
   stored?: Risk
   projects?: { id: number; name: string }[]
+  // The register's list, when a test needs other risks than RISKS.
+  risks?: Risk[]
 }
 
 function fakeApi(role: string, options: FakeOptions = {}) {
@@ -236,7 +238,8 @@ function fakeApi(role: string, options: FakeOptions = {}) {
       )
     }
     if (path === '/api/v1/projects/3/risks' && method === 'GET') {
-      return json({ items: RISKS, total: RISKS.length, limit: 25, offset: 0 })
+      const items = options.risks ?? RISKS
+      return json({ items, total: items.length, limit: 25, offset: 0 })
     }
     const history = path.match(/^\/api\/v1\/projects\/3\/risks\/(\d+)\/history$/)
     if (history) {
@@ -865,6 +868,8 @@ describe("the risk agent's suggested score", () => {
     expect(agentSuggestion({ ...proposed, status: 'open' })).toBeNull()
     expect(agentSuggestion({ ...proposed, suggested_impact: null })).toBeNull()
     expect(agentSuggestion(risk(2))).toBeNull()
+    // A judgement risk is a person's to score: no agent score shows beside it.
+    expect(agentSuggestion({ ...proposed, needs_judgement: true })).toBeNull()
   })
 
   it('fills the form copy with the suggested score and leaves the risk itself alone', () => {
@@ -913,6 +918,17 @@ describe("the risk agent's suggested score", () => {
       impact: 2,
       version: 1,
     })
+  })
+
+  it('hides the suggestion and "Use this score" on a risk that needs judgement', async () => {
+    const judged = { ...proposed, needs_judgement: true }
+    const { wrapper } = await mountRisks('project_manager', {
+      risks: RISKS.map((r) => (r.id === 6 ? judged : r)),
+    })
+    await openRow(wrapper, 6)
+    expect(has(wrapper, 'agent-suggestion')).toBe(false)
+    expect(has(wrapper, 'use-suggestion')).toBe(false)
+    expect(withSuggestedScore(judged)).toEqual(judged)
   })
 
   it('shows a reader the suggestion without "Use this score"', async () => {

@@ -187,7 +187,8 @@ def _risk_facts(risk: Risk) -> list[Fact]:
     if risk.escalated_to:
         facts.append(Fact("escalated_to", "Escalated to", risk.escalated_to.replace("_", " ")))
     suggestion = None
-    if risk.status == "proposed" and risk.score is None:
+    # Never on a judgement risk: a person scores it, so no agent score is shown beside it (R9).
+    if risk.status == "proposed" and risk.score is None and not risk.needs_judgement:
         try:
             suggestion = orchestrator.suggested_score(risk, get_policies().risk)
         except PolicyError:

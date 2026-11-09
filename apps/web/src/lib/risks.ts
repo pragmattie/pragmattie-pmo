@@ -199,9 +199,10 @@ export interface AgentSuggestion {
   model: string
 }
 
-// The risk agent's suggested score, shown only while the risk is proposed and has one.
+// The risk agent's suggested score, shown only while the risk is proposed and has one. Never on a
+// risk that needs a person's judgement: a person scores that one, with no agent score beside it.
 export function agentSuggestion(risk: Risk): AgentSuggestion | null {
-  if (risk.status !== 'proposed') return null
+  if (risk.status !== 'proposed' || risk.needs_judgement) return null
   const { suggested_probability: probability, suggested_impact: impact } = risk
   if (probability == null || impact == null) return null
   return {

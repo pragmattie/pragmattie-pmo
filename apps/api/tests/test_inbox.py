@@ -656,3 +656,23 @@ def test_a_risk_with_a_suggestion_shows_it_as_the_agents(db):
         "The risk agent suggested Medium (score 12). Use the agent's score (Use this score, "
         "then Save) or set your own, then open the risk. Opening it escalates it to the sponsor."
     )
+
+
+def test_a_judgement_risk_leaves_the_agents_suggestion_out(db):
+    # A suggestion made before a person marked the risk: the person scores it, alone (R9).
+    risk = _risk(
+        db,
+        _project(db, stage="delivery"),
+        needs_judgement=True,
+        suggested_probability=1,
+        suggested_impact=2,
+        suggested_probability_reason="It is unlikely.",
+        suggested_impact_reason="It would be small.",
+        suggested_model="claude-sonnet-5-5",
+        suggested_audit_id=1,
+    )
+    facts = inbox.facts_for(db, "score_risk", "risk", risk.id)
+    assert not [f for f in facts if f.key.startswith("suggested")]
+    assert recommend("score_risk", facts) == (
+        "Score it yourself: it needs a person's judgement, so no agent may score it."
+    )
