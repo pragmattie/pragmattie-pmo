@@ -18,13 +18,14 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`policies/autonomy.yaml`** (item 6.8): today's file plus one line, `answer: accepted` under
-  `agents.simulated_client`: what the simulated client answers a sent proposal (`accepted`, or
-  `declined` for a demo). The loader already accepts the key as optional, refuses any other value,
-  and uses `accepted` when it is missing, so the applied file keeps working until this is applied.
+None.
 
 ## Applied
 
+- **`policies/autonomy.yaml`** (item 6.8): one line added, `answer: accepted` under
+  `agents.simulated_client`: what the simulated client answers a sent proposal (`accepted`, or
+  `declined` for a demo). The loader refuses any other value and used `accepted` while the key
+  was missing, so behaviour is unchanged; the choice is now visible in the policy.
 - **`policies/autonomy.yaml`** (item 6.1): for each of the 15 steps in a project's life, whether
   an agent does it (`agent`), an agent does it after a 15-minute window the project manager may
   hold (`window`), or a person does it (`person`), plus an off switch per agent. Starting values:
