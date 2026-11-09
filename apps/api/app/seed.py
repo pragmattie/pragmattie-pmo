@@ -1310,11 +1310,13 @@ def _run_users(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.seed", description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--reset", action="store_true", help="clear seeded rows (only those) before seeding"
+        "--reset",
+        action="store_true",
+        help="restore the demo portfolio exactly, clearing the orchestrator's work too",
     )
     commands = parser.add_subparsers(dest="command")
     users = commands.add_parser(
-        "users", help="create or restore one demo user per role, with new random passwords"
+        "users", help="create or restore the demo users, with new random passwords"
     )
     users.add_argument(
         "--password-file",
@@ -1340,11 +1342,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Seed failed: {name}. Has `alembic upgrade head` run?", file=sys.stderr)
         return 1
     except PolicyError as exc:
-        print(f"Seed failed: the risk policy could not be loaded: {exc}", file=sys.stderr)
+        print(f"Seed failed: a policy could not be loaded: {exc}", file=sys.stderr)
         return 1
     if args.reset:
-        print(f"Cleared {result.cleared_clients} clients and {result.cleared_projects} projects.")
-    print(f"Seeded {result.clients} clients, {result.projects} projects and {result.risks} risks.")
+        c = result.cleared
+        print(
+            f"Cleared {c.clients} clients, {c.projects} projects, {c.requests} requests, "
+            f"{c.orchestrator_actions} orchestrator actions and {c.inbox_items} inbox items."
+        )
+    print(
+        f"Seeded {result.clients} clients, {result.projects} projects, {result.requests} requests "
+        f"and {result.risks} risks."
+    )
     return 0
 
 
