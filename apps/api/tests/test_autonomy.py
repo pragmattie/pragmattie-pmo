@@ -75,6 +75,48 @@ def test_the_loader_accepts_the_proposed_file():
     assert dict(loaded.enabled) == dict.fromkeys(AGENTS, True)
 
 
+APPLIED = Path(__file__).resolve().parents[3] / "policies"
+
+
+def test_the_simulated_clients_answer_is_optional_and_defaults_to_accepted():
+    """Item 6.8: `agents.simulated_client.answer` is optional; today's applied file has none."""
+    assert load_autonomy(APPLIED).simulated_answer == "accepted"
+    assert load_autonomy(autonomy_dir()).simulated_answer == "accepted"
+
+    def declined(data):
+        data["agents"]["simulated_client"]["answer"] = "declined"
+
+    assert parse_autonomy(_with(declined)).simulated_answer == "declined"
+
+    def missing(data):
+        data["agents"]["simulated_client"].pop("answer", None)
+
+    assert parse_autonomy(_with(missing)).simulated_answer == "accepted"
+
+
+@pytest.mark.parametrize("value", ["maybe", "", None, True, ["accepted"]])
+def test_a_bad_simulated_answer_is_refused(value):
+    def bad(data):
+        data["agents"]["simulated_client"]["answer"] = value
+
+    _refused(_with(bad), "agents.simulated_client.answer")
+
+
+def test_only_the_simulated_client_has_an_answer():
+    def misplaced(data):
+        data["agents"]["risk_agent"]["answer"] = "accepted"
+
+    _refused(_with(misplaced), "unknown keys: answer")
+
+
+def test_the_proposed_file_is_todays_file_plus_the_answer():
+    proposed = Path(__file__).resolve().parents[3] / "ci/proposed/policies/autonomy.yaml"
+    if not proposed.exists():
+        pytest.skip("the proposed autonomy file has been applied")
+    today = (APPLIED / "autonomy.yaml").read_text()
+    assert proposed.read_text() == today + "    answer: accepted\n"
+
+
 def test_floor_steps_are_fixed_in_code():
     assert FLOOR_STEPS == {
         "approve_proposal",

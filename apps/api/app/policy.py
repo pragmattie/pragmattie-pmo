@@ -825,16 +825,24 @@ def parse_autonomy(data: dict, where: str = AUTONOMY_FILE, digest: str = "") -> 
     if missing:
         raise PolicyError(f"{where} agents: missing agents: {', '.join(missing)}")
     enabled = {}
+    answer = autonomy.DEFAULT_SIMULATED_ANSWER
     for name in autonomy.AGENTS:
         at = f"{where} agents.{name}"
         entry = _mapping(raw[name], at)
-        _keys(entry, at, ("enabled",))
+        # Only the simulated client has an answer (item 6.8); it is optional.
+        optional = ("answer",) if name == autonomy.SIMULATED_CLIENT else ()
+        _keys(entry, at, ("enabled",), optional)
         if not isinstance(entry["enabled"], bool):
             raise PolicyError(f"{at}.enabled: expected true or false")
         enabled[name] = entry["enabled"]
+        if "answer" in entry:
+            answer = _choice(entry["answer"], f"{at}.answer", autonomy.SIMULATED_ANSWERS, "answer")
 
     return AutonomyPolicy(
-        steps=MappingProxyType(steps), enabled=MappingProxyType(enabled), digest=digest
+        steps=MappingProxyType(steps),
+        enabled=MappingProxyType(enabled),
+        digest=digest,
+        simulated_answer=answer,
     )
 
 

@@ -41,26 +41,38 @@ Who wrote each text section (item 5.3) is in `proposal.section_sources`. `unrevi
 names the agent's drafts no person has edited or confirmed yet (they block submit), and
 `may_replace` says whether the proposal agent may write a section: only when it is empty or still
 an unreviewed agent draft.
+
+The rules for submitting a proposal and recording the client's answer live here once (item 6.8),
+for the routes (a person) and the orchestrator and simulated client (no person) alike:
+`submit_refusal` and `answer_refusal` say why a step can't happen now, and `submit` and `answer`
+do it, with one audit row. Neither commits. Only an answer from the simulated client
+(`source = simulated`) may have no person.
 """
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from itertools import zip_longest
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.audit import next_attempt, record_decision
 from app.models import (
+    Client,
     PlanDeliverable,
     PlanEstimateLine,
+    Project,
     ProjectPlan,
     ProjectProposal,
+    ProposalEvent,
+    ProposalVersion,
     Risk,
 )
-from app.models.proposal import TEXT_SECTIONS
+from app.models.base import utcnow
+from app.models.proposal import ANSWERS, SIMULATED, TEXT_SECTIONS
 from app.plans import CENT, compute_total, milestones_of
 
 SECTION_PRICE = "price"
@@ -432,3 +444,262 @@ def values_of(proposal: ProjectProposal) -> dict[str, Any]:
         "deliverables": list(proposal.deliverables),
         "risks": list(proposal.risks),
     }
+
+
+# --- Submitting and answering (item 6.8): the rules the routes and the orchestrator share
+
+AUDIT_AGENT = "proposal"
+SUBJECT_TYPE = "proposal"
+
+NOT_DRAFT = "only a draft proposal can be submitted"
+NOT_SENT = "the client's answer can be recorded only for a proposal that has been sent"
+HAS_FLAGS = "the proposal can't be submitted while the checker has flags open"
+UNREVIEWED = (
+    "the proposal can't be submitted while a section is an agent draft no person has reviewed"
+)
+EMPTY = "the proposal can't be submitted while a section is empty"
+NO_PERSON = "only the simulated client's answer may be recorded without a person"
+BAD_ANSWER = "the answer must be accepted or declined"
+
+
+@dataclass
+class Refusal:
+    """Why a step can't happen now: a short code, the message for a person, and details."""
+
+    refusal: str
+    detail: Any
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+def new_proposal(db: Session, plan: ProjectPlan, created_by: int | None) -> ProjectProposal:
+    """A draft proposal for the plan's project, with the plan's facts copied and scope in and out
+    prefilled from it; added and flushed. `created_by` is None when the orchestrator makes it."""
+    proposal = ProjectProposal(
+        project_id=plan.project_id,
+        status="draft",
+        scope_in=plan.scope_in,
+        scope_out=plan.scope_out,
+        created_by=created_by,
+    )
+    refresh_from_plan(proposal, plan_facts(db, plan))
+    db.add(proposal)
+    db.flush()
+    return proposal
+
+
+def empty_sections(proposal: ProjectProposal) -> list[str]:
+    return [name for name in TEXT_SECTIONS if not (getattr(proposal, name) or "").strip()]
+
+
+def _plan_of(db: Session, proposal: ProjectProposal) -> ProjectPlan | None:
+    return db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == proposal.project_id))
+
+
+def submit_refusal(
+    db: Session, proposal: ProjectProposal, *, require_filled: bool = False
+) -> Refusal | None:
+    """Why the proposal can't be submitted now, or None: it must be a draft, with no agent
+    section unreviewed and no checker flag open. `require_filled` (the orchestrator) also refuses
+    an empty section, which a person may still submit by hand."""
+    if proposal.status != "draft":
+        return Refusal("wrong_status", NOT_DRAFT, {"status": proposal.status})
+    unreviewed = unreviewed_sections(proposal)
+    if unreviewed:
+        return Refusal(
+            "unreviewed_agent_sections",
+            {"message": UNREVIEWED, "sections": unreviewed},
+            {"sections": unreviewed},
+        )
+    if require_filled:
+        empty = empty_sections(proposal)
+        if empty:
+            return Refusal(
+                "empty_sections", {"message": EMPTY, "sections": empty}, {"sections": empty}
+            )
+    plan = _plan_of(db, proposal)
+    flags = check(values_of(proposal), plan_facts(db, plan)) if plan is not None else []
+    if flags:
+        found = [flag.as_dict() for flag in flags]
+        return Refusal("flags_open", {"message": HAS_FLAGS, "flags": found}, {"flags": found})
+    return None
+
+
+def answer_refusal(proposal: ProjectProposal) -> Refusal | None:
+    """Why the client's answer can't be recorded now, or None: only a sent proposal takes one."""
+    if proposal.status != "sent":
+        return Refusal("wrong_status", NOT_SENT, {"status": proposal.status})
+    return None
+
+
+def snapshot(proposal: ProjectProposal) -> dict[str, Any]:
+    return {
+        "status": proposal.status,
+        "version": proposal.version,
+        **values_of(proposal),
+        "section_sources": dict(proposal.section_sources or {}),
+    }
+
+
+def record(
+    db: Session,
+    proposal: ProjectProposal,
+    *,
+    actor_user_id: int | None,
+    trigger: str,
+    action: str,
+    before: dict[str, Any] | None,
+    **extra: Any,
+) -> int:
+    """One audit row for a change to the proposal (agent `proposal`); its id."""
+    row = record_decision(
+        db,
+        agent=AUDIT_AGENT,
+        trigger=trigger,
+        subject_type=SUBJECT_TYPE,
+        subject_id=str(proposal.id),
+        version=proposal.version,
+        attempt=next_attempt(
+            db,
+            agent=AUDIT_AGENT,
+            subject_type=SUBJECT_TYPE,
+            subject_id=str(proposal.id),
+            version=proposal.version,
+        ),
+        status="ok",
+        actor_user_id=actor_user_id,
+        signals=before,
+        output=snapshot(proposal),
+        action_taken={"action": action, "project_id": proposal.project_id, **extra},
+    )
+    return row.id
+
+
+def latest_version(db: Session, proposal_id: int) -> ProposalVersion | None:
+    return db.scalar(
+        select(ProposalVersion)
+        .where(ProposalVersion.proposal_id == proposal_id)
+        .order_by(ProposalVersion.number.desc())
+        .limit(1)
+    )
+
+
+def move(
+    db: Session,
+    proposal: ProjectProposal,
+    *,
+    actor_user_id: int | None,
+    trigger: str,
+    action: str,
+    to: str,
+    event: ProposalEvent | None,
+    version: ProposalVersion | None,
+    **extra: Any,
+) -> int:
+    """Change the proposal's status, add its event, and write the audit row; the row's id."""
+    before = snapshot(proposal)
+    from_status = proposal.status
+    proposal.status = to
+    proposal.updated_at = utcnow()
+    db.flush()
+    if event is not None:
+        db.add(event)
+        db.flush()
+    return record(
+        db,
+        proposal,
+        actor_user_id=actor_user_id,
+        trigger=trigger,
+        action=action,
+        before=before,
+        **{
+            "from": from_status,
+            "to": to,
+            "proposal_version": version.number if version else None,
+            "event_id": event.id if event else None,
+            **extra,
+        },
+    )
+
+
+def submit(
+    db: Session,
+    proposal: ProjectProposal,
+    *,
+    actor_user_id: int | None,
+    trigger: str,
+    **extra: Any,
+) -> int:
+    """Submit a draft the caller has locked and checked with `submit_refusal`: store the frozen
+    copy (no submitter when the orchestrator submits) and move it to `submitted`."""
+    project = db.get(Project, proposal.project_id)
+    client = db.get(Client, project.client_id)
+    number = (
+        db.scalar(
+            select(func.max(ProposalVersion.number)).where(
+                ProposalVersion.proposal_id == proposal.id
+            )
+        )
+        or 0
+    ) + 1
+    copy = ProposalVersion(
+        proposal_id=proposal.id,
+        number=number,
+        content={"project_name": project.name, "client_name": client.name, **values_of(proposal)},
+        submitted_by=actor_user_id,
+    )
+    db.add(copy)
+    db.flush()
+    return move(
+        db,
+        proposal,
+        actor_user_id=actor_user_id,
+        trigger=trigger,
+        action="submit",
+        to="submitted",
+        event=None,
+        version=copy,
+        **extra,
+    )
+
+
+def answer(
+    db: Session,
+    proposal: ProjectProposal,
+    *,
+    answer: str,
+    answered_on: date,
+    note: str | None,
+    actor_user_id: int | None,
+    source: str,
+    trigger: str,
+    **extra: Any,
+) -> int:
+    """Record the client's answer on a sent proposal the caller has locked and checked with
+    `answer_refusal`. Only `source = simulated` may have no person (also a database check)."""
+    if actor_user_id is None and source != SIMULATED:
+        raise ValueError(NO_PERSON)
+    if answer not in ANSWERS:
+        raise ValueError(BAD_ANSWER)
+    latest = latest_version(db, proposal.id)
+    event = ProposalEvent(
+        proposal_id=proposal.id,
+        version_id=latest.id if latest else None,
+        kind="answer",
+        actor_user_id=actor_user_id,
+        source=source,
+        answer=answer,
+        answered_on=answered_on,
+        note=note,
+    )
+    return move(
+        db,
+        proposal,
+        actor_user_id=actor_user_id,
+        trigger=trigger,
+        action="answer",
+        to=answer,
+        event=event,
+        version=latest,
+        source=source,
+        **extra,
+    )

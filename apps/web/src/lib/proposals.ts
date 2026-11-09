@@ -53,6 +53,9 @@ export interface Proposal extends ProposalContent {
   project_id: number
   project_name: string
   client_name: string
+  // The demo's simulated client (its contact email is a .example address): its answer comes
+  // from the simulation, never from a person.
+  client_simulated: boolean
   status: ProposalStatus
   plan_version_seen: number
   plan_changed: boolean
@@ -71,8 +74,10 @@ export interface Proposal extends ProposalContent {
 export interface ProposalEvent {
   id: number
   kind: 'approve' | 'return' | 'sent' | 'answer' | 'withdraw'
-  actor_user_id: number
+  // Null only on the simulated client's answer.
+  actor_user_id: number | null
   actor_name: string | null
+  source: 'person' | 'simulated'
   reason: string | null
   sent_to: string | null
   sent_on: string | null
@@ -87,7 +92,8 @@ export interface ProposalVersion {
   id: number
   number: number
   content: ProposalContent & { project_name?: string; client_name?: string }
-  submitted_by: number
+  // Null when the orchestrator submitted it.
+  submitted_by: number | null
   submitted_by_name: string | null
   submitted_at: string
   events: ProposalEvent[]
@@ -222,7 +228,22 @@ export function approvalText(proposal: Proposal): string | null {
   )
 }
 
+export const SIMULATED_CLIENT = 'Simulated client'
+
+// Who submitted a version: a person, or the orchestrator once every section was reviewed.
+export function submitterText(version: ProposalVersion): string {
+  if (version.submitted_by === null) return 'the orchestrator'
+  return version.submitted_by_name ?? `User ${version.submitted_by}`
+}
+
 export function eventText(event: ProposalEvent): string {
+  if (event.source === 'simulated') {
+    return (
+      `${SIMULATED_CLIENT}: ${event.answer} on ${event.answered_on}, answered by the demo's ` +
+      'simulation, not a real client' +
+      (event.note ? `: ${event.note}` : '')
+    )
+  }
   const who = event.actor_name ?? `User ${event.actor_user_id}`
   switch (event.kind) {
     case 'approve':

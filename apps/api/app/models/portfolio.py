@@ -6,11 +6,15 @@ how `--reset` clears only seeded rows. A project with no client is internal to t
 A project's `version` guards gate decisions (item 5.4): SQLAlchemy adds it to every UPDATE
 (`version_id_col`), so a decision that lost a race fails. A project declined at the go-ahead gate
 is `cancelled`, and takes no further plan, proposal or gate writes.
+
+A client is `simulated` (item 6.8) exactly when its contact email ends in `.example`: the
+simulated client (`app.simulated_client`) answers only its proposals.
 """
 
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -19,7 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     column,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.migrations_filter import table_name
 from app.models.base import Base, utcnow
@@ -32,6 +36,13 @@ USERS_TABLE = table_name("users")
 STAGES = ("intake", "planning", "delivery", "closure", "closed")
 STATUSES = ("on_track", "at_risk", "off_track", "on_hold", "complete", "cancelled")
 CANCELLED = "cancelled"
+# The reserved demo domain: an address in it never reaches a real person.
+DEMO_DOMAIN = ".example"
+
+
+def is_demo_email(email: str | None) -> bool:
+    """Whether `email` is in the reserved demo domain, so its client is simulated (item 6.8)."""
+    return bool(email) and email.strip().lower().endswith(DEMO_DOMAIN)
 
 
 class Client(Base):
@@ -45,7 +56,16 @@ class Client(Base):
     contact_name: Mapped[str | None] = mapped_column(String(200))
     contact_email: Mapped[str | None] = mapped_column(String(255))
     seed_key: Mapped[str | None] = mapped_column(String(64))
+    # Derived from `contact_email`, never set directly: see `_derive_simulated` (item 6.8).
+    simulated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    @validates("contact_email")
+    def _derive_simulated(self, _key: str, email: str | None) -> str | None:
+        """A client is simulated exactly when its contact email is in the demo domain; setting
+        the email (on create or on any change) sets the flag again."""
+        self.simulated = is_demo_email(email)
+        return email
 
 
 class Project(Base):
@@ -80,3 +100,13 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     __mapper_args__ = {"version_id_col": version}
+
+
+# The stages in which the orchestrator works on a project and its risks, proposals and changes.
+LIVE_STAGES = ("planning", "delivery")
+
+
+def is_live(project: Project | None) -> bool:
+    """Whether the project is live: not cancelled, and in planning or delivery. The orchestrator
+    and the simulated client (item 6.8) both act only on a live project."""
+    return project is not None and project.status != CANCELLED and project.stage in LIVE_STAGES

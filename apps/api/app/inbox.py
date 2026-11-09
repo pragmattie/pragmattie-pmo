@@ -406,7 +406,11 @@ def _submit_proposal(facts: list[Fact]) -> str:
 
 
 def _draft_proposal(facts: list[Fact]) -> str:
-    return f"Write the empty sections: {_value(facts, 'empty_sections')}."
+    empty = _value(facts, "empty_sections")
+    if not empty:
+        # Item 6.8: a client project whose plan is complete and which has no proposal yet.
+        return "Create the proposal from the plan, then write its sections."
+    return f"Write the empty sections: {empty}."
 
 
 def _client_answer(_facts: list[Fact]) -> str:

@@ -254,6 +254,9 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         assert {ck["name"] for ck in inspector.get_check_constraints("proposal_events")} == {
             "ck_proposal_events_kind",
             "ck_proposal_events_answer",
+            # 0024
+            "ck_proposal_events_source",
+            "ck_proposal_events_actor",
         }
         risk_columns = {c["name"]: c for c in inspector.get_columns("risks")}
         assert risk_columns["show_in_proposal"]["nullable"] is False
@@ -328,8 +331,22 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         )
         risk_columns = {c["name"]: c for c in inspector.get_columns("risks")}
         assert all(risk_columns[name]["nullable"] for name in suggested)
+        # 0024: the simulated client, an event's source, and proposals with no person.
+        assert not {c["name"]: c for c in inspector.get_columns("clients")}["simulated"]["nullable"]
+        event_columns = {c["name"]: c for c in inspector.get_columns("proposal_events")}
+        assert event_columns["actor_user_id"]["nullable"]
+        assert not event_columns["source"]["nullable"]
+        assert {c["name"]: c for c in inspector.get_columns("project_proposals")}["created_by"][
+            "nullable"
+        ]
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0023")
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert "simulated" not in {c["name"] for c in inspector.get_columns("clients")}
+        event_columns = {c["name"]: c for c in inspector.get_columns("proposal_events")}
+        assert "source" not in event_columns
+        assert event_columns["actor_user_id"]["nullable"] is False
         command.downgrade(config, "0022")
         inspector = inspect(create_engine(get_settings().database_url))
         assert not set(suggested) & {c["name"] for c in inspector.get_columns("risks")}
@@ -439,5 +456,97 @@ def test_0018_marks_existing_sections_as_a_persons(tmp_path, monkeypatch):
             ).scalar_one()
         person = {"source": "person", "reviewed_by": None, "reviewed_at": None}
         assert json.loads(stored) == {"summary": person, "scope_in": person}
+    finally:
+        get_settings.cache_clear()
+
+
+def _insert_0024_world(conn, simulated_answer: bool) -> None:
+    conn.exec_driver_sql(
+        "INSERT INTO users (id, email, display_name, password_hash, role, is_active, "
+        "failed_logins, created_at) VALUES (1, 'pm@pmo.example', 'P', 'x', "
+        "'project_manager', 1, 0, '2026-11-09')"
+    )
+    conn.exec_driver_sql(
+        "INSERT INTO projects (id, name, stage, sponsor, pm, status, version, created_at) "
+        "VALUES (1, 'F', 'planning', 'S', 'P', 'on_track', 1, '2026-11-09')"
+    )
+    conn.exec_driver_sql(
+        "INSERT INTO project_proposals (id, project_id, status, price, estimate_lines, "
+        "milestones, deliverables, risks, plan_version_seen, section_sources, created_by, "
+        "version, created_at, updated_at) VALUES (1, 1, 'sent', 10, '[]', '[]', '[]', '[]', 1, "
+        "'{}', 1, 1, '2026-11-09', '2026-11-09')"
+    )
+    conn.exec_driver_sql(
+        "INSERT INTO proposal_events (id, proposal_id, kind, actor_user_id, created_at) "
+        "VALUES (1, 1, 'sent', 1, '2026-11-09')"
+    )
+    if simulated_answer:
+        conn.exec_driver_sql(
+            "INSERT INTO proposal_events (id, proposal_id, kind, actor_user_id, source, answer, "
+            "created_at) VALUES (2, 1, 'answer', NULL, 'simulated', 'accepted', '2026-11-09')"
+        )
+
+
+def test_0024_backfills_simulated_and_the_downgrade_deletes_simulated_answers(
+    tmp_path, monkeypatch
+):
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    from app.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'migrate.db'}")
+    get_settings.cache_clear()
+    try:
+        config = Config(str(API_DIR / "alembic.ini"))
+        command.upgrade(config, "0023")
+        engine = create_engine(get_settings().database_url)
+        with engine.begin() as conn:
+            for number, email in enumerate(
+                ("buyer@quill.example", "Buyer@Quill.EXAMPLE ", "buyer@real-company.test", None),
+                start=1,
+            ):
+                conn.exec_driver_sql(
+                    "INSERT INTO clients (id, name, contact_email, created_at) "
+                    "VALUES (?, 'C', ?, '2026-11-09')",
+                    (number, email),
+                )
+        command.upgrade(config, "0024")
+        with engine.begin() as conn:
+            flags = dict(conn.exec_driver_sql("SELECT id, simulated FROM clients").all())
+            assert flags == {1: 1, 2: 1, 3: 0, 4: 0}
+            _insert_0024_world(conn, simulated_answer=True)
+        # A person's event always has a person.
+        with pytest.raises(IntegrityError), engine.begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO proposal_events (id, proposal_id, kind, actor_user_id, source, "
+                "created_at) VALUES (3, 1, 'withdraw', NULL, 'person', '2026-11-09')"
+            )
+        command.downgrade(config, "0023")
+        with engine.connect() as conn:
+            kinds = conn.exec_driver_sql("SELECT id, kind FROM proposal_events").all()
+        assert kinds == [(1, "sent")]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_0024_downgrade_refuses_while_the_orchestrator_made_a_proposal(tmp_path, monkeypatch):
+    import pytest
+
+    from app.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'migrate.db'}")
+    get_settings.cache_clear()
+    try:
+        config = Config(str(API_DIR / "alembic.ini"))
+        command.upgrade(config, "0024")
+        engine = create_engine(get_settings().database_url)
+        with engine.begin() as conn:
+            _insert_0024_world(conn, simulated_answer=False)
+            conn.exec_driver_sql("UPDATE project_proposals SET created_by = NULL")
+        with pytest.raises(RuntimeError, match="made by the orchestrator"):
+            command.downgrade(config, "0023")
+        with engine.connect() as conn:
+            assert conn.exec_driver_sql("SELECT created_by FROM project_proposals").scalar() is None
     finally:
         get_settings.cache_clear()

@@ -44,8 +44,15 @@ role without the right, the caller's own submission, a stale version, a wrong st
 or a second create), is one audit row too (`status: rejected`), and changes nothing. A refusal
 before the project has a proposal is recorded against the project (subject type `project`).
 A cancelled project (declined at the go-ahead gate, item 5.4) takes no proposal writes: each one is
-a refused 409, recorded. These routes need a signed-in person, so no agent can submit, approve,
-mark sent or record an answer.
+a refused 409, recorded. These routes need a signed-in person, so no agent can approve or mark
+sent, and every event a route records has its person (`source = person`).
+
+Item 6.8: the submit and answer rules live in `app.proposals` (`submit_refusal`, `submit`,
+`answer_refusal`, `answer`), shared with the orchestrator, which may submit a proposal once every
+section is reviewed, and the simulated client, which answers a sent proposal to a client whose
+contact email is in the demo domain. Their rows say so: no person, `trigger = orchestrator`, and
+the answer's event `source = simulated`. `client_simulated` on the proposal says the client is
+simulated.
 """
 
 import logging
@@ -53,13 +60,15 @@ from decimal import ROUND_UP, Decimal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
+from app import proposals as rules
 from app.agents import proposal_agent, risk_agent
 from app.api.intake import _commit, _names, _save
 from app.api.projects import Db, Reader, _project
-from app.audit import next_attempt, record_decision, record_refusal
+from app.audit import record_refusal
 from app.authz import Action, not_own_submission, require_audited
 from app.config import get_settings
 from app.models import (
@@ -75,10 +84,15 @@ from app.models.base import utcnow
 from app.models.portfolio import CANCELLED
 from app.models.proposal import TEXT_SECTIONS
 from app.proposals import (
+    NOT_DRAFT,
+    NOT_SENT,
+    Refusal,
     check,
+    latest_version,
     mark_section,
     plan_facts,
     refresh_from_plan,
+    snapshot,
     unreviewed_sections,
     values_of,
 )
@@ -112,17 +126,11 @@ NO_PLAN = "this project has no plan to build a proposal from"
 EXISTS = "this project already has a proposal"
 STALE = "This proposal has changed since you loaded it. Reload and try again."
 FINAL = "a proposal that has been sent, answered or withdrawn can't change"
-HAS_FLAGS = "the proposal can't be submitted while the checker has flags open"
 SENT_HAS_FLAGS = "the proposal can't be marked sent while the checker has flags open"
-NOT_DRAFT = "only a draft proposal can be submitted"
 NOT_SUBMITTED = "only a submitted proposal can be approved or returned"
 OWN = "you cannot decide on your own submission"
 NOT_APPROVED = "only an approved proposal can be marked sent"
-NOT_SENT = "the client's answer can be recorded only for a proposal that has been sent"
 CANT_WITHDRAW = "this proposal has already been answered or withdrawn"
-UNREVIEWED = (
-    "the proposal can't be submitted while a section is an agent draft no person has reviewed"
-)
 AGENT_OFF = "the proposal agent is off (AGENT_MODE=off); a person can write the proposal by hand"
 NOT_DRAFT_AGENT = "the proposal agent drafts only for a draft proposal"
 AGENT_FAILED = "the proposal agent could not finish; the failed run is recorded in the audit trail"
@@ -166,15 +174,6 @@ def _proposal(db: Session, project_id: int, *, for_update: bool = False) -> Proj
     return proposal
 
 
-def _latest_version(db: Session, proposal_id: int) -> ProposalVersion | None:
-    return db.scalar(
-        select(ProposalVersion)
-        .where(ProposalVersion.proposal_id == proposal_id)
-        .order_by(ProposalVersion.number.desc())
-        .limit(1)
-    )
-
-
 def _latest_approval(db: Session, proposal_id: int) -> ProposalEvent | None:
     return db.scalar(
         select(ProposalEvent)
@@ -203,7 +202,7 @@ def _proposal_out(db: Session, proposal: ProjectProposal) -> ProposalOut:
     plan = _plan(db, proposal.project_id)
     facts = plan_facts(db, plan)
     values = values_of(proposal)
-    latest = _latest_version(db, proposal.id)
+    latest = latest_version(db, proposal.id)
     approval = _latest_approval(db, proposal.id)
     approved = db.get(ProposalVersion, approval.version_id) if approval else None
     submitter = None
@@ -216,6 +215,7 @@ def _proposal_out(db: Session, proposal: ProjectProposal) -> ProposalOut:
         project_id=project.id,
         project_name=project.name,
         client_name=client.name,
+        client_simulated=client.simulated,
         status=proposal.status,
         **values,
         plan_version_seen=proposal.plan_version_seen,
@@ -238,15 +238,6 @@ def _proposal_out(db: Session, proposal: ProjectProposal) -> ProposalOut:
 # --- Audit
 
 
-def _snapshot(proposal: ProjectProposal) -> dict[str, Any]:
-    return {
-        "status": proposal.status,
-        "version": proposal.version,
-        **values_of(proposal),
-        "section_sources": dict(proposal.section_sources or {}),
-    }
-
-
 def _record(
     db: Session,
     proposal: ProjectProposal,
@@ -256,25 +247,14 @@ def _record(
     before: dict[str, Any] | None,
     **extra: Any,
 ) -> None:
-    record_decision(
+    rules.record(
         db,
-        agent=AUDIT_AGENT,
-        trigger="human",
-        subject_type=SUBJECT_TYPE,
-        subject_id=str(proposal.id),
-        version=proposal.version,
-        attempt=next_attempt(
-            db,
-            agent=AUDIT_AGENT,
-            subject_type=SUBJECT_TYPE,
-            subject_id=str(proposal.id),
-            version=proposal.version,
-        ),
-        status="ok",
+        proposal,
         actor_user_id=user.id,
-        signals=before,
-        output=_snapshot(proposal),
-        action_taken={"action": action, "project_id": proposal.project_id, **extra},
+        trigger="human",
+        action=action,
+        before=before,
+        **extra,
     )
 
 
@@ -297,7 +277,7 @@ def _refuse(
         subject_id=str(proposal.id),
         version=proposal.version,
         actor_user_id=user.id,
-        output=_snapshot(proposal),
+        output=snapshot(proposal),
         action_taken={
             "action": f"{action}_refused",
             "refusal": refusal,
@@ -321,7 +301,7 @@ def _refusal_recorder(action: str):
             return
         proposal = _find(db, project_id)
         if proposal is not None:
-            subject = (SUBJECT_TYPE, str(proposal.id), proposal.version, _snapshot(proposal))
+            subject = (SUBJECT_TYPE, str(proposal.id), proposal.version, snapshot(proposal))
         elif db.get(Project, project_id) is not None:
             subject = (PROJECT_SUBJECT, str(project_id), 1, None)
         else:
@@ -414,16 +394,7 @@ def create_proposal(project_id: int, user: Creator, db: Db) -> ProposalOut:
         raise _refuse(
             db, existing, user, action="create", refusal="exists", code=409, detail=EXISTS
         )
-    proposal = ProjectProposal(
-        project_id=project_id,
-        status="draft",
-        scope_in=plan.scope_in,
-        scope_out=plan.scope_out,
-        created_by=user.id,
-    )
-    refresh_from_plan(proposal, plan_facts(db, plan))
-    db.add(proposal)
-    _save(db)
+    proposal = rules.new_proposal(db, plan, user.id)
     _record(db, proposal, user, action="create", before=None)
     _commit(db)
     return _proposal_out(db, proposal)
@@ -469,7 +440,7 @@ def _edited(
 @router.patch("/{project_id}/proposal", response_model=ProposalOut)
 def update_proposal(project_id: int, body: ProposalUpdate, user: Editor, db: Db) -> ProposalOut:
     proposal = _editable(db, project_id, body.version, user, "update")
-    before = _snapshot(proposal)
+    before = snapshot(proposal)
     changes = body.model_dump(exclude={"version"}, exclude_unset=True)
     changed = False
     now = utcnow().isoformat()
@@ -487,10 +458,10 @@ def update_proposal(project_id: int, body: ProposalUpdate, user: Editor, db: Db)
 @router.post("/{project_id}/proposal/refresh", response_model=ProposalOut)
 def refresh_proposal(project_id: int, body: ProposalWrite, user: Refresher, db: Db) -> ProposalOut:
     proposal = _editable(db, project_id, body.version, user, "refresh")
-    before = _snapshot(proposal)
+    before = snapshot(proposal)
     plan_version_seen = proposal.plan_version_seen
     refresh_from_plan(proposal, plan_facts(db, _plan(db, project_id)))
-    if _snapshot(proposal) != before or proposal.plan_version_seen != plan_version_seen:
+    if snapshot(proposal) != before or proposal.plan_version_seen != plan_version_seen:
         _edited(db, proposal, user, "refresh", before)
     return _proposal_out(db, proposal)
 
@@ -539,29 +510,48 @@ def _move(
     event: ProposalEvent | None,
     version: ProposalVersion | None,
 ) -> ProposalOut:
-    before = _snapshot(proposal)
-    from_status = proposal.status
-    proposal.status = to
-    proposal.updated_at = utcnow()
-    _save(db)
-    if event is not None:
-        db.add(event)
-        db.flush()
-    _record(
-        db,
-        proposal,
-        user,
-        action=action,
-        before=before,
-        **{
-            "from": from_status,
-            "to": to,
-            "proposal_version": version.number if version else None,
-            "event_id": event.id if event else None,
-        },
-    )
+    def change() -> None:
+        rules.move(
+            db,
+            proposal,
+            actor_user_id=user.id,
+            trigger="human",
+            action=action,
+            to=to,
+            event=event,
+            version=version,
+        )
+
+    return _apply(db, proposal, change)
+
+
+def _apply(db: Session, proposal: ProjectProposal, change) -> ProposalOut:
+    """Run a status change from `app.proposals`, commit it, and give the proposal back; a row
+    another write changed meanwhile is a 409."""
+    try:
+        change()
+    except StaleDataError:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, STALE) from None
     _commit(db)
     return _proposal_out(db, proposal)
+
+
+def _refuse_with(
+    db: Session, proposal: ProjectProposal, user: User, action: str, refusal: Refusal | None
+) -> None:
+    """A refusal from `app.proposals`, recorded and raised as a 409."""
+    if refusal is not None:
+        raise _refuse(
+            db,
+            proposal,
+            user,
+            action=action,
+            refusal=refusal.refusal,
+            code=409,
+            detail=refusal.detail,
+            **refusal.extra,
+        )
 
 
 def _refuse_open_flags(
@@ -586,44 +576,20 @@ def _refuse_open_flags(
 @router.post("/{project_id}/proposal/submit", response_model=ProposalOut)
 def submit_proposal(project_id: int, body: ProposalWrite, user: Submitter, db: Db) -> ProposalOut:
     proposal = _for_decision(db, project_id, body.version, user, "submit", ("draft",))
-    unreviewed = unreviewed_sections(proposal)
-    if unreviewed:
-        raise _refuse(
-            db,
-            proposal,
-            user,
-            action="submit",
-            refusal="unreviewed_agent_sections",
-            code=409,
-            detail={"message": UNREVIEWED, "sections": unreviewed},
-            sections=unreviewed,
-        )
-    _refuse_open_flags(db, proposal, user, "submit", HAS_FLAGS)
-    project, client = _client_project(db, project_id)
-    number = (
-        db.scalar(
-            select(func.max(ProposalVersion.number)).where(
-                ProposalVersion.proposal_id == proposal.id
-            )
-        )
-        or 0
-    ) + 1
-    copy = ProposalVersion(
-        proposal_id=proposal.id,
-        number=number,
-        content={"project_name": project.name, "client_name": client.name, **values_of(proposal)},
-        submitted_by=user.id,
+    _plan(db, project_id)
+    _refuse_with(db, proposal, user, "submit", rules.submit_refusal(db, proposal))
+    return _apply(
+        db,
+        proposal,
+        lambda: rules.submit(db, proposal, actor_user_id=user.id, trigger="human"),
     )
-    db.add(copy)
-    db.flush()
-    return _move(db, proposal, user, action="submit", to="submitted", event=None, version=copy)
 
 
 def _decide(
     db: Session, project_id: int, body: ProposalDecision, user: User, action: str
 ) -> ProposalOut:
     proposal = _for_decision(db, project_id, body.version, user, action, ("submitted",))
-    latest = _latest_version(db, proposal.id)
+    latest = latest_version(db, proposal.id)
     if latest is not None and latest.submitted_by == user.id:
         _refuse(db, proposal, user, action=action, refusal="own_submission", code=403, detail=OWN)
         not_own_submission(user.id, latest.submitted_by)
@@ -654,7 +620,7 @@ def return_proposal(project_id: int, body: ProposalDecision, user: Returner, db:
 def mark_sent(project_id: int, body: ProposalSent, user: SentRecorder, db: Db) -> ProposalOut:
     proposal = _for_decision(db, project_id, body.version, user, "sent", ("approved",))
     _refuse_open_flags(db, proposal, user, "sent", SENT_HAS_FLAGS)
-    latest = _latest_version(db, proposal.id)
+    latest = latest_version(db, proposal.id)
     event = ProposalEvent(
         proposal_id=proposal.id,
         version_id=latest.id if latest else None,
@@ -672,17 +638,21 @@ def record_answer(
     project_id: int, body: ProposalAnswer, user: AnswerRecorder, db: Db
 ) -> ProposalOut:
     proposal = _for_decision(db, project_id, body.version, user, "answer", ("sent",))
-    latest = _latest_version(db, proposal.id)
-    event = ProposalEvent(
-        proposal_id=proposal.id,
-        version_id=latest.id if latest else None,
-        kind="answer",
-        actor_user_id=user.id,
-        answer=body.answer,
-        answered_on=body.answered_on,
-        note=body.note,
+    _refuse_with(db, proposal, user, "answer", rules.answer_refusal(proposal))
+    return _apply(
+        db,
+        proposal,
+        lambda: rules.answer(
+            db,
+            proposal,
+            answer=body.answer,
+            answered_on=body.answered_on,
+            note=body.note,
+            actor_user_id=user.id,
+            source="person",
+            trigger="human",
+        ),
     )
-    return _move(db, proposal, user, action="answer", to=body.answer, event=event, version=latest)
 
 
 @router.post("/{project_id}/proposal/withdraw", response_model=ProposalOut)
@@ -690,7 +660,7 @@ def withdraw_proposal(
     project_id: int, body: ProposalDecision, user: Withdrawer, db: Db
 ) -> ProposalOut:
     proposal = _for_decision(db, project_id, body.version, user, "withdraw", WITHDRAWABLE)
-    latest = _latest_version(db, proposal.id)
+    latest = latest_version(db, proposal.id)
     event = ProposalEvent(
         proposal_id=proposal.id,
         version_id=latest.id if latest else None,
@@ -814,7 +784,7 @@ def confirm_section(
             detail=NOT_AGENT_DRAFT,
             section=section,
         )
-    before = _snapshot(proposal)
+    before = snapshot(proposal)
     mark_section(
         proposal, section, source="agent", reviewed_by=user.id, reviewed_at=utcnow().isoformat()
     )
@@ -850,7 +820,7 @@ def list_versions(
                 .order_by(ProposalEvent.id)
             )
         )
-    people = {r.submitted_by for r in rows} | {e.actor_user_id for e in events}
+    people = ({r.submitted_by for r in rows} | {e.actor_user_id for e in events}) - {None}
     names = _names(db, User, people, User.display_name)
     items = [
         VersionOut(

@@ -18,7 +18,10 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-Nothing.
+- **`policies/autonomy.yaml`** (item 6.8): today's file plus one line, `answer: accepted` under
+  `agents.simulated_client`: what the simulated client answers a sent proposal (`accepted`, or
+  `declined` for a demo). The loader already accepts the key as optional, refuses any other value,
+  and uses `accepted` when it is missing, so the applied file keeps working until this is applied.
 
 ## Applied
 

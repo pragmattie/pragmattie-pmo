@@ -406,6 +406,11 @@ def _facts(**values) -> list[Fact]:
             _facts(empty_sections="summary, terms"),
             "Write the empty sections: summary, terms.",
         ),
+        (
+            "draft_proposal",
+            _facts(risks=2),
+            "Create the proposal from the plan, then write its sections.",
+        ),
         ("client_answer", [], "Record the client's answer when it arrives."),
         (
             "decide_change_sponsor",

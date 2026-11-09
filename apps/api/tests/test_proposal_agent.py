@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.agents import proposal_agent
 from app.agents.risk_agent import ClaudeReply
 from app.api import proposals as proposals_api
-from app.api.proposals import AGENT_OFF, NOT_AGENT_DRAFT, NOT_DRAFT_AGENT, UNREVIEWED
+from app.api.proposals import AGENT_OFF, NOT_AGENT_DRAFT, NOT_DRAFT_AGENT
 from app.config import get_settings
 from app.db import engine
 from app.main import app
@@ -37,7 +37,7 @@ from app.models import (
 )
 from app.models.intake import LONG_TEXT_MAX
 from app.models.planning import ProjectBrief
-from app.proposals import PlanFacts
+from app.proposals import UNREVIEWED, PlanFacts
 
 PROJECTS = "/api/v1/projects"
 
@@ -684,7 +684,7 @@ def test_an_error_while_saving_is_audited_and_saves_nothing(
 ):
     mode("enforce")
 
-    def broken(db, proposal, checked):
+    def broken(db, proposal, checked, **_):
         proposal.summary = "half saved"
         db.flush()
         raise RuntimeError("disk full")

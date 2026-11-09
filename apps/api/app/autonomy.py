@@ -76,6 +76,11 @@ FLOOR_STEPS = frozenset(
 )
 
 SCORE_RISK = "score_risk"
+SIMULATED_CLIENT = "simulated_client"
+# What the simulated client answers a sent proposal (item 6.8): `agents.simulated_client.answer`
+# in the file, `accepted` when it is missing.
+SIMULATED_ANSWERS = ("accepted", "declined")
+DEFAULT_SIMULATED_ANSWER = "accepted"
 MIN_WINDOW = 1
 MAX_WINDOW = 24 * 60
 
@@ -91,12 +96,14 @@ class Step:
 
 @dataclass(frozen=True)
 class AutonomyPolicy:
-    """Every step in `STEPS` order, each agent's off switch, and the SHA-256 of the file as
-    loaded, so a step that runs can record exactly which rules applied."""
+    """Every step in `STEPS` order, each agent's off switch, the SHA-256 of the file as loaded
+    (so a step that runs can record exactly which rules applied), and the simulated client's
+    answer."""
 
     steps: Mapping[str, Step]
     enabled: Mapping[str, bool]
     digest: str = ""
+    simulated_answer: str = DEFAULT_SIMULATED_ANSWER
 
 
 class JudgedRisk(Protocol):

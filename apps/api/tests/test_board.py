@@ -18,6 +18,7 @@ from test_orchestrator import (
     _request,
     _risk,
     _risk_agent_ran,
+    _sent,
     _user,
     _with,
     _world,
@@ -39,6 +40,7 @@ from app.models import (
     ProjectPlan,
     ProjectProposal,
     ProjectRequest,
+    utcnow,
 )
 from app.orchestrator import StepAction, hold, next_steps
 from app.risks import risk_policy
@@ -366,19 +368,23 @@ def test_with_the_agents_off_every_step_waits_on_a_person(db, rules, actions):
 def test_a_simulated_clients_step_is_labelled_simulated(db, rules, actions):
     actions(client_answer=Calls())
     pm = _user(db)
-    project = _project(db, stage="delivery", client=True)
-    _proposal(db, project, pm, "sent", True)
+    project = _project(db, stage="delivery", client=True, client_email="buyer@client.example")
+    proposal_id = _proposal(db, project, pm, "sent", True)
+    # The simulated client answers only once its delay after the `sent` event is over.
+    _sent(db, proposal_id, pm, utcnow() - timedelta(minutes=11))
     card = _cards(db, rules)[f"project-{project.id}"]
     assert [w.text for w in card.waiting] == ["Simulated client answering the proposal"]
     assert card.simulated and card.waiting[0].simulated
     windowed = _with(rules, client_answer=dict(mode="window", window_minutes=30))
     card = _cards(db, windowed)[f"project-{project.id}"]
     assert card.waiting[0].text == "Simulated client will answer the proposal unless held"
-    # A person recording the answer is not simulated.
+    # A person recording the answer is not a simulated step.
     by_person = _with(rules, client_answer=dict(mode="person", agent=None))
     card = _cards(db, by_person)[f"project-{project.id}"]
     assert card.waiting[0].text == "Waiting on the project manager: client's answer"
-    assert not card.simulated
+    assert not card.waiting[0].simulated
+    # The card still says the client is simulated (item 6.8).
+    assert card.client_simulated and card.simulated
 
 
 # --- Summary and filters
@@ -492,3 +498,25 @@ def test_the_route_says_when_a_policy_is_missing(db, web, sign_in, monkeypatch):
     response = web.get(URL)
     assert response.status_code == 503
     assert "autonomy" in response.json()["detail"]
+
+
+def test_a_real_clients_answer_is_a_persons_and_the_card_is_not_simulated(db, rules, actions):
+    actions(client_answer=Calls())
+    pm = _user(db)
+    project = _project(db, stage="delivery", client=True, client_email="buyer@client.test")
+    proposal_id = _proposal(db, project, pm, "sent", True)
+    _sent(db, proposal_id, pm, utcnow() - timedelta(days=1))
+    card = _cards(db, rules)[f"project-{project.id}"]
+    assert [w.text for w in card.waiting] == ["Waiting on the project manager: client's answer"]
+    assert not card.simulated and not card.client_simulated
+
+
+def test_the_board_route_says_the_client_is_simulated(db, web, rules, sign_in):
+    pm = _user(db)
+    project = _project(db, stage="delivery", client=True, client_email="buyer@client.example")
+    _proposal(db, project, pm, "accepted", True)
+    sign_in(web, db, "auditor")
+    found = web.get("/api/v1/board").json()
+    cards = [c for column in found["columns"] for c in column["cards"]]
+    [card] = [c for c in cards if c["key"] == f"project-{project.id}"]
+    assert card["client_simulated"] is True and card["simulated"] is True

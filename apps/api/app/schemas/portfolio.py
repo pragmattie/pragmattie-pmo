@@ -14,6 +14,8 @@ class ClientOut(BaseModel):
     website: str | None
     contact_name: str | None
     contact_email: str | None
+    # Derived from the contact email (item 6.8); never taken from a request.
+    simulated: bool
     created_at: datetime
 
 

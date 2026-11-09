@@ -39,6 +39,7 @@ from app.models import (
     ProjectPlan,
     ProjectProposal,
     ProjectRequest,
+    ProposalEvent,
     Risk,
     User,
     ValueCase,
@@ -146,10 +147,18 @@ def _request(db: Session, user: User, status: str = "draft", uses_ai: bool = Fal
     return request.id
 
 
-def _project(db: Session, stage: str = "planning", client: bool = False, **fields) -> Project:
+def _project(
+    db: Session,
+    stage: str = "planning",
+    client: bool = False,
+    client_email: str | None = None,
+    **fields,
+) -> Project:
+    """A project; with `client`, for a new client (simulated when `client_email` is a demo
+    address)."""
     client_id = None
     if client:
-        row = Client(name="Client Co")
+        row = Client(name="Client Co", contact_email=client_email)
         db.add(row)
         db.flush()
         client_id = row.id
@@ -236,6 +245,22 @@ def _proposal(db: Session, project: Project, user: User, status: str, filled: bo
     return proposal.id
 
 
+def _sent(db: Session, proposal_id: int, user: User, at) -> ProposalEvent:
+    """The proposal's `sent` event, made at `at`."""
+    event = ProposalEvent(
+        proposal_id=proposal_id,
+        kind="sent",
+        actor_user_id=user.id,
+        sent_to="buyer@client.example",
+        sent_on=at.date(),
+        means="email",
+        created_at=at,
+    )
+    db.add(event)
+    db.commit()
+    return event
+
+
 def _change(db: Session, project: Project, user: User, decider: str) -> int:
     change = ChangeRequest(
         project_id=project.id,
@@ -289,7 +314,11 @@ def _world(db: Session) -> dict[str, int]:
         ("approved", True, "send_proposal"),
         ("sent", True, "client_answer"),
     ):
-        ids[name] = _proposal(db, _project(db, stage="delivery", client=True), pm, status, filled)
+        project = _project(db, stage="delivery", client=True)
+        if name == "draft_proposal":
+            # The agent drafts only once the plan is complete (item 6.8).
+            _complete_plan(db, project, pm)
+        ids[name] = _proposal(db, project, pm, status, filled)
     ids["decide_change_pm"] = _change(db, delivery, pm, "project_manager")
     ids["decide_change_sponsor"] = _change(db, delivery, pm, "sponsor")
     return ids
@@ -359,11 +388,15 @@ def test_every_step_id_comes_from_some_state(db, rules):
     assert (accept.mode, accept.waits_on) == (PERSON, "sponsor")
     draft = _found(steps, "draft_proposal", ids["draft_proposal"])
     assert (draft.subject_type, draft.mode, draft.waits_on) == ("proposal", AGENT, "proposal_agent")
-    assert _found(steps, "submit_proposal", ids["submit_proposal"]).handoff == NO_AGENT
+    submit = _found(steps, "submit_proposal", ids["submit_proposal"])
+    assert (submit.mode, submit.waits_on, submit.handoff) == (WINDOW, "proposal_agent", None)
     assert _found(steps, "approve_proposal", ids["approve_proposal"]).waits_on == "sponsor"
     send = _found(steps, "send_proposal", ids["send_proposal"])
     assert send.reason == "the proposal is approved and waiting to be sent"
-    assert _found(steps, "client_answer", ids["client_answer"]).handoff == NO_AGENT
+    # The client has no demo address, so it is real and a person records its answer.
+    answer = _found(steps, "client_answer", ids["client_answer"])
+    assert (answer.mode, answer.waits_on) == (PERSON, "project_manager")
+    assert answer.handoff == orchestrator.REAL_CLIENT
     assert _found(steps, "decide_change_pm", ids["decide_change_pm"]).waits_on == "project_manager"
     assert (
         _found(steps, "decide_change_sponsor", ids["decide_change_sponsor"]).waits_on == "sponsor"

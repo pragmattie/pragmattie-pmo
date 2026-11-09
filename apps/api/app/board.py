@@ -13,7 +13,8 @@ what it is waiting on, computed fresh on each read from the existing tables. Not
   plan"; a window step "Agent will submit the proposal at 14:20 UTC unless held"; a person step
   "Waiting on the sponsor: go-ahead gate". An agent step a person held, or that failed after its
   retries, has an open inbox item and waits on a person. A step the simulated client takes is
-  labelled simulated.
+  labelled simulated, and so is every card whose client is simulated (item 6.8: its contact email
+  is in the demo domain), so the board always says when an answer came from the simulation.
 - **Money** is computed here: a plan total is its estimate lines plus contingency
   (`plans.compute_total`); the summary adds them up. Nothing is taken from the client.
 
@@ -144,6 +145,7 @@ class Card:
     plan_total: Decimal | None = None
     top_budget: Decimal | None = None
     stopped: bool = False
+    client_simulated: bool = False
     waiting: list[Waiting] = field(default_factory=list)
 
     @property
@@ -160,7 +162,7 @@ class Card:
 
     @property
     def simulated(self) -> bool:
-        return any(w.simulated for w in self.waiting)
+        return self.client_simulated or any(w.simulated for w in self.waiting)
 
 
 @dataclass(frozen=True)
@@ -406,8 +408,10 @@ def cards(
             for w in waiting.get(f"{PROJECT}-{project.id}", [])
         )
         found.append(_project_card(db, project, clients, ranks, at_gate))
+    simulated = set(db.scalars(select(Client.id).where(Client.simulated.is_(True))))
     for card in found:
         card.waiting = waiting.get(card.key, [])
+        card.client_simulated = card.client_id in simulated
     return found
 
 

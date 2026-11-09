@@ -10,7 +10,8 @@
 - `ProposalEvent`: what a person did with a version: the sponsor approved or returned it, a
   person marked it sent (to whom, on what date, by what means) or recorded the client's answer,
   or someone withdrew it. Marking sent records what a person did outside the product; nothing
-  is sent from here.
+  is sent from here. An event's `source` is `simulated` when the simulated client gave the answer
+(item 6.8); only such an event has no person.
 
 `section_sources` says who wrote each text section (item 5.3): `{"source": "agent" | "person",
 "reviewed_by": user id or null, "reviewed_at": ISO time or null}` by section name. An agent's
@@ -51,6 +52,9 @@ EVENT_KINDS = ("approve", "return", "sent", "answer", "withdraw")
 ANSWERS = ("accepted", "declined")
 TEXT_SECTIONS = ("summary", "scope_in", "scope_out", "assumptions", "terms")
 SECTION_SOURCES = ("agent", "person")
+# Who gave an event: a person, or the simulated client (item 6.8), which has no person.
+EVENT_SOURCES = ("person", "simulated")
+SIMULATED = "simulated"
 SHORT_TEXT_MAX = 200
 
 
@@ -81,7 +85,8 @@ class ProjectProposal(Base):
     plan_version_seen: Mapped[int] = mapped_column()
     # Who wrote each text section, and who reviewed an agent's draft (see the module docstring).
     section_sources: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_by: Mapped[int] = mapped_column(
+    # None when the orchestrator created it (item 6.8).
+    created_by: Mapped[int | None] = mapped_column(
         ForeignKey(f"{USERS_TABLE}.id", name="fk_project_proposals_created_by"), index=True
     )
     version: Mapped[int] = mapped_column(default=1)
@@ -104,7 +109,8 @@ class ProposalVersion(Base):
     )
     number: Mapped[int] = mapped_column()
     content: Mapped[dict[str, Any]] = mapped_column(JSON)
-    submitted_by: Mapped[int] = mapped_column(
+    # None when the orchestrator submitted it (item 6.8).
+    submitted_by: Mapped[int | None] = mapped_column(
         ForeignKey(f"{USERS_TABLE}.id", name="fk_proposal_versions_submitted_by"), index=True
     )
     submitted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -115,6 +121,11 @@ class ProposalEvent(Base):
     __table_args__ = (
         CheckConstraint(column("kind").in_(EVENT_KINDS), name="ck_proposal_events_kind"),
         CheckConstraint(column("answer").in_(ANSWERS), name="ck_proposal_events_answer"),
+        CheckConstraint(column("source").in_(EVENT_SOURCES), name="ck_proposal_events_source"),
+        # Only the simulated client's answer has no person.
+        CheckConstraint(
+            "actor_user_id IS NOT NULL OR source = 'simulated'", name="ck_proposal_events_actor"
+        ),
         {"sqlite_autoincrement": True},
     )
 
@@ -126,9 +137,11 @@ class ProposalEvent(Base):
         ForeignKey(f"{VERSIONS_TABLE}.id", name="fk_proposal_events_version"), index=True
     )
     kind: Mapped[str] = mapped_column(String(16))
-    actor_user_id: Mapped[int] = mapped_column(
+    # None only on a `simulated` event (the check above, and `app.proposals.answer`).
+    actor_user_id: Mapped[int | None] = mapped_column(
         ForeignKey(f"{USERS_TABLE}.id", name="fk_proposal_events_actor"), index=True
     )
+    source: Mapped[str] = mapped_column(String(16), default="person", server_default="person")
     reason: Mapped[str | None] = mapped_column(String(LONG_TEXT_MAX))
     sent_to: Mapped[str | None] = mapped_column(String(SHORT_TEXT_MAX))
     sent_on: Mapped[date | None] = mapped_column(Date)

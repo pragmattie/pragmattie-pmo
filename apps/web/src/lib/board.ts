@@ -34,7 +34,9 @@ export interface Card {
   top_budget: string | null
   stopped: boolean
   held_by: 'agent' | 'person' | null
+  // The simulated client takes one of the card's steps, or the card's client is simulated.
   simulated: boolean
+  client_simulated: boolean
   waiting: Waiting[]
 }
 

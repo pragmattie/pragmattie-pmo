@@ -139,6 +139,8 @@ class ProposalOut(BaseModel):
     project_id: int
     project_name: str
     client_name: str
+    # The client is the demo's simulated client (item 6.8): its answer comes from the simulation.
+    client_simulated: bool
     status: Status
     summary: str | None
     scope_in: str | None
@@ -171,8 +173,10 @@ class EventOut(BaseModel):
 
     id: int
     kind: str
-    actor_user_id: int
+    # None only on the simulated client's answer (`source = simulated`).
+    actor_user_id: int | None
     actor_name: str | None = None
+    source: Literal["person", "simulated"]
     reason: str | None
     sent_to: str | None
     sent_on: date | None
@@ -187,7 +191,8 @@ class VersionOut(BaseModel):
     id: int
     number: int
     content: dict[str, Any]
-    submitted_by: int
+    # None when the orchestrator submitted it (item 6.8).
+    submitted_by: int | None
     submitted_by_name: str | None
     submitted_at: datetime
     events: list[EventOut]
