@@ -186,6 +186,14 @@ a number next to a currency word, code or sign either way round ("50000 dollars"
 "$40k", "40k"). Counts such as "3 workshops" or "2 phases" stay. The checker itself is unchanged;
 it then runs on the result and its flags come back with the draft.
 
+**Nothing recorded.** When a section's source data is empty (no assumptions; no scope in, or no
+scope out, in either the brief or the plan), the agent writes one plain sentence saying so, such as
+"No assumptions were recorded for this project.", rather than leaving it empty. If it returns
+nothing for such a section anyway, code puts in that sentence and records the section under
+`nothing_recorded` in the run's audit row. The sentence is saved as an unreviewed agent draft like
+any other, so a person reviews it before submit. A section whose source data is not empty and
+comes back empty is still left empty, and the orchestrator's step fails as before.
+
 **What it never does.** Change the price, the estimate lines, the milestones, the deliverables or
 the risks shown; write about risks (the proposal shows them from the register, so it can't restate
 one or its score); submit, approve, confirm or mark anything sent; choose a price; or run on a

@@ -355,6 +355,48 @@ def test_output_outside_the_schema_is_an_error(raw):
         proposal_agent.validate(raw, _facts())
 
 
+def _data(*, assumptions=(), brief_scope=(None, None), plan_scope=(None, None)) -> dict:
+    return {
+        "project": {
+            "brief": {"scope_in": brief_scope[0], "scope_out": brief_scope[1]},
+            "assumptions": list(assumptions),
+            "plan": {"scope_in": plan_scope[0], "scope_out": plan_scope[1]},
+        }
+    }
+
+
+def test_sections_with_empty_source_data_are_found():
+    assert proposal_agent.empty_sources(_data()) == {"scope_in", "scope_out", "assumptions"}
+    assert proposal_agent.empty_sources(_data(brief_scope=("The pilot", "  "))) == {
+        "scope_out",
+        "assumptions",
+    }
+    assert proposal_agent.empty_sources(
+        _data(assumptions=["Data is ready"], plan_scope=(None, "Other sites"))
+    ) == {"scope_in"}
+
+
+def test_an_empty_section_with_no_source_data_gets_the_none_recorded_sentence():
+    checked = proposal_agent.validate(
+        _output(assumptions=None, scope_out="  "), _facts(), frozenset({"assumptions"})
+    )
+    assert checked.sections["assumptions"] == "No assumptions were recorded for this project."
+    assert checked.nothing_recorded == ["assumptions"]
+    # A section with source data that comes back empty stays out, as before.
+    assert "scope_out" not in checked.sections and "scope_in" not in checked.sections
+    # What the agent wrote itself is kept, even when the source data is empty.
+    checked = proposal_agent.validate(
+        _output(assumptions="Nothing is assumed yet."), _facts(), frozenset({"assumptions"})
+    )
+    assert checked.sections["assumptions"] == "Nothing is assumed yet."
+    assert checked.nothing_recorded == []
+
+
+def test_the_prompt_asks_for_a_sentence_rather_than_null():
+    assert "Never leave a section null" in proposal_agent.SYSTEM_PROMPT
+    assert "No assumptions were recorded for this project." in proposal_agent.SYSTEM_PROMPT
+
+
 def test_cost_uses_the_price_settings(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "proposal_agent_input_usd_per_mtok", Decimal("3"))

@@ -184,6 +184,10 @@ features:
     title: Nobody approves a proposal they helped make
     rules: [R1, R4]
     notes: Each copy records who submitted or reviewed it; none of them may approve or return it (403, audited). With no free sponsor the admin is asked to name one.
+  - id: P6-agent-drafts-live
+    title: Agent drafts work against the real API
+    rules: [R4, R5]
+    notes: A test checks every agent schema against the structured-output rules; an empty source gives a plain none-recorded sentence, audited and reviewed by a person.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports
