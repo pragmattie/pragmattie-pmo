@@ -15,9 +15,10 @@ A project with a client has at most one proposal; a project with no client has n
   refused (409, with the flags) while the checker has any flag open.
 - `POST .../approve` and `.../return` (`proposal:approve`, a reason of at least 20 characters)
   are the sponsor's decision on a submitted proposal. Returning sends it back to draft. Nobody
-  decides on a copy they contributed to (item 6.10): they submitted it, or they are recorded as
-  `reviewed_by` on one of its sections, by reviewing an agent's draft or by writing or editing
-  the text (`app.authz.not_own_submission`, 403, audited as `own_submission`).
+  decides on a copy they contributed to (item 6.10): they submitted it, or they are in the
+  `touched_by` of one of its sections, having written, edited or reviewed it at any point, even
+  if someone touched it after them (`app.authz.not_own_submission`, 403, audited as
+  `own_submission`).
 - `POST .../sent` (`project:write`) records that a person sent the approved copy: to whom, on what
   date, by what means. Nothing is sent from here. Like submit, it is refused (409, with the flags)
   while the checker has any flag open, for example after the plan changed. `POST .../answer`

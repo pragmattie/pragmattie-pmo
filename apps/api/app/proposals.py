@@ -425,21 +425,37 @@ def may_replace(proposal: ProjectProposal, name: str) -> bool:
     return not (getattr(proposal, name) or "").strip() or is_unreviewed(proposal, name)
 
 
+def touched_by(entry: dict[str, Any] | None, *more: int | None) -> list[int]:
+    """Everyone who wrote, edited or reviewed a section, sorted user ids, with `more` added. The
+    list only grows; a source saved before it existed counts its `reviewed_by` (item 6.10)."""
+    entry = entry or {}
+    found = set(entry.get("touched_by") or ()) | {entry.get("reviewed_by"), *more}
+    return sorted(int(user_id) for user_id in found if user_id is not None)
+
+
 def mark_section(
     proposal: ProjectProposal, name: str, *, source: str, reviewed_by: int, reviewed_at: str
 ) -> None:
-    """Record who wrote, or who reviewed, a section. The dict is replaced, so it is saved."""
+    """Record who wrote, or who reviewed, a section, adding them to everyone who touched it.
+    The dict is replaced, so it is saved."""
     sources = dict(proposal.section_sources or {})
-    sources[name] = {"source": source, "reviewed_by": reviewed_by, "reviewed_at": reviewed_at}
+    sources[name] = {
+        "source": source,
+        "reviewed_by": reviewed_by,
+        "reviewed_at": reviewed_at,
+        "touched_by": touched_by(sources.get(name), reviewed_by),
+    }
     proposal.section_sources = sources
 
 
 def contributors(proposal: ProjectProposal, submitter: int | None) -> list[int]:
     """Everyone who helped make the proposal as it stands, sorted user ids (item 6.10): the
-    submitter (None when the orchestrator submits) and every section's `reviewed_by`, which is
-    set both when a person reviewed an agent's draft and when a person wrote or edited the text."""
-    sources = (proposal.section_sources or {}).values()
-    found = {(entry or {}).get("reviewed_by") for entry in sources} | {submitter}
+    submitter (None when the orchestrator submits) and every person who wrote, edited or
+    reviewed any section, kept in each section's `touched_by` (or its `reviewed_by` when the
+    source has no list yet), so a later reviewer doesn't hide an earlier writer."""
+    found: set[int | None] = {submitter}
+    for entry in (proposal.section_sources or {}).values():
+        found.update(touched_by(entry))
     return sorted(int(user_id) for user_id in found if user_id is not None)
 
 

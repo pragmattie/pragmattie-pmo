@@ -79,6 +79,7 @@ from app.proposals import (
     _amounts,
     is_unreviewed,
     may_replace,
+    touched_by,
 )
 
 AGENT = "proposal_agent"
@@ -443,7 +444,13 @@ def save(
         sources = dict(proposal.section_sources or {})
         for name in replaced:
             setattr(proposal, name, checked.sections[name])
-            sources[name] = {"source": "agent", "reviewed_by": None, "reviewed_at": None}
+            sources[name] = {
+                "source": "agent",
+                "reviewed_by": None,
+                "reviewed_at": None,
+                # Whoever touched the section before keeps having touched it (item 6.10).
+                "touched_by": touched_by(sources.get(name)),
+            }
         proposal.section_sources = sources
         proposal.updated_at = utcnow()
         db.flush()

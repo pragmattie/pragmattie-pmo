@@ -903,6 +903,63 @@ def test_a_person_submitted_copy_blocks_its_submitter_and_every_reviewer(
     assert pm.id not in body["contributors"]
 
 
+@pytest.mark.parametrize("decision", ["approve", "return"])
+def test_a_writer_stays_a_contributor_after_someone_else_edits_the_section(
+    web, db, sign_in, project, pm, decision
+):
+    """Each section keeps everyone who touched it, not only its latest `reviewed_by`."""
+    _create(web, project)
+    _edit(web, project, summary="A pilot written by the first project manager")
+    editor = sign_in(web, db, "project_manager", email="editor.pm@pmo.example")
+    _edit(web, project, summary="A pilot edited by the second project manager")
+    _orchestrator_submits(db, project)
+    body = _get(web, project)
+    assert body["contributors"] == sorted([pm.id, editor.id])
+
+    for person in (pm, editor):
+        _make_sponsor(db, person)
+        sign_in_as(web, person)
+        response = _post(web, project, f"/{decision}", reason=REASON)
+        assert (response.status_code, response.json()["detail"]) == (403, REVIEWED)
+        row = _audit(db)[-1]
+        assert row.actor_user_id == person.id
+        assert row.action_taken["refusal"] == "own_submission"
+        assert _get(web, project)["status"] == "submitted"
+
+    sign_in(web, db, "sponsor", email="other.sponsor@pmo.example")
+    response = _post(web, project, f"/{decision}", reason=REASON)
+    assert response.status_code == 200, response.text
+
+
+def test_touched_by_only_grows_across_a_return_and_an_agent_redraft(web, db, sign_in, project, pm):
+    from app.agents import proposal_agent
+    from app.proposals import contributors, touched_by
+
+    _create(web, project)
+    _edit(web, project, summary="Written by the first project manager")
+    _orchestrator_submits(db, project)
+    sign_in(web, db, "sponsor")
+    assert _post(web, project, "/return", reason=REASON).status_code == 200
+    editor = sign_in(web, db, "project_manager", email="editor.pm@pmo.example")
+    _edit(web, project, summary="Edited by the second project manager")
+    db.expire_all()
+    proposal = db.scalar(select(ProjectProposal).where(ProjectProposal.project_id == project.id))
+    assert proposal.section_sources["summary"]["touched_by"] == sorted([pm.id, editor.id])
+
+    # The agent redrafts the section once it is empty; whoever touched it before still counts.
+    proposal.summary = None
+    db.commit()
+    checked = proposal_agent.Checked(sections={"summary": "Drafted by the proposal agent"})
+    proposal_agent.save(db, proposal, checked)
+    db.commit()
+    entry = proposal.section_sources["summary"]
+    assert (entry["source"], entry["reviewed_by"]) == ("agent", None)
+    assert entry["touched_by"] == sorted([pm.id, editor.id])
+    assert contributors(proposal, None) == sorted([pm.id, editor.id])
+    # A source saved before the list existed counts its `reviewed_by`.
+    assert touched_by({"source": "person", "reviewed_by": pm.id}) == [pm.id]
+
+
 def test_contributors_are_frozen_with_the_copy(web, db, sign_in, project, pm):
     """A later edit to the draft doesn't change who contributed to an earlier copy."""
     _submitted(web, db, sign_in, project)
