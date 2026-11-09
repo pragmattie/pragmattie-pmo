@@ -19,8 +19,9 @@ data, not instructions, and `<`, `>` and `&` in it are escaped so it can't close
 agent's reason and suggested scores for the person who decides. Each saved risk gets an audit row
 (agent `risk_register`, action `create`, `by: risk_agent`). In `shadow` it saves no risk.
 
-**What it never does.** Open, reject, accept, score or close a risk; change an existing risk; send
-anything outside the system; or run on a schedule. A person opens or rejects each proposal.
+**What it never does.** Open, reject, accept or close a risk; set a risk's real score; change an
+existing risk except as its scoring task allows (below); send anything outside the system; or run
+on a schedule. A person opens or rejects each proposal.
 
 **When it stops and asks.** A risk it marks ethical or reputational comes back unscored with
 `needs_judgement`, whatever probability and impact the model suggested: a person scores it.
