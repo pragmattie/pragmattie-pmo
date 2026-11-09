@@ -172,6 +172,10 @@ features:
     title: Risk scoring by the agent
     rules: [R1, R4, R5, R8, R9]
     notes: The risk agent suggests a score on the policy scales, kept apart from the real one; a Low one opens after its window, others go to a person; never judgement risks; audited.
+  - id: P6-proposal-automation
+    title: Proposal automation and the simulated client
+    rules: [R1, R3, R4, R5]
+    notes: Drafts when the plan is complete; submits after a window once a person reviewed each section; a demo client answers, labelled simulated; people approve and send; audited.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports
