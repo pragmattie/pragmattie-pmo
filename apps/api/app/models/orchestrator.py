@@ -7,6 +7,8 @@
 - `InboxItem`: a step waiting on a person, for the inbox (item 6.3). Never deleted: `open`, then
   `done` or `cancelled`, with when and why it closed. `handoff` marks an item opened only because
   the step's agent couldn't act; it is cancelled when the agent can act again.
+- A demo reset (`python -m app.seed --reset`, item 6.9) is the one exception: it deletes every
+  action and inbox item, with the seeded work they were about. The audit rows stay.
 - `OrchestratorLease`: one row per lock name. A pass takes the `pass` lease before it starts and
   gives up when another pass holds an unexpired one, so two passes never overlap.
 
