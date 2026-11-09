@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app import proposals as rules
 from app.models import Client, Project, ProjectProposal, ProposalEvent
+from app.models.portfolio import is_live
 from app.models.proposal import SIMULATED
 
 AGENT = "simulated_client"
@@ -72,12 +73,9 @@ def skip_reason(
     db: Session, proposal: ProjectProposal, *, delay_minutes: int, now: datetime
 ) -> str | None:
     """Why the simulated client may not answer the proposal now, or None when it may."""
-    # Imported here: the orchestrator imports this module, and its liveness rule is the one used.
-    from app.orchestrator import _live
-
     if rules.answer_refusal(proposal) is not None:
         return NOT_SENT
-    if not _live(db.get(Project, proposal.project_id)):
+    if not is_live(db.get(Project, proposal.project_id)):
         return NOT_LIVE
     if not is_simulated(db, proposal):
         return NOT_SIMULATED

@@ -100,3 +100,13 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     __mapper_args__ = {"version_id_col": version}
+
+
+# The stages in which the orchestrator works on a project and its risks, proposals and changes.
+LIVE_STAGES = ("planning", "delivery")
+
+
+def is_live(project: Project | None) -> bool:
+    """Whether the project is live: not cancelled, and in planning or delivery. The orchestrator
+    and the simulated client (item 6.8) both act only on a live project."""
+    return project is not None and project.status != CANCELLED and project.stage in LIVE_STAGES
