@@ -133,7 +133,10 @@ SENT_HAS_FLAGS = "the proposal can't be marked sent while the checker has flags 
 NOT_SUBMITTED = "only a submitted proposal can be approved or returned"
 # Why a contributor to the copy may not decide it (item 6.10).
 OWN = "you cannot approve or return this proposal: you submitted this copy"
-REVIEWED = "you cannot approve or return this proposal: you reviewed a section of this copy"
+REVIEWED = (
+    "you cannot approve or return this proposal: "
+    "you wrote, edited or reviewed a section of this copy"
+)
 NOT_APPROVED = "only an approved proposal can be marked sent"
 CANT_WITHDRAW = "this proposal has already been answered or withdrawn"
 AGENT_OFF = "the proposal agent is off (AGENT_MODE=off); a person can write the proposal by hand"

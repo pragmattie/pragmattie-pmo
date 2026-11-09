@@ -11,7 +11,9 @@ import {
   MIN_HOLD_REASON,
   mayHold,
   NO_DECISIONS,
+  NOT_YOURS_TO_DECIDE,
   parseUtc,
+  receivesItems,
   roleText,
   stepTitle,
   waitsOnText,
@@ -21,7 +23,9 @@ import { useInboxStore } from '../stores/inbox'
 
 // "Needs you": every decision waiting on the signed-in person, oldest first. Each shows why it is
 // here, when it arrived, the facts and the recommendation, and opens its existing form in place.
-// A window action shows when it happens and, for its role only, a Hold button.
+// A window action shows when it happens and, for its role only, a Hold button. Someone who
+// decides nothing (the admin, sent a proposal decision every approver contributed to) sees the
+// item and why it came to them, with no decision form.
 const auth = useAuthStore()
 const counter = useInboxStore()
 const items = ref<InboxEntry[]>([])
@@ -32,6 +36,7 @@ const message = ref('')
 const open = ref<string[]>([])
 
 const decides = computed(() => decidesAnything(auth.can))
+const receives = computed(() => receivesItems(auth.can, auth.user?.role))
 
 const holding = ref<InboxEntry | null>(null)
 const holdReason = ref('')
@@ -92,7 +97,7 @@ async function hold() {
 }
 
 onMounted(() => {
-  if (decides.value) load()
+  if (receives.value) load()
 })
 </script>
 
@@ -101,12 +106,12 @@ onMounted(() => {
     <div class="d-flex align-center mb-4">
       <h1 class="text-h4 text-primary">Needs you</h1>
       <v-spacer />
-      <v-btn v-if="decides" variant="text" :loading="loading" data-test="inbox-refresh" @click="load()">
+      <v-btn v-if="receives" variant="text" :loading="loading" data-test="inbox-refresh" @click="load()">
         Refresh
       </v-btn>
     </div>
 
-    <v-alert v-if="!decides" type="info" variant="tonal" data-test="inbox-no-decisions">
+    <v-alert v-if="!receives" type="info" variant="tonal" data-test="inbox-no-decisions">
       {{ NO_DECISIONS }}
     </v-alert>
 
@@ -193,10 +198,13 @@ onMounted(() => {
             </v-alert>
 
             <InboxDecision
-              v-if="open.includes(key(entry)) && entry.kind === 'item'"
+              v-if="decides && open.includes(key(entry)) && entry.kind === 'item'"
               :entry="entry"
               @decided="decided"
             />
+            <p v-else-if="!decides" class="text-body-2" data-test="inbox-not-yours">
+              {{ NOT_YOURS_TO_DECIDE }}
+            </p>
           </v-expansion-panel-text>
         </v-expansion-panel>
       </v-expansion-panels>

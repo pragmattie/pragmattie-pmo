@@ -116,7 +116,8 @@ class ProposalVersion(Base):
         ForeignKey(f"{USERS_TABLE}.id", name="fk_proposal_versions_submitted_by"), index=True
     )
     # Everyone who helped make this copy, sorted user ids (item 6.10): the submitter, if a
-    # person, and every section's `reviewed_by` when it was submitted. None of them may decide it.
+    # person, and every section's `touched_by` (whoever wrote, edited or reviewed it, even if
+    # their text was later edited) when it was submitted. None of them may decide it.
     contributors: Mapped[list[int]] = mapped_column(JSON, default=list)
     submitted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

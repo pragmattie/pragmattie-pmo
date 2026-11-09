@@ -65,8 +65,8 @@ export interface Proposal extends ProposalContent {
   latest_version: number | null
   submitted_by: number | null
   submitted_by_name: string | null
-  // Everyone who contributed to the latest copy (who submitted it or reviewed a section), and
-  // their names in the same order. None of them may approve or return it.
+  // Everyone who contributed to the latest copy (who submitted it, or wrote, edited or reviewed
+  // a section), and their names in the same order. None of them may approve or return it.
   contributors: number[]
   contributor_names: string[]
   approved_version: number | null
@@ -200,7 +200,8 @@ export interface ProposalButtons {
   withdraw: boolean
 }
 
-// Whether the user contributed to the latest copy: submitted it or reviewed a section.
+// Whether the user contributed to the latest copy: submitted it, or wrote, edited or reviewed a
+// section.
 export function contributed(proposal: Proposal, userId: number | null): boolean {
   if (userId === null) return false
   return proposal.submitted_by === userId || (proposal.contributors ?? []).includes(userId)

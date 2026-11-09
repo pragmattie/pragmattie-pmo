@@ -1,10 +1,11 @@
 """Who contributed to each submitted copy of a proposal (item 6.10).
 
 - `proposal_versions.contributors`: the user ids of everyone who helped make the copy, sorted:
-  the person who submitted it (none when the orchestrator did) and everyone recorded as
-  `reviewed_by` on one of its sections when it was submitted. Nobody on the list may approve or
-  return the copy. Existing copies get their submitter only (`[]` when there was none): who
-  reviewed their sections then was not kept.
+  the person who submitted it (none when the orchestrator did) and everyone in a section's
+  `touched_by` when it was submitted: whoever wrote, edited or reviewed the section, even if
+  their text was later edited, since they still helped make it. Nobody on the list may approve
+  or return the copy. Existing copies get their submitter only (`[]` when there was none): who
+  touched their sections then was not kept.
 
 The column is added nullable, filled, then made NOT NULL, since MySQL gives a JSON column no
 literal default. It is not indexed, so the downgrade only drops it.
