@@ -436,7 +436,7 @@ def test_a_taken_attempt_moves_on_to_the_next_free_one(
     mode("enforce")
     assert _suggest(web, project.id).status_code == 200
     stale = iter([1, 1])
-    monkeypatch.setattr(risk_agent, "_next_attempt", lambda db, project_id: next(stale))
+    monkeypatch.setattr(risk_agent, "_next_attempt", lambda db, subject_type, subject_id: next(stale))
     fake.reply = _reply(_item(title="Another risk"))
     response = _suggest(web, project.id)
     assert response.status_code == 200, response.text

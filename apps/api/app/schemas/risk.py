@@ -295,3 +295,43 @@ class RiskSuggestion(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: CostStr | None = None
+
+
+class SuggestedScore(BaseModel):
+    """The risk agent's score for one risk, as code kept it. A judgement other than `none` has no
+    probability, impact, score or band: a person scores that risk."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    probability: int | None
+    impact: int | None
+    score: int | None
+    band: str | None
+    probability_reason: str
+    impact_reason: str
+    judgement: str
+    judgement_reason: str
+
+
+class RiskScoreSuggestion(BaseModel):
+    """The answer of `POST .../risks/{id}/suggest-score`.
+
+    A dry run has `request` and `cost_ceiling_usd` and nothing else is called or saved. A real
+    run has the suggestion, what code adjusted, its tokens, cost and audit row, and the risk as it
+    now stands. `saved` is true only in `enforce` with no judgement: the suggestion is then on the
+    risk's `suggested_*` fields, and its real score is unchanged."""
+
+    mode: Literal["shadow", "enforce"]
+    dry_run: bool
+    model: str
+    prompt_version: str
+    request: dict[str, Any] | None = None
+    cost_ceiling_usd: MoneyStr | None = None
+    suggestion: SuggestedScore | None = None
+    adjusted: list[str] = []
+    saved: bool = False
+    risk: RiskOut | None = None
+    audit_id: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: CostStr | None = None

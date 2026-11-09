@@ -665,6 +665,12 @@ SAMPLES = {
     ("POST", "/api/v1/projects/{project_id}/risks/suggest"): lambda _target: {
         "url": f"/api/v1/projects/{_project_with_risk()[0]}/risks/suggest?dry_run=true",
     },
+    # The same here: an allowed caller gets the 409 for AGENT_MODE=off, and nothing is called.
+    ("POST", "/api/v1/projects/{project_id}/risks/{risk_id}/suggest-score"): lambda _target: {
+        "url": "/api/v1/projects/{}/risks/{}/suggest-score?dry_run=true".format(
+            *_project_with_risk(status="proposed", probability=None, impact=None)
+        ),
+    },
     ("POST", "/api/v1/requests"): lambda _target: {
         "url": "/api/v1/requests",
         "json": REQUEST_BODY,
