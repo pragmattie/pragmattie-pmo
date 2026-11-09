@@ -16,13 +16,14 @@ agent steps the autonomy policy allows, and hands every other step to a person.
   steps no agent may do (`PERSON_ONLY`) are refused at import if anyone registers an action for
   them, and a pass sends them to a person.
 - The proposal (item 6.8): `draft_proposal` creates a client project's proposal once its plan is
-  complete and has the proposal agent fill only its empty sections; `submit_proposal` submits a
-  draft once every section is written and reviewed by a person and the checker has no open flags
-  (open flags send it to the project manager until fixed); `client_answer` is the simulated
-  client's answer (`app.simulated_client`), for a simulated client only and only after its delay;
-  a real client's answer goes to a person. Each action checks again when it runs and, when its
-  subject changed, writes a skipped row and changes nothing. Approving and sending stay with
-  people.
+  complete and has the proposal agent fill only its empty sections (a section it leaves empty
+  fails the step, so the usual retries and then the project manager apply); `submit_proposal`
+  submits a draft once every section is written and reviewed by a person and the checker has no
+  open flags (open flags send it to the project manager until fixed); `client_answer` is the
+  simulated client's answer (`app.simulated_client`), for a simulated client only and only after
+  its delay; a real client's answer goes to a person. Each action checks again when it runs and,
+  when its subject changed, writes a skipped row and changes nothing. Approving and sending stay
+  with people.
 
 Run it with `python -m app.orchestrator once` (one pass) or `run` (a pass every
 `ORCHESTRATOR_INTERVAL_SECONDS` until Ctrl+C).
@@ -75,7 +76,7 @@ from app.models import (
     utcnow,
 )
 from app.models.orchestrator import REASON_MAX, open_key
-from app.models.portfolio import CANCELLED
+from app.models.portfolio import CANCELLED, LIVE_STAGES, is_live
 from app.plans import missing
 from app.policy import RiskPolicy, score_risk
 from app.proposals import empty_sections, plan_facts, submit_refusal, unreviewed_sections
@@ -497,9 +498,7 @@ def next_steps(
     requests = select(ProjectRequest).where(ProjectRequest.status.in_(("draft", "submitted")))
     for request in db.scalars(requests.order_by(ProjectRequest.id)):
         steps.extend(_request_steps(db, request, make))
-    projects = select(Project).where(
-        Project.status != CANCELLED, Project.stage.in_(("planning", "delivery"))
-    )
+    projects = select(Project).where(Project.status != CANCELLED, Project.stage.in_(LIVE_STAGES))
     for project in db.scalars(projects.order_by(Project.id)):
         if project.stage == "planning":
             steps.extend(_planning_steps(db, project, make))
@@ -515,15 +514,6 @@ def next_steps(
         for change in db.scalars(changes.order_by(ChangeRequest.id)):
             steps.extend(_change_steps(change, make))
     return steps
-
-
-def _live(project: Project | None) -> bool:
-    """Whether `next_steps` looks at the project and its risks, proposals and changes."""
-    return (
-        project is not None
-        and project.status != CANCELLED
-        and project.stage in ("planning", "delivery")
-    )
 
 
 def subject_steps(
@@ -549,12 +539,12 @@ def subject_steps(
         return _request_steps(db, request, make) if request is not None else []
     if subject_type == PROJECT:
         project = db.get(Project, subject_id)
-        if _live(project) and project.stage == "planning":
+        if is_live(project) and project.stage == "planning":
             return _planning_steps(db, project, make)
         return []
     model = {RISK: Risk, PROPOSAL: ProjectProposal, CHANGE_REQUEST: ChangeRequest}.get(subject_type)
     row = db.get(model, subject_id) if model is not None else None
-    if row is None or not _live(db.get(Project, row.project_id)):
+    if row is None or not is_live(db.get(Project, row.project_id)):
         return []
     if isinstance(row, Risk):
         return _risk_steps(db, row, rules, make) if row.status in ("proposed", "open") else []
@@ -640,6 +630,7 @@ NOTHING_TO_DRAFT = (
     "the proposal no longer has an empty section to draft (or is no longer a draft, or its plan "
     "is no longer complete)"
 )
+LEFT_EMPTY = "the proposal agent left these sections empty: {sections}"
 SUBMIT_CHANGED = "the proposal changed while the window waited, so it was not submitted"
 
 
@@ -650,7 +641,7 @@ def _draft_proposal(ctx: Context, subject_id: int) -> int:
     db = ctx.db
     if ctx.subject_type == PROJECT:
         project = db.get(Project, subject_id, with_for_update=True, populate_existing=True)
-        if not (_live(project) and _needs_proposal(db, project)):
+        if not (is_live(project) and _needs_proposal(db, project)):
             return _skipped(ctx, "draft_proposal", subject_id, PROPOSAL_EXISTS, subject=PROJECT)
         plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
         proposal = proposal_rules.new_proposal(db, plan, None)
@@ -670,7 +661,7 @@ def _draft_proposal(ctx: Context, subject_id: int) -> int:
             proposal is None
             or proposal.status != "draft"
             or not empty_sections(proposal)
-            or not _live(project)
+            or not is_live(project)
             or not _plan_complete(db, proposal.project_id)
         ):
             return _skipped(ctx, "draft_proposal", subject_id, NOTHING_TO_DRAFT, subject=PROPOSAL)
@@ -686,6 +677,11 @@ def _draft_proposal(ctx: Context, subject_id: int) -> int:
         trigger=TRIGGER,
         only_empty=True,
     )
+    left = empty_sections(proposal)
+    if left:
+        # The agent left a section empty (null): the step failed, so the usual retries and then
+        # the project manager's inbox apply, rather than another call on every pass.
+        raise risk_agent.AgentError(LEFT_EMPTY.format(sections=", ".join(left)), result.audit_id)
     return result.audit_id
 
 
@@ -697,7 +693,7 @@ def _submit_proposal(ctx: Context, proposal_id: int) -> int:
     proposal = db.get(ProjectProposal, proposal_id, with_for_update=True, populate_existing=True)
     project = db.get(Project, proposal.project_id) if proposal is not None else None
     refusal = submit_refusal(db, proposal, require_filled=True) if proposal is not None else None
-    if proposal is None or not _live(project) or refusal is not None:
+    if proposal is None or not is_live(project) or refusal is not None:
         return _skipped(
             ctx,
             "submit_proposal",
@@ -1239,6 +1235,7 @@ class _Pass:
             policy_digest=self.policy.digest,
             open_key=step.key,
         )
+        self.carry_tries(step, action)
         self.db.add(action)
         self.db.flush()
         if step.mode == WINDOW:
@@ -1253,6 +1250,40 @@ class _Pass:
             return None
         self.db.commit()
         return action
+
+    def carry_tries(self, step: NextStep, action: OrchestratorAction) -> None:
+        """`draft_proposal`'s first try creates the proposal, so its retries are the proposal's
+        step (item 6.8): the tries the project's action used, and its next try time, carry over
+        to the proposal's first action, so the agent gets the usual number of tries in all."""
+        if step.step != "draft_proposal" or step.subject_type != PROPOSAL:
+            return
+        proposal = self.db.get(ProjectProposal, step.subject_id)
+        if proposal is None:
+            return
+        stmt = (
+            select(OrchestratorAction)
+            .where(
+                OrchestratorAction.step == step.step,
+                OrchestratorAction.subject_type == PROJECT,
+                OrchestratorAction.subject_id == str(proposal.project_id),
+                OrchestratorAction.closed_reason == NO_LONGER_NEEDED,
+            )
+            .order_by(OrchestratorAction.id.desc())
+            .limit(1)
+        )
+        earlier = self.db.scalar(stmt)
+        if earlier is None or not earlier.attempts:
+            return
+        before = select(OrchestratorAction.id).where(
+            OrchestratorAction.step == step.step,
+            OrchestratorAction.subject_type == PROPOSAL,
+            OrchestratorAction.subject_id == str(step.subject_id),
+        )
+        if self.db.scalar(before.limit(1)) is not None:
+            return  # only the proposal's first action carries them
+        action.attempts = earlier.attempts
+        action.last_error = earlier.last_error
+        action.next_try_at = earlier.next_try_at
 
     def run(self, step: NextStep, action: OrchestratorAction) -> None:
         step_action = ACTIONS.get(step.step)

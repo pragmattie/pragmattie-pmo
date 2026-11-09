@@ -247,6 +247,38 @@ def test_an_existing_draft_waits_for_a_complete_plan(db, rules):
     assert [s for s in next_steps(db, rules) if s.subject_id == proposal.id] == []
 
 
+def test_an_agent_that_leaves_a_section_empty_fails_and_goes_to_the_project_manager(
+    db, settings, rules
+):
+    project, _ = _ready(db)
+    _no_risk_steps(db, project)
+    # The agent leaves every section empty (null), on every try.
+    claude = FakeClaude(_reply({name: None for name in TEXT_SECTIONS}))
+    start = utcnow()
+    report = _pass(db, settings, rules=rules, client=claude, now=start)
+    assert [(o.step, o.outcome) for o in report.outcomes] == [("draft_proposal", "failed")]
+    proposal = db.scalar(select(ProjectProposal).where(ProjectProposal.project_id == project.id))
+    # Not again before the retry is due, although the step is now the proposal's.
+    _pass(db, settings, rules=rules, client=claude, now=start + timedelta(minutes=4))
+    assert len(claude.requests) == 1
+    for minutes in (5, 10, 15, 20, 30, 60):
+        _pass(db, settings, rules=rules, client=claude, now=start + timedelta(minutes=minutes))
+    # The orchestrator's usual rule: the first try and its retries, then a person.
+    assert len(claude.requests) == 1 + orchestrator.MAX_RETRIES
+    [item] = _items(db, "open")
+    assert (item.step, item.subject_type, item.subject_id) == (
+        "draft_proposal",
+        "proposal",
+        str(proposal.id),
+    )
+    assert item.who == "project_manager"
+    assert item.reason.endswith("the proposal_agent failed after 3 retries")
+    errors = [r for r in _orchestrator_rows(db) if r.status == "error"]
+    assert len(errors) == 1 + orchestrator.MAX_RETRIES
+    assert errors[-1].error.startswith("the proposal agent left these sections empty: ")
+    assert _fresh(db, proposal.id).status == "draft"
+
+
 # --- Submitting
 
 
