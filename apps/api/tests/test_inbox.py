@@ -339,6 +339,23 @@ def _facts(**values) -> list[Fact]:
             _facts(needs_judgement="no"),
             "Score its probability and impact so it gets a band and an owner.",
         ),
+        (
+            "score_risk",
+            _facts(
+                needs_judgement="no",
+                suggested_score=12,
+                suggested_band="Medium",
+                suggested_owner="sponsor",
+            ),
+            "Open it or change it: the risk agent suggested Medium (score 12), and opening it "
+            "escalates it to the sponsor. To change it, set your own score, then open it.",
+        ),
+        (
+            "open_low_risk",
+            _facts(score="not scored", band="none", suggested_score=4, suggested_band="Low"),
+            "Open it in the risk register with the risk agent's suggested score (4, Low, which a "
+            "project manager owns), or change the score first.",
+        ),
         ("approve_proposal", _facts(flags=2), "Return it: the checker has 2 flag(s) open."),
         (
             "approve_proposal",
@@ -613,3 +630,27 @@ def test_the_risk_agent_ran_helper_keeps_propose_risks_out(db, web, settings, ac
     _pass(db, settings)
     sign_in(web, db, "project_manager")
     assert "propose_risks" not in {e["step"] for e in _inbox(web)["items"]}
+
+
+def test_a_risk_with_a_suggestion_shows_it_as_the_agents(db):
+    risk = _risk(
+        db,
+        _project(db, stage="delivery"),
+        suggested_probability=3,
+        suggested_impact=4,
+        suggested_probability_reason="It happened on the last project.",
+        suggested_impact_reason="It would delay the launch.",
+        suggested_model="claude-sonnet-5-5",
+        suggested_audit_id=1,
+    )
+    facts = {f.key: f.value for f in inbox.facts_for(db, "score_risk", "risk", risk.id)}
+    assert facts["score"] == "not scored"
+    assert facts["suggested"] == "probability 3, impact 4"
+    assert (facts["suggested_score"], facts["suggested_band"]) == ("12", "Medium")
+    assert facts["suggested_owner"] == "sponsor"
+    assert facts["suggested_probability_reason"] == "It happened on the last project."
+    assert facts["suggested_model"] == "claude-sonnet-5-5"
+    assert (
+        recommend("score_risk", list(inbox.facts_for(db, "score_risk", "risk", risk.id)))[:20]
+        == "Open it or change it"
+    )
