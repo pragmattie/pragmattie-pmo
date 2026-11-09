@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from test_intake import add_value_case
 from test_intake_agent import FakeClaude
 from test_intake_agent import _reply as intake_reply
+from test_risk_agent import _score_reply as score_reply
 
 import app.api.orchestrator as orchestrator_api
 from app import orchestrator
@@ -1217,3 +1218,222 @@ def test_no_floor_step_has_an_action():
     assert not orchestrator.PERSON_ONLY & orchestrator.ACTIONS.keys()
     assert {"decide_change_pm", "decide_change_sponsor"} <= orchestrator.PERSON_ONLY
     assert all(isinstance(s, Step) for s in policy_module.get_autonomy().steps.values())
+
+
+# --- Risk scoring by the agent (item 6.7), with the real actions and a fake Claude
+
+
+def _risk_register_rows(db: Session, risk_id: int) -> list[AuditDecision]:
+    db.expire_all()
+    stmt = select(AuditDecision).where(
+        AuditDecision.agent == "risk_register", AuditDecision.subject_id == str(risk_id)
+    )
+    return list(db.scalars(stmt.order_by(AuditDecision.id)))
+
+
+def _scorer(**changes) -> FakeClaude:
+    return FakeClaude(score_reply(**changes))
+
+
+def _fresh(db: Session, risk: Risk) -> Risk:
+    db.expire_all()
+    return db.get(Risk, risk.id)
+
+
+def test_a_low_suggestion_opens_after_both_windows_from_the_policy(db, settings, rules):
+    # Both windows are read from the policy: change one and the timing follows, with no code.
+    longer = _with(rules, open_low_risk={"window_minutes": 40})
+    risk = _risk(db, _project(db, stage="delivery"))
+    claude = _scorer(probability=2, impact=3)
+    start = utcnow()
+    _pass(db, settings, now=start, rules=longer, client=claude)
+    [score] = _actions(db)
+    assert (score.step, score.due_at) == ("score_risk", start + timedelta(minutes=15))
+    _pass(db, settings, now=start + timedelta(minutes=10), rules=longer, client=claude)
+    assert claude.requests == []
+    after_score = start + timedelta(minutes=16)
+    report = _pass(db, settings, now=after_score, rules=longer, client=claude)
+    assert [(o.step, o.outcome) for o in report.outcomes] == [("score_risk", "done")]
+    assert len(claude.requests) == 1
+    scored = _fresh(db, risk)
+    # A suggestion only: the real score is still empty and the risk still proposed.
+    assert (scored.suggested_probability, scored.suggested_impact) == (2, 3)
+    assert (scored.probability, scored.impact, scored.score, scored.status) == (
+        None,
+        None,
+        None,
+        "proposed",
+    )
+    run = db.get(AuditDecision, scored.suggested_audit_id)
+    assert (run.agent, run.trigger, run.action_taken["task"]) == (
+        "risk_agent",
+        "orchestrator",
+        "score",
+    )
+
+    _pass(db, settings, now=after_score, rules=longer, client=claude)
+    opening = _actions(db)[-1]
+    assert (opening.step, opening.status) == ("open_low_risk", "pending")
+    assert opening.due_at == after_score + timedelta(minutes=40)
+    _pass(db, settings, now=after_score + timedelta(minutes=39), rules=longer, client=claude)
+    assert _fresh(db, risk).status == "proposed" and _fresh(db, risk).probability is None
+    report = _pass(
+        db, settings, now=after_score + timedelta(minutes=41), rules=longer, client=claude
+    )
+    assert [(o.step, o.outcome) for o in report.outcomes] == [("open_low_risk", "done")]
+    opened = _fresh(db, risk)
+    assert (opened.status, opened.probability, opened.impact) == ("open", 2, 3)
+    # The open route's rules apply: a newly opened risk goes to its band's owner.
+    assert (opened.score, opened.band, opened.escalated_to) == (6, "Low", "project_manager")
+    rows = _risk_register_rows(db, risk.id)
+    assert [r.action_taken["action"] for r in rows] == ["open", "escalate"]
+    assert {r.trigger for r in rows} == {"orchestrator"}
+    row = rows[0]
+    assert (row.trigger, row.actor_user_id) == ("orchestrator", None)
+    assert row.action_taken["window_minutes"] == 40
+    assert row.action_taken["suggested_audit_id"] == scored.suggested_audit_id
+    assert row.signals["probability"] is None and row.output["probability"] == 2
+    # Opening needs no Claude call.
+    assert len(claude.requests) == 1
+
+
+def test_a_held_low_suggestion_is_never_opened(db, web, settings, rules, sign_in):
+    risk = _risk(
+        db,
+        _project(db, stage="delivery"),
+        suggested_probability=1,
+        suggested_impact=2,
+        suggested_audit_id=99,
+    )
+    claude = _scorer()
+    start = utcnow()
+    _pass(db, settings, now=start, rules=rules, client=claude)
+    [action] = _actions(db)
+    assert action.step == "open_low_risk"
+    sign_in(web, db, "project_manager")
+    assert _hold(web, action.id, "I want to look at this risk first").status_code == 200
+    for minutes in (16, 60, 600):
+        _pass(db, settings, now=start + timedelta(minutes=minutes), rules=rules, client=claude)
+    held = _fresh(db, risk)
+    assert (held.status, held.probability, held.score) == ("proposed", None, None)
+    assert claude.requests == []
+    [item] = _items(db, "open")
+    assert item.step == "open_low_risk"
+
+
+@pytest.mark.parametrize(("probability", "impact", "band"), [(3, 4, "Medium"), (4, 5, "High")])
+def test_a_medium_or_high_suggestion_goes_to_the_project_manager(
+    db, settings, rules, probability, impact, band
+):
+    risk = _risk(db, _project(db, stage="delivery"))
+    claude = _scorer(probability=probability, impact=impact)
+    start = utcnow()
+    for minutes in (0, 16, 17, 60, 600):
+        _pass(db, settings, now=start + timedelta(minutes=minutes), rules=rules, client=claude)
+    after = _fresh(db, risk)
+    # Never opened by the agent, and the real score stays empty.
+    assert (after.status, after.probability, after.score) == ("proposed", None, None)
+    assert (after.suggested_probability, after.suggested_impact) == (probability, impact)
+    assert [a.step for a in _actions(db)] == ["score_risk"]
+    [item] = _items(db, "open")
+    assert (item.step, item.who) == ("score_risk", "project_manager")
+    assert f"the risk agent suggested {band}" in item.reason
+    assert "opening it escalates it to the sponsor" in item.reason
+    assert item.reason.endswith("so the project manager opens it or changes the score")
+    assert len(claude.requests) == 1
+
+
+def test_the_window_checks_again_before_opening(db, settings, rules):
+    """The suggestion changes, or a person scores the risk, during the window: nothing opens."""
+    project = _project(db, stage="delivery")
+    changed = _risk(db, project, suggested_probability=1, suggested_impact=2, suggested_audit_id=10)
+    scored = _risk(db, project, suggested_probability=1, suggested_impact=2, suggested_audit_id=11)
+    start = utcnow()
+    _pass(db, settings, now=start, rules=rules)
+    assert [a.step for a in _actions(db)] == ["open_low_risk", "open_low_risk"]
+    changed.suggested_audit_id = 12
+    scored.probability, scored.impact, scored.score, scored.band = 1, 1, 1, "Low"
+    db.commit()
+    report = _pass(db, settings, now=start + timedelta(minutes=16), rules=rules)
+    assert [(o.step, o.outcome) for o in report.outcomes] == [
+        ("open_low_risk", "done"),
+        ("open_low_risk", "done"),
+    ]
+    for risk in (changed, scored):
+        assert _fresh(db, risk).status == "proposed"
+        assert not [
+            r for r in _risk_register_rows(db, risk.id) if r.action_taken["action"] == "open"
+        ]
+    skipped = [
+        r
+        for r in _orchestrator_rows(db)
+        if r.status == "skipped" and r.action_taken.get("action") == "open_low_risk"
+    ]
+    assert {r.subject_id for r in skipped} == {str(changed.id), str(scored.id)}
+    assert all(r.action_taken["applied"] is False for r in skipped)
+
+
+def test_a_person_score_wins_over_the_agent(db, settings, rules):
+    risk = _risk(
+        db,
+        _project(db, stage="delivery"),
+        probability=1,
+        impact=3,
+        score=3,
+        band="Low",
+        suggested_probability=4,
+        suggested_impact=4,
+        suggested_audit_id=5,
+    )
+    claude = _scorer()
+    start = utcnow()
+    _pass(db, settings, now=start, rules=rules, client=claude)
+    _pass(db, settings, now=start + timedelta(minutes=16), rules=rules, client=claude)
+    opened = _fresh(db, risk)
+    assert (opened.status, opened.probability, opened.impact, opened.score) == ("open", 1, 3, 3)
+    [row] = [r for r in _risk_register_rows(db, risk.id) if r.action_taken["action"] == "open"]
+    assert "suggested_audit_id" not in row.action_taken
+    assert claude.requests == []
+
+
+def test_a_judgement_goes_to_a_person_and_claude_is_not_asked_again(db, settings, rules):
+    risk = _risk(db, _project(db, stage="delivery"))
+    claude = _scorer(judgement="reputational", judgement_reason="It is about the client's name.")
+    start = utcnow()
+    for minutes in (0, 16, 17, 60):
+        _pass(db, settings, now=start + timedelta(minutes=minutes), rules=rules, client=claude)
+    after = _fresh(db, risk)
+    assert after.needs_judgement is True
+    assert (after.probability, after.suggested_probability) == (None, None)
+    assert len(claude.requests) == 1
+    [item] = _items(db, "open")
+    assert (item.step, item.who) == ("score_risk", "project_manager")
+    assert "the risk agent judged it reputational: It is about the client's name." in item.reason
+    assert "a person scores it" in item.reason
+    # A needs_judgement risk marked by a person never reaches Claude either.
+    marked = _risk(db, _project(db, stage="delivery"), needs_judgement=True)
+    _pass(db, settings, now=start + timedelta(minutes=90), rules=rules, client=claude)
+    assert len(claude.requests) == 1
+    assert {i.subject_id for i in _items(db, "open")} == {str(risk.id), str(marked.id)}
+
+
+@pytest.mark.parametrize(
+    ("orchestrator_mode", "agent_mode"), [("shadow", "enforce"), ("enforce", "shadow")]
+)
+def test_shadow_scores_and_opens_nothing(
+    db, settings, rules, monkeypatch, orchestrator_mode, agent_mode
+):
+    monkeypatch.setattr(settings, "orchestrator_mode", orchestrator_mode)
+    monkeypatch.setattr(settings, "agent_mode", agent_mode)
+    project = _project(db, stage="delivery")
+    unscored = _risk(db, project)
+    low = _risk(db, project, suggested_probability=1, suggested_impact=1, suggested_audit_id=7)
+    claude = _scorer()
+    start = utcnow()
+    for minutes in (0, 16, 40):
+        _pass(db, settings, now=start + timedelta(minutes=minutes), rules=rules, client=claude)
+    assert claude.requests == []
+    for risk in (unscored, low):
+        after = _fresh(db, risk)
+        assert (after.status, after.probability, after.version) == ("proposed", None, 1)
+    assert _fresh(db, unscored).suggested_probability is None
