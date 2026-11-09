@@ -168,6 +168,10 @@ features:
     title: Editing the plan in the web
     rules: [R1, R5]
     notes: project:write edits the plan in planning through the plan routes; Confirm marks agent items a person's unchanged, one audit row naming who; read-only otherwise.
+  - id: P6-risk-scoring
+    title: Risk scoring by the agent
+    rules: [R1, R4, R5, R8, R9]
+    notes: The risk agent suggests a score on the policy scales, kept apart from the real one; a Low one opens after its window, others go to a person; never judgement risks; audited.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports

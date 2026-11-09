@@ -51,6 +51,40 @@ and why, what it adjusted (clamped scores, judgement risks left unscored) and th
 saved. A failed run (an API error, output that isn't valid JSON or stopped early) is a 502, saves
 no risk and records the error. A dry run or a refused run calls nothing and records nothing.
 
+### Risk agent: scoring one risk (item 6.7)
+
+Run by `POST /api/v1/projects/{project_id}/risks/{risk_id}/suggest-score` (`project:write`), with
+the same modes and dry run as above, and by the orchestrator's `score_risk` step, which calls the
+same code (`risk_agent.score`).
+
+**What it reads.** One `proposed`, unscored risk (kind, category, title, cause, effect, objectives
+and response), its project (as above) and the probability and impact scales. No people. The text
+goes in escaped data blocks, as above.
+
+**What it may write.** Only in `enforce`: the suggestion on the risk (`suggested_probability`,
+`suggested_impact`, a one-sentence reason for each, the model and the run's audit row), never the
+real probability, impact, score, band or status. In `shadow` nothing on the risk changes.
+
+**When it stops and asks.** A risk marked `needs_judgement`, one a person has scored and one that
+isn't proposed are refused (409) before any call. When it judges a risk ethical or reputational it
+saves no score: the risk is marked `needs_judgement` (a `risk_register` row with its reason), so
+a person scores it and the agent is never asked again.
+
+**Caps, enforced in code.** One call; probability and impact clamped to 1 to 5; each reason cut to
+one sentence; score and band computed from the risk policy, never from the model.
+
+**What happens next** (the orchestrator, following the autonomy policy). A Low suggestion becomes
+an `open_low_risk` window: when it ends, unless the project manager held it, the risk is opened
+with the suggestion as its score through the open route's code, if it is still proposed,
+unscored, not `needs_judgement` and the suggestion is unchanged; otherwise a skipped row says why.
+The opening row has `trigger = orchestrator`, `window_minutes` and `suggested_audit_id`. A Medium
+or High suggestion is an inbox item for the project manager to open it or change the score, since
+opening it escalates it to the sponsor. A person's own score always wins over a suggestion.
+
+**Record.** One `pmo_audit` row per call, agent `risk_agent`, subject the risk, task `score`,
+success or failure: model, prompt version, tokens, cost, the score and what code adjusted. A failed
+run is a 502 and saves nothing.
+
 ## Intake agent
 
 Code: `apps/api/app/agents/intake_agent.py`. Run by `POST /api/v1/requests/{id}/draft`
