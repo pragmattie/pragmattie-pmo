@@ -7,6 +7,7 @@ import type { ChangeLog, ChangeRequest } from '../lib/changes'
 import type { Gate } from '../lib/gates'
 import type { InboxEntry } from '../lib/inbox'
 import { REQUEST_CONFLICT } from '../lib/intake'
+import type { Proposal } from '../lib/proposals'
 import { CONFLICT_MESSAGE, type Risk } from '../lib/risks'
 import { makeVuetify } from '../plugins/vuetify'
 import { makeRouter } from '../router'
@@ -160,6 +161,51 @@ const CHANGE_LOG: ChangeLog = {
   proposal_out_of_date: false,
 }
 
+// A submitted proposal for project 5: its latest copy's contributors are set per test.
+function submittedProposal(contributors: number[]): Proposal {
+  const nobody = { source: null, reviewed_by: null, reviewed_at: null, unreviewed: false }
+  return {
+    id: 1,
+    project_id: 5,
+    project_name: 'Pilot',
+    client_name: 'Northwind Example',
+    client_simulated: true,
+    status: 'submitted',
+    summary: 'A pilot',
+    scope_in: 'Two warehouses',
+    scope_out: 'Stores',
+    assumptions: 'Data arrives on time',
+    terms: 'Monthly invoices',
+    price: '1650.00',
+    estimate_lines: [],
+    milestones: [],
+    deliverables: [],
+    risks: [],
+    plan_version_seen: 1,
+    plan_changed: false,
+    flags: [],
+    sections: {
+      summary: nobody,
+      scope_in: nobody,
+      scope_out: nobody,
+      assumptions: nobody,
+      terms: nobody,
+    },
+    unreviewed_sections: [],
+    latest_version: 1,
+    submitted_by: null,
+    submitted_by_name: null,
+    contributors,
+    contributor_names: contributors.map((id) => `User ${id}`),
+    approved_version: null,
+    approval_current: false,
+    version: 3,
+    updated_at: '2026-11-07T09:00:00',
+  }
+}
+
+let proposalShown: Proposal = submittedProposal([])
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -180,6 +226,11 @@ function fakeApi(decision: string, refusal: { status: number; detail: string }) 
       return json({ items: [], total: 0, limit: 50, offset: 0 })
     }
     if (path === '/api/v1/projects/5/gate') return json({ baseline: null })
+    if (path === '/api/v1/projects/5') return json({ id: 5, client_name: 'Northwind Example' })
+    if (path === '/api/v1/projects/5/proposal') return json(proposalShown)
+    if (path === '/api/v1/projects/5/proposal/versions') {
+      return json({ items: [], total: 0, limit: 100, offset: 0 })
+    }
     if (path === '/api/v1/projects/5/changes') return json(CHANGE_LOG)
     return json({ detail: `unexpected ${method} ${path}` }, 404)
   })
@@ -308,5 +359,36 @@ describe('a refusal shows inside the inbox as it does elsewhere', () => {
     expect(posted(fetchMock)).toEqual([route])
     expect(find('changes-message')?.textContent?.trim()).toBe(detail)
     expect(wrapper.emitted('decided')).toBeUndefined()
+  })
+})
+
+describe('a proposal decision in the inbox', () => {
+  const item = () =>
+    entry({
+      step: 'approve_proposal',
+      subject_type: 'proposal',
+      subject_id: 1,
+      project_id: 5,
+      project_name: 'Pilot',
+      handoff: 'the named sponsor, User 11, contributed to this copy',
+    })
+  const route = '/api/v1/projects/5/proposal/approve'
+  const refusal = { status: 403, detail: 'not expected' }
+
+  it('offers Approve and Return to a sponsor who did not contribute', async () => {
+    proposalShown = submittedProposal([11])
+    await mountDecision('sponsor', item(), route, refusal)
+    expect(find('proposal-approve')).not.toBeNull()
+    expect(find('proposal-return')).not.toBeNull()
+    expect(find('proposal-contributors')?.textContent).toContain('User 11')
+  })
+
+  it('offers neither to a sponsor who reviewed a section of the copy', async () => {
+    proposalShown = submittedProposal([11, USER_ID])
+    const { fetchMock } = await mountDecision('sponsor', item(), route, refusal)
+    expect(find('proposal-approve')).toBeNull()
+    expect(find('proposal-return')).toBeNull()
+    expect(find('proposal-contributed')?.textContent).toContain('You contributed to this copy')
+    expect(posted(fetchMock)).toEqual([])
   })
 })

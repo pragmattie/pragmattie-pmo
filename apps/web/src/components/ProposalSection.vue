@@ -6,6 +6,8 @@ import {
   approvalText,
   approvedCopy,
   buttonsFor,
+  contributed,
+  contributorsText,
   draftText,
   eventText,
   SIMULATED_CLIENT,
@@ -225,6 +227,20 @@ const withdraw = () =>
       </div>
       <p v-if="approvalText(proposal)" class="text-body-2 mb-2" data-test="proposal-approval">
         {{ approvalText(proposal) }}
+      </p>
+      <p v-if="proposal.latest_version" class="text-body-2 mb-2" data-test="proposal-contributors">
+        Contributors to this copy: {{ contributorsText(proposal.contributor_names ?? []) }}
+      </p>
+      <p
+        v-if="
+          proposal.status === 'submitted' &&
+          auth.can('proposal:approve') &&
+          contributed(proposal, auth.user?.id ?? null)
+        "
+        class="text-body-2 mb-2"
+        data-test="proposal-contributed"
+      >
+        You contributed to this copy, so a sponsor who did not approves or returns it.
       </p>
       <v-alert
         v-if="proposal.plan_changed"
@@ -507,6 +523,9 @@ const withdraw = () =>
             {{ submitterText(item) }} on
             {{ item.submitted_at.slice(0, 10) }} (price {{ item.content.price }})
           </v-list-item-title>
+          <v-list-item-subtitle data-test="proposal-version-contributors">
+            Contributors: {{ contributorsText(item.contributor_names ?? []) }}
+          </v-list-item-subtitle>
           <ul class="pl-4 text-body-2">
             <li v-for="event in item.events" :key="event.id" data-test="proposal-event">
               {{ eventText(event) }}

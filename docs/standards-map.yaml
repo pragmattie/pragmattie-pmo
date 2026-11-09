@@ -180,6 +180,10 @@ features:
     title: Demo data for the agentic flow
     rules: [R5, R12]
     notes: Invented .example portfolio with a card in every board column; two project managers; reset clears orchestrator work and adds an audit row, deleting none.
+  - id: P6-proposal-contributors
+    title: Nobody approves a proposal they helped make
+    rules: [R1, R4]
+    notes: Each copy records who submitted or reviewed it; none of them may approve or return it (403, audited). With no free sponsor the admin is asked to name one.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports
