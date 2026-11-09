@@ -434,6 +434,15 @@ def mark_section(
     proposal.section_sources = sources
 
 
+def contributors(proposal: ProjectProposal, submitter: int | None) -> list[int]:
+    """Everyone who helped make the proposal as it stands, sorted user ids (item 6.10): the
+    submitter (None when the orchestrator submits) and every section's `reviewed_by`, which is
+    set both when a person reviewed an agent's draft and when a person wrote or edited the text."""
+    found = {(entry or {}).get("reviewed_by") for entry in (proposal.section_sources or {}).values()}
+    found.add(submitter)
+    return sorted(int(user_id) for user_id in found if user_id is not None)
+
+
 def values_of(proposal: ProjectProposal) -> dict[str, Any]:
     """What the checker reads, and a submit freezes, from a proposal."""
     return {
@@ -630,7 +639,8 @@ def submit(
     **extra: Any,
 ) -> int:
     """Submit a draft the caller has locked and checked with `submit_refusal`: store the frozen
-    copy (no submitter when the orchestrator submits) and move it to `submitted`."""
+    copy (no submitter when the orchestrator submits) with its contributors, and move it to
+    `submitted`."""
     project = db.get(Project, proposal.project_id)
     client = db.get(Client, project.client_id)
     number = (
@@ -646,6 +656,7 @@ def submit(
         number=number,
         content={"project_name": project.name, "client_name": client.name, **values_of(proposal)},
         submitted_by=actor_user_id,
+        contributors=contributors(proposal, actor_user_id),
     )
     db.add(copy)
     db.flush()
