@@ -14,13 +14,16 @@ from app.policy import load_policies, score_risk
 from app.schemas.risk import RiskFields
 from app.seed import (
     BRIEFS,
+    CHANGE,
     CLIENTS,
     PLANS,
     PROJECTS,
+    PROPOSALS,
     REQUESTS,
     RISKS,
     SEEDED_AT,
     clear_seeded,
+    demo_users,
     main,
     seed,
 )
@@ -28,6 +31,7 @@ from app.seed import (
 API_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = API_DIR.parents[1]
 EMAIL = re.compile(r"[\w.+-]+@([\w-]+\.)+[\w-]+")
+URL = re.compile(r"https?://([\w-]+\.)+[\w-]+")
 
 
 @pytest.fixture
@@ -85,15 +89,31 @@ def test_seeded_projects_use_known_stages_and_statuses():
         assert project["status"] in STATUSES, project["seed_key"]
 
 
+def _strings(value) -> list[str]:
+    """Every string in a seed constant, however deeply it is nested."""
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in (*_strings(k), *_strings(v))]
+    if isinstance(value, list | tuple | set):
+        return [s for v in value for s in _strings(v)]
+    return [value] if isinstance(value, str) else []
+
+
 def test_every_email_and_website_is_on_example(db):
     seed(db)
     db.commit()
-    # Check the data itself and what was stored, including any address hidden in a text field.
-    texts = [str(v) for row in (*CLIENTS, *PROJECTS) for v in row.values() if v]
+    # Check the data itself, every seed constant (so an address added to any of them later fails
+    # here), and what was stored, including any address hidden in a text field.
+    constants = (CLIENTS, PROJECTS, REQUESTS, BRIEFS, PLANS, PROPOSALS, CHANGE, RISKS, demo_users())
+    texts = _strings(constants)
     texts += [str(v) for row in _snapshot(db) for v in row if isinstance(v, str)]
     emails = [m.group(0) for t in texts for m in EMAIL.finditer(t)]
     assert emails, "seed should include contact emails"
     assert all(email.endswith(".example") for email in emails), emails
+    user_emails = [user["email"] for user in demo_users()]
+    assert len(user_emails) >= 2 and all(e.endswith(".example") for e in user_emails), user_emails
+    hosts = [m.group(0) for t in texts for m in URL.finditer(t)]
+    assert hosts, "seed should include client websites"
+    assert all(host.endswith(".example") for host in hosts), hosts
     for client in db.scalars(select(Client)):
         assert client.website.removeprefix("https://").endswith(".example")
         assert client.contact_email.endswith(".example")
