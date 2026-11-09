@@ -176,6 +176,10 @@ features:
     title: Proposal automation and the simulated client
     rules: [R1, R3, R4, R5]
     notes: Drafts once the plan is complete; submits after a window once each section is reviewed; a demo client answers, labelled simulated; people approve and send.
+  - id: P6-demo-data
+    title: Demo data for the agentic flow
+    rules: [R5, R12]
+    notes: Invented .example portfolio with a card in every board column; two project managers; reset clears orchestrator work and adds an audit row, deleting none.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports

@@ -12,7 +12,18 @@ from app.models import AuditDecision, Base, Client, Project, Risk
 from app.models.portfolio import STAGES, STATUSES
 from app.policy import load_policies, score_risk
 from app.schemas.risk import RiskFields
-from app.seed import CLIENTS, PROJECTS, RISKS, clear_seeded, main, seed
+from app.seed import (
+    BRIEFS,
+    CLIENTS,
+    PLANS,
+    PROJECTS,
+    REQUESTS,
+    RISKS,
+    SEEDED_AT,
+    clear_seeded,
+    main,
+    seed,
+)
 
 API_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = API_DIR.parents[1]
@@ -61,7 +72,7 @@ def test_seed_creates_three_clients_and_an_internal_project(db):
     seed(db)
     db.commit()
     assert _count(db, Client) == 3
-    assert _count(db, Project) == 4
+    assert _count(db, Project) == len(PROJECTS)
     sync = db.scalar(select(Project).where(Project.name == "PragMattie Sync"))
     assert sync is not None and sync.client_id is None
     client_projects = db.scalars(select(Project).where(Project.client_id.is_not(None))).all()
@@ -106,10 +117,12 @@ def test_seed_is_deterministic_and_idempotent(db):
 # --- Seeded risks
 
 
-def test_every_seeded_project_has_ai_and_ordinary_risks(db):
+def test_every_project_with_seeded_risks_has_ai_and_ordinary_ones(db):
     seed(db)
     db.commit()
-    for project in db.scalars(select(Project)):
+    keys = {values["project"] for values in RISKS}
+    assert len(keys) == 4
+    for project in db.scalars(select(Project).where(Project.seed_key.in_(keys))):
         risks = db.scalars(select(Risk).where(Risk.project_id == project.id)).all()
         assert len(risks) >= 2, project.name
         assert {risk.category for risk in risks} == {"ai", "project"}, project.name
@@ -187,13 +200,15 @@ def test_seeding_leaves_a_persons_risk_alone(db):
     db.refresh(own)
     assert own.seed_key is None and own.status == "proposed" and own.version == 1
 
-    # --reset keeps the project that the person's risk is on, and seeding restores it.
-    assert clear_seeded(db) == (3, 3)  # the internal project has no client
+    # --reset clears everything on a seeded project, whoever added it, so it restores exactly
+    # the seeded state.
+    cleared = clear_seeded(db)
+    assert (cleared.clients, cleared.projects, cleared.requests) == (3, len(PROJECTS), 2)
     db.commit()
-    assert db.scalars(select(Risk.title)).all() == ["A person's own risk"]
+    assert _count(db, Risk) == 0
     seed(db)
     db.commit()
-    assert _count(db, Project) == 4 and _count(db, Risk) == len(RISKS) + 1
+    assert _count(db, Project) == len(PROJECTS) and _count(db, Risk) == len(RISKS)
 
 
 def test_reset_clears_only_seeded_rows(db):
@@ -204,7 +219,8 @@ def test_reset_clears_only_seeded_rows(db):
     db.add(_own_project(own_client.id))
     db.commit()
 
-    assert clear_seeded(db) == (3, 4)
+    cleared = clear_seeded(db)
+    assert (cleared.clients, cleared.projects, cleared.requests) == (3, len(PROJECTS), 2)
     db.commit()
     assert db.scalars(select(Client.name)).all() == ["A Person's Client Ltd"]
     assert db.scalars(select(Project.name)).all() == ["Own"]
@@ -221,18 +237,25 @@ def _plans_per_project(db: Session) -> dict[int, int]:
     return {project_id: counts.get(project_id, 0) for project_id in db.scalars(select(Project.id))}
 
 
-def test_every_seeded_project_has_exactly_one_empty_plan(db):
-    """The seed gives each project its plan through `new_plan`, as for any new project (5.1)."""
+def test_every_seeded_project_has_exactly_one_plan(db):
+    """The seed gives each project its plan through `new_plan`, as for any new project (5.1):
+    complete where the data has one, otherwise empty with its scope from the brief, if any."""
     from app.models import ProjectPlan
+    from app.plans import missing
 
     seed(db)
     db.commit()
     counts = _plans_per_project(db)
     assert len(counts) == len(PROJECTS)
     assert set(counts.values()) == {1}
-    for plan in db.scalars(select(ProjectPlan)):
-        # No seeded project has a brief, so the scope starts empty.
-        assert (plan.scope_in, plan.contingency_pct, plan.report_period) == (None, 0, None)
+    for project in db.scalars(select(Project)):
+        plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+        brief = BRIEFS.get(project.seed_key, {})
+        assert plan.scope_in == brief.get("scope_in"), project.seed_key
+        if project.seed_key in PLANS:
+            assert missing(db, plan) == [], project.seed_key
+        else:
+            assert (plan.contingency_pct, plan.report_period) == (0, None), project.seed_key
 
     seed(db)  # Seeding again adds no second plan.
     db.commit()
@@ -250,7 +273,8 @@ def test_a_seeded_projects_plan_is_prefilled_from_its_brief(db):
 
     seed(db)
     db.flush()
-    project = db.scalars(select(Project).order_by(Project.id)).first()
+    # A project in closure: the seed gives it no brief.
+    project = db.scalar(select(Project).where(Project.seed_key == "project-quillmere-yard"))
     db.execute(delete(ProjectPlan).where(ProjectPlan.project_id == project.id))
     db.add(
         ProjectBrief(
@@ -295,17 +319,16 @@ def test_reset_also_removes_the_plans_of_the_projects_it_deletes(db):
         assert db.scalar(select(func.count()).select_from(model)) == 0, model.__name__
 
 
-def test_reset_keeps_a_seeded_project_that_a_persons_proposal_is_on(db):
-    """A proposal (item 5.2) is a person's row: the reset keeps its project and plan."""
+def test_reset_removes_a_persons_proposal_on_a_seeded_project(db):
+    """A reset restores exactly the seeded state: a proposal a person added to the seeded project
+    whose plan waits for one is removed, so the orchestrator drafts it again."""
     from app.models import ProjectPlan, ProjectProposal, User
     from app.proposals import plan_facts, refresh_from_plan
 
     seed(db)
     db.flush()
     person = User(email="pm@pmo.example", display_name="PM", password_hash="x", role="sponsor")
-    project = db.scalars(
-        select(Project).where(Project.client_id.is_not(None)).order_by(Project.id)
-    ).first()
+    project = db.scalar(select(Project).where(Project.seed_key == "project-brackenfold-intake"))
     plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
     db.add(person)
     db.flush()
@@ -314,10 +337,12 @@ def test_reset_keeps_a_seeded_project_that_a_persons_proposal_is_on(db):
     db.add(proposal)
     db.commit()
 
-    clear_seeded(db)
+    seed(db, reset=True)
     db.commit()
-    assert db.scalars(select(Project.id)).all() == [project.id]
-    assert db.get(ProjectPlan, plan.id) is not None
+    intake = db.scalar(select(Project).where(Project.seed_key == "project-brackenfold-intake"))
+    proposals = select(ProjectProposal).where(ProjectProposal.project_id == intake.id)
+    assert db.scalar(proposals) is None
+    assert db.get(User, person.id) is not None
 
 
 def test_reset_keeps_a_seeded_client_that_a_persons_project_uses(db):
@@ -327,13 +352,14 @@ def test_reset_keeps_a_seeded_client_that_a_persons_project_uses(db):
     db.add(_own_project(quillmere.id))
     db.commit()
 
-    assert clear_seeded(db) == (2, 4)
+    cleared = clear_seeded(db)
+    assert (cleared.clients, cleared.projects) == (2, len(PROJECTS))
     db.commit()
     assert db.scalars(select(Client.seed_key)).all() == ["client-quillmere"]
     # Seeding again reuses that client rather than duplicating it.
     seed(db, reset=True)
     db.commit()
-    assert _count(db, Client) == 3 and _count(db, Project) == 5
+    assert _count(db, Client) == 3 and _count(db, Project) == len(PROJECTS) + 1
 
 
 def test_reset_then_seed_gives_the_same_data(db):
@@ -342,7 +368,8 @@ def test_reset_then_seed_gives_the_same_data(db):
     names = sorted(db.scalars(select(Project.name)))
     result = seed(db, reset=True)
     db.commit()
-    assert (result.cleared_clients, result.cleared_projects) == (3, 4)
+    assert (result.cleared.clients, result.cleared.projects) == (3, len(PROJECTS))
+    assert result.cleared.requests == len(REQUESTS)
     assert sorted(db.scalars(select(Project.name))) == names
     assert _count(db, Client) == 3
 
@@ -352,9 +379,11 @@ def test_main_seeds_and_resets(db, capsys):
     assert main([]) == 0
     assert main(["--reset"]) == 0
     out = capsys.readouterr().out
-    assert "Cleared 3 clients and 4 projects." in out
-    assert f"Seeded 3 clients, 4 projects and {len(RISKS)} risks." in out
-    assert _count(db, Client) == 3 and _count(db, Project) == 4
+    assert f"Cleared 3 clients, {len(PROJECTS)} projects, {len(REQUESTS)} requests, " in out
+    assert "0 orchestrator actions and 0 inbox items." in out
+    seeded = f"Seeded 3 clients, {len(PROJECTS)} projects, {len(REQUESTS)} requests and "
+    assert f"{seeded}{len(RISKS)} risks." in out
+    assert _count(db, Client) == 3 and _count(db, Project) == len(PROJECTS)
     assert _count(db, Risk) == len(RISKS)
 
 
@@ -367,7 +396,7 @@ def test_main_reports_a_policy_failure_without_writing(db, capsys, monkeypatch):
 
     monkeypatch.setattr(seed_module, "risk_policy", broken)
     assert main([]) == 1
-    assert "the risk policy could not be loaded" in capsys.readouterr().err
+    assert "a policy could not be loaded" in capsys.readouterr().err
     assert _count(db, Client) == 0 and _count(db, Risk) == 0
 
 
@@ -402,11 +431,11 @@ def test_api_lists_are_paged_and_stable(db, client, sign_in):
     assert "seed_key" not in body["items"][0]
 
     seen = []
-    for offset in (0, 2):
+    for offset in range(0, len(PROJECTS), 2):
         page = client.get("/api/v1/projects", params={"limit": 2, "offset": offset}).json()
-        assert page["total"] == 4
+        assert page["total"] == len(PROJECTS)
         seen += [p["id"] for p in page["items"]]
-    assert len(set(seen)) == 4
+    assert len(seen) == len(set(seen)) == len(PROJECTS)
     sync = next(p for p in client.get("/api/v1/projects").json()["items"] if p["client_id"] is None)
     assert sync["name"] == "PragMattie Sync"
 
@@ -418,3 +447,238 @@ def test_api_lists_are_read_only_and_validate_paging(db, client, sign_in, path):
     assert client.get(path, params={"offset": -1}).status_code == 422
     for method in ("post", "put", "patch", "delete"):
         assert getattr(client, method)(path).status_code == 405
+
+
+# --- The agentic flow (item 6.9): board columns, next steps, two project managers, reset
+
+
+def _seed_key_of(db: Session, subject_type: str, subject_id: int) -> str | None:
+    """The seed_key of a next step's request or project; a proposal or change request gives its
+    project's."""
+    from app.models import ChangeRequest, ProjectProposal, ProjectRequest
+
+    if subject_type == "request":
+        return db.get(ProjectRequest, subject_id).seed_key
+    if subject_type in ("proposal", "change_request"):
+        model = ProjectProposal if subject_type == "proposal" else ChangeRequest
+        subject_id = db.get(model, subject_id).project_id
+    elif subject_type != "project":
+        return None
+    return db.get(Project, subject_id).seed_key
+
+
+def _steps_by_seed_key(db: Session) -> dict[str, set[tuple[str, str]]]:
+    from app import policy as policy_module
+    from app.orchestrator import next_steps
+    from app.risks import risk_policy
+
+    db.expire_all()
+    rules = policy_module.get_autonomy()
+    found: dict[str, set[tuple[str, str]]] = {}
+    for step in next_steps(db, rules, agent_mode="enforce", risk_rules=risk_policy()):
+        key = _seed_key_of(db, step.subject_type, step.subject_id)
+        found.setdefault(key, set()).add((step.subject_type, step.step))
+    return found
+
+
+def _board_columns(db: Session) -> dict[str, list[str]]:
+    from app import board
+    from app import policy as policy_module
+    from app.board import Filters
+    from app.risks import risk_policy
+
+    db.expire_all()
+    found = board.board(
+        db,
+        policy_module.get_autonomy(),
+        Filters(),
+        agent_mode="enforce",
+        risk_rules=risk_policy(),
+    )
+    return {column: [card.key for card in cards] for column, cards in found.columns.items()}
+
+
+def _demo_user(db: Session, key: str):
+    from app.models import User
+    from app.seed import demo_users
+
+    email = next(u["email"] for u in demo_users() if u["key"] == key)
+    return db.scalar(select(User).where(User.email == email))
+
+
+def _drift(db: Session) -> None:
+    """Move the demo on: work the orchestrator and people might have done since the seed."""
+    from app.models import ChangeRequest, InboxItem, OrchestratorAction, ProjectRequest
+
+    db.execute(delete(ChangeRequest))
+    queues = db.scalar(
+        select(ProjectRequest).where(ProjectRequest.seed_key == "request-larchwick-queues")
+    )
+    queues.status = "withdrawn"
+    db.scalar(select(Project).where(Project.seed_key == "project-quillmere-yard")).stage = "closed"
+    action = OrchestratorAction(
+        step="draft_plan",
+        subject_type="project",
+        subject_id="4",
+        mode="agent",
+        agent="planner",
+        who="agent",
+        reason="the plan is incomplete",
+        due_at=SEEDED_AT,
+        policy_digest="0" * 64,
+        open_key="draft_plan:project:4",
+    )
+    db.add(action)
+    db.flush()
+    db.add(
+        InboxItem(
+            step="pass_gate",
+            subject_type="request",
+            subject_id="2",
+            who="sponsor",
+            reason="the request is waiting at the approval gate",
+            policy_digest="0" * 64,
+            open_key="pass_gate:request:2",
+            action_id=action.id,
+        )
+    )
+    db.commit()
+
+
+# The orchestrator's next steps for each seeded item, as (subject type, step).
+EXPECTED_STEPS = {
+    # A draft request with no value case: the intake agent drafts one.
+    "request-brackenfold-referrals": {("request", "draft_value_case")},
+    # A submitted request ready for its approval gate.
+    "request-larchwick-queues": {("request", "pass_gate")},
+    # In planning with an empty plan: the planner agent drafts it.
+    "project-pragmattie-sync": {("project", "draft_plan")},
+    # A complete plan and no proposal: the proposal agent drafts one.
+    "project-brackenfold-intake": {("project", "draft_proposal")},
+    # A sent proposal: the simulated client answers it.
+    "project-brackenfold-rota": {("proposal", "client_answer")},
+    # Ready for its go-ahead gate.
+    "project-larchwick-onboarding": {("project", "pass_gate")},
+    # In delivery with a pending change request, decided by a project manager.
+    "project-quillmere-routing": {("change_request", "decide_change_pm")},
+}
+
+
+def test_after_a_reset_every_board_column_has_a_card(db):
+    from app.board import COLUMNS
+
+    seed(db)
+    db.commit()
+    _drift(db)
+    seed(db, reset=True)
+    db.commit()
+    columns = _board_columns(db)
+    assert list(columns) == list(COLUMNS)
+    assert all(columns.values()), columns
+
+
+def test_after_a_reset_the_orchestrators_next_steps_match_the_seeded_states(db):
+    seed(db)
+    db.commit()
+    _drift(db)
+    seed(db, reset=True)
+    db.commit()
+    found = _steps_by_seed_key(db)
+    for seed_key, expected in EXPECTED_STEPS.items():
+        assert expected <= found.get(seed_key, set()), (seed_key, found.get(seed_key))
+    # The projects in closure and closed wait on nobody.
+    assert "project-quillmere-yard" not in found
+    assert "project-larchwick-statements" not in found
+    # Nothing waits on anything but the seeded items.
+    assert set(found) <= set(EXPECTED_STEPS)
+
+
+def test_reset_restores_the_same_board_and_next_steps(db):
+    seed(db)
+    db.commit()
+    columns, steps = _board_columns(db), _steps_by_seed_key(db)
+    _drift(db)
+    assert _steps_by_seed_key(db) != steps
+    seed(db, reset=True)
+    db.commit()
+    # Ids move on (they are never reused), so compare each card's column by count.
+    assert {c: len(keys) for c, keys in _board_columns(db).items()} == {
+        c: len(keys) for c, keys in columns.items()
+    }
+    assert _steps_by_seed_key(db) == steps
+
+
+def test_reset_clears_orchestrator_actions_and_inbox_items_and_keeps_every_audit_row(db):
+    from app.models import InboxItem, OrchestratorAction
+
+    seed(db)
+    db.commit()
+    _drift(db)
+    before = list(db.scalars(select(AuditDecision.id).order_by(AuditDecision.id)))
+    result = seed(db, reset=True)
+    db.commit()
+    assert (result.cleared.orchestrator_actions, result.cleared.inbox_items) == (1, 1)
+    assert _count(db, OrchestratorAction) == 0 and _count(db, InboxItem) == 0
+    after = list(db.scalars(select(AuditDecision.id).order_by(AuditDecision.id)))
+    assert after[: len(before)] == before  # nothing deleted or reordered
+    row = db.scalar(
+        select(AuditDecision)
+        .where(AuditDecision.subject_type == "demo_portfolio")
+        .order_by(AuditDecision.id.desc())
+    )
+    assert row.action_taken["action"] == "reset_portfolio"
+    assert row.action_taken["cleared"]["orchestrator_actions"] == 1
+    assert row.action_taken["cleared"]["inbox_items"] == 1
+    assert row.action_taken["cleared"]["projects"] == len(PROJECTS)
+    assert row.actor_user_id is None
+
+
+def test_seeded_clients_are_simulated(db):
+    seed(db)
+    db.commit()
+    assert [c.simulated for c in db.scalars(select(Client))] == [True] * len(CLIENTS)
+
+
+def test_two_project_managers_exist_and_each_seeded_request_names_a_demo_user(db):
+    from app.models import ProjectRequest, User
+
+    seed(db, reset=True)
+    db.commit()
+    managers = db.scalars(select(User).where(User.role == "project_manager")).all()
+    assert len(managers) == 2
+    assert all(m.email.endswith(".example") and m.is_active for m in managers)
+    ids = {m.id for m in managers}
+    assert {p.pm_user_id for p in db.scalars(select(Project))} == ids
+    assert {r.requested_by for r in db.scalars(select(ProjectRequest))} <= ids
+
+
+def test_the_seeded_change_is_decided_by_the_other_project_manager(db, client):
+    from app.models import ChangeRequest
+    from app.security import CSRF_COOKIE, SESSION_COOKIE, issue_token
+
+    seed(db, reset=True)
+    db.commit()
+    change = db.scalar(select(ChangeRequest))
+    project = db.get(Project, change.project_id)
+    raiser, own_pm = _demo_user(db, "project_manager_2"), _demo_user(db, "project_manager")
+    assert change.status == "submitted" and change.decider == "project_manager"
+    assert change.raised_by == raiser.id and project.pm_user_id == own_pm.id
+
+    def decide_as(user):
+        client.cookies.set(SESSION_COOKIE, issue_token(user.id, user.role).token)
+        client.cookies.set(CSRF_COOKIE, "test-csrf-value")
+        client.headers["X-CSRF-Token"] = "test-csrf-value"
+        return client.post(
+            f"/api/v1/projects/{project.id}/changes/{change.id}/decide",
+            json={
+                "version": change.version,
+                "outcome": "approve",
+                "reason": "The stock count week can't be moved; three days is fine.",
+            },
+        )
+
+    # The project manager who raised it can't decide it; the project's own one can.
+    assert decide_as(raiser).status_code == 403
+    response = decide_as(own_pm)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "approved"

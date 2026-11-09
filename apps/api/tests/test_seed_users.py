@@ -22,6 +22,9 @@ from app.seed import AUDIT_AGENT, AUDIT_SUBJECT, demo_users, main, seed_users
 
 HERE = Path(__file__).resolve().parent
 LOGIN = "/api/v1/auth/login"
+# One demo user per role, plus a second project manager (item 6.9).
+ROLES = sorted([*(r.value for r in Role), Role.PROJECT_MANAGER.value])
+USERS = len(ROLES)
 
 
 @pytest.fixture(autouse=True)
@@ -77,8 +80,9 @@ def test_one_user_per_role_on_example(db):
     logins = seed_users(db)
     db.commit()
     users = db.scalars(select(User).order_by(User.id)).all()
-    assert sorted(u.role for u in users) == sorted(r.value for r in Role)
-    assert len(users) == len(Role) == len(logins)
+    assert sorted(u.role for u in users) == ROLES
+    assert len(users) == USERS == len(logins)
+    assert len({u.email for u in users}) == USERS
     assert all(u.email.endswith(".example") and u.is_active for u in users)
     # The password is never in a repr.
     assert all(login.password not in repr(login) for login in logins)
@@ -88,7 +92,7 @@ def test_printed_passwords_log_in_and_change_every_run(db, capsys):
     assert main(["users"]) == 0
     first, summary = _printed(capsys)
     assert set(first) == {u["email"] for u in demo_users()}
-    assert f"Seeded {len(Role)} demo users" in summary
+    assert f"Seeded {USERS} demo users" in summary
     for email, password in first.items():
         assert _logs_in(email, password), email
 
@@ -101,7 +105,7 @@ def test_printed_passwords_log_in_and_change_every_run(db, capsys):
     assert not _logs_in(email, first[email])
     assert _logs_in(email, second[email])
     # Seeding again adds no users.
-    assert _counts(db)[0] == len(Role)
+    assert _counts(db)[0] == USERS
 
 
 def test_each_run_restores_the_whole_demo_user(db):
@@ -145,8 +149,8 @@ def test_one_audit_row_per_run_without_passwords(db):
         "ok",
     )
     assert row.actor_user_id is None and row.signals["actor"] == "system"
-    assert row.action_taken["users"] == len(Role)
-    assert sorted(row.action_taken["roles"]) == sorted(r.value for r in Role)
+    assert row.action_taken["users"] == USERS
+    assert sorted(row.action_taken["roles"]) == ROLES
     seed_users(db)
     db.commit()
     assert _counts(db)[1] == 2
@@ -195,7 +199,7 @@ def test_ci_with_a_password_file_is_allowed(db, repo, capsys, monkeypatch):
     monkeypatch.setenv("CI", "true")
     target = repo / "demo-passwords.txt"
     assert main(["users", "--password-file", str(target)]) == 0
-    assert len(_parse(target.read_text())) == len(Role)
+    assert len(_parse(target.read_text())) == USERS
 
 
 def test_password_file_holds_the_passwords_and_the_terminal_does_not(db, repo, capsys):
@@ -206,7 +210,7 @@ def test_password_file_holds_the_passwords_and_the_terminal_does_not(db, repo, c
     for email, password in written.items():
         assert _logs_in(email, password), email
     out = capsys.readouterr().out
-    assert f"Seeded {len(Role)} demo users" in out and str(target) in out
+    assert f"Seeded {USERS} demo users" in out and str(target) in out
     assert not any(p in out for p in written.values())
 
 
@@ -219,7 +223,7 @@ def test_password_file_is_owner_only(db, repo, capsys, existing):
         os.chmod(target, 0o644)
     assert main(["users", "--password-file", str(target)]) == 0
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
-    assert len(_parse(target.read_text())) == len(Role)
+    assert len(_parse(target.read_text())) == USERS
 
 
 def _assert_refused(db, capsys, target: Path, reason: str) -> None:
