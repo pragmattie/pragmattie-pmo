@@ -38,6 +38,7 @@ import {
   STATUSES,
   suggestionMessage,
   toggleCell,
+  withSuggestedScore,
 } from '../lib/risks'
 import { useAuthStore } from '../stores/auth'
 
