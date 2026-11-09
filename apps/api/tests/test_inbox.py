@@ -650,7 +650,5 @@ def test_a_risk_with_a_suggestion_shows_it_as_the_agents(db):
     assert facts["suggested_owner"] == "sponsor"
     assert facts["suggested_probability_reason"] == "It happened on the last project."
     assert facts["suggested_model"] == "claude-sonnet-5-5"
-    assert (
-        recommend("score_risk", list(inbox.facts_for(db, "score_risk", "risk", risk.id)))[:20]
-        == "Open it or change it"
-    )
+    advice = recommend("score_risk", inbox.facts_for(db, "score_risk", "risk", risk.id))
+    assert advice.startswith("Open it or change it")
