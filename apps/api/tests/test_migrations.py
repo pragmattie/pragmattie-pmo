@@ -317,8 +317,22 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
             assert f"ck_{table}_source" in {
                 ck["name"] for ck in inspector.get_check_constraints(table)
             }
+        # 0023: the risk agent's suggested score, apart from the real one.
+        suggested = (
+            "suggested_probability",
+            "suggested_impact",
+            "suggested_probability_reason",
+            "suggested_impact_reason",
+            "suggested_model",
+            "suggested_audit_id",
+        )
+        risk_columns = {c["name"]: c for c in inspector.get_columns("risks")}
+        assert all(risk_columns[name]["nullable"] for name in suggested)
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0022")
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert not set(suggested) & {c["name"] for c in inspector.get_columns("risks")}
         command.downgrade(config, "0021")
         inspector = inspect(create_engine(get_settings().database_url))
         for table in plan_item_tables:

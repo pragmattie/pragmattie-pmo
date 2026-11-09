@@ -144,6 +144,13 @@ class RiskOut(BaseModel):
     escalated_to: str | None
     escalated_band: str | None
     review_date: date | None
+    # The risk agent's suggestion: never the real score until a person or the window applies it.
+    suggested_probability: int | None = None
+    suggested_impact: int | None = None
+    suggested_probability_reason: str | None = None
+    suggested_impact_reason: str | None = None
+    suggested_model: str | None = None
+    suggested_audit_id: int | None = None
     version: int
     created_at: datetime
     updated_at: datetime
