@@ -3,11 +3,23 @@
 The fake-client tests never send a schema to the API, so this walks each schema in code and
 fails on any construct the API rejects. No network and no key."""
 
+from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy.orm import Session
 
+from app import risks
 from app.agents import intake_agent, planner_agent, proposal_agent, risk_agent
+from app.agents.risk_agent import AgentError
+from app.config import get_settings
+from app.db import engine
+from app.models import Base, Project, ProjectProposal, ProjectRequest, Risk, User
+from app.policy import load_policies
+from app.proposals import PlanFacts
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Every schema an agent sends as `output_config.format.schema`.
 SCHEMAS = {
@@ -100,14 +112,109 @@ def test_every_agent_schema_is_one_the_api_accepts(name):
     assert problems(SCHEMAS[name]) == []
 
 
-def test_every_agent_request_sends_a_listed_schema():
-    listed = [id(schema) for schema in SCHEMAS.values()]
-    for module in (intake_agent, planner_agent, proposal_agent, risk_agent):
-        source = open(module.__file__, encoding="utf-8").read()
-        for line in source.splitlines():
-            if '"output_config"' in line:
-                schema_name = line.split('"schema":')[1].strip(" }),")
-                assert id(getattr(module, schema_name)) in listed, (module.__name__, schema_name)
+class CapturingClaude:
+    """Keeps the request it is given and fails the call, so nothing is checked or saved."""
+
+    def __init__(self):
+        self.requests: list[dict] = []
+
+    def create(self, request: dict):
+        self.requests.append(request)
+        raise RuntimeError("no network in this test")
+
+
+@pytest.fixture
+def db():
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine, expire_on_commit=False) as session:
+            yield session
+    finally:
+        Base.metadata.drop_all(engine)
+
+
+def _sent_schemas(db: Session) -> dict[str, dict]:
+    """Run every agent task once against a capturing client and return the schema each request
+    actually sends as `output_config.format.schema`, by task."""
+    settings = get_settings()
+    policy = load_policies(REPO_ROOT / "policies").risk
+    user = User(
+        email="pm@pmo.example", display_name="PM", password_hash="x", role="project_manager"
+    )
+    project = Project(name="Harbour", stage="delivery", sponsor="S", pm="P", status="on_track")
+    db.add_all([user, project])
+    db.flush()
+    request = ProjectRequest(
+        title="Forecasts", asked_for="A", problem="B", outcome="C", requested_by=user.id
+    )
+    proposal = ProjectProposal(
+        project_id=project.id,
+        price=Decimal("0"),
+        estimate_lines=[],
+        milestones=[],
+        deliverables=[],
+        risks=[],
+        plan_version_seen=1,
+    )
+    risk = Risk(
+        project_id=project.id,
+        kind="threat",
+        title="Data loads fail",
+        cause="A fragile export",
+        effect="A late report",
+        category="project",
+        objectives=["schedule"],
+        response="reduce",
+        response_plan="Agent proposal.",
+        status="proposed",
+        source="agent",
+    )
+    db.add_all([request, proposal, risk])
+    db.flush()
+    facts = PlanFacts(
+        version=1,
+        total=Decimal("0"),
+        estimate_lines=[],
+        milestones=[],
+        deliverables=[],
+        shown_risks=[],
+        risk_states={},
+    )
+    common = {"settings": settings, "actor_user_id": user.id}
+    tasks = {
+        "intake_agent.run": lambda c: intake_agent.run(db, c, request, save_it=False, **common),
+        "planner_agent.run": lambda c: planner_agent.run(db, c, project, save_it=False, **common),
+        "proposal_agent.run": lambda c: proposal_agent.run(
+            db, c, proposal, facts, save_it=False, **common
+        ),
+        "risk_agent.run": lambda c: risk_agent.run(
+            db, c, project, library=risks.risk_library(), policy=policy, save=False, **common
+        ),
+        "risk_agent.score": lambda c: risk_agent.score(
+            db, c, risk, policy=policy, save=False, **common
+        ),
+    }
+    sent = {}
+    for task, call in tasks.items():
+        fake = CapturingClaude()
+        with pytest.raises(AgentError):
+            call(fake)
+        assert len(fake.requests) == 1, task
+        sent[task] = fake.requests[0]["output_config"]["format"]["schema"]
+    return sent
+
+
+def test_every_agent_request_sends_a_schema_the_api_accepts(db):
+    sent = _sent_schemas(db)
+    assert set(sent) == {
+        "intake_agent.run",
+        "planner_agent.run",
+        "proposal_agent.run",
+        "risk_agent.run",
+        "risk_agent.score",
+    }
+    found = {task: problems(schema) for task, schema in sent.items()}
+    assert found == {task: [] for task in sent}
 
 
 def test_the_old_planner_report_period_fails():
