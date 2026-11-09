@@ -559,3 +559,41 @@ def test_0024_downgrade_refuses_while_the_orchestrator_made_a_proposal(tmp_path,
             assert conn.exec_driver_sql("SELECT created_by FROM project_proposals").scalar() is None
     finally:
         get_settings.cache_clear()
+
+
+def test_0026_gives_existing_copies_their_submitter_and_drops_the_column_on_downgrade(
+    tmp_path, monkeypatch
+):
+    import json
+
+    from app.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'migrate.db'}")
+    get_settings.cache_clear()
+    try:
+        config = Config(str(API_DIR / "alembic.ini"))
+        command.upgrade(config, "0025")
+        engine = create_engine(get_settings().database_url)
+        with engine.begin() as conn:
+            _insert_0024_world(conn, simulated_answer=False)
+            for number, submitter in ((1, 1), (2, None)):
+                conn.exec_driver_sql(
+                    "INSERT INTO proposal_versions (id, proposal_id, number, content, "
+                    "submitted_by, submitted_at) VALUES (?, 1, ?, '{}', ?, '2026-11-09')",
+                    (number, number, submitter),
+                )
+        command.upgrade(config, "0026")
+        with engine.connect() as conn:
+            rows = conn.exec_driver_sql(
+                "SELECT id, contributors FROM proposal_versions ORDER BY id"
+            ).all()
+        assert [(i, json.loads(c)) for i, c in rows] == [(1, [1]), (2, [])]
+        columns = {c["name"]: c for c in inspect(engine).get_columns("proposal_versions")}
+        assert columns["contributors"]["nullable"] is False
+        command.downgrade(config, "0025")
+        columns = {c["name"] for c in inspect(engine).get_columns("proposal_versions")}
+        assert "contributors" not in columns
+        with engine.connect() as conn:
+            assert conn.exec_driver_sql("SELECT COUNT(*) FROM proposal_versions").scalar() == 2
+    finally:
+        get_settings.cache_clear()

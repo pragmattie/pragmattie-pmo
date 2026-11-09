@@ -702,3 +702,90 @@ def test_the_seeded_change_is_decided_by_the_other_project_manager(db, client):
     response = decide_as(own_pm)
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "approved"
+
+
+def _sign_in_as(client, user) -> None:
+    from app.security import CSRF_COOKIE, SESSION_COOKIE, issue_token
+
+    client.cookies.set(SESSION_COOKIE, issue_token(user.id, user.role).token)
+    client.cookies.set(CSRF_COOKIE, "test-csrf-value")
+    client.headers["X-CSRF-Token"] = "test-csrf-value"
+
+
+def test_after_a_reset_the_sent_proposals_contributors_exclude_its_approver(db, client):
+    """Item 6.10: the seeded copies record the project manager who wrote them, so the demo
+    sponsor who approved them did not contribute, and a non-contributor records the answer."""
+    from app.models import ProjectProposal, ProposalEvent, ProposalVersion
+
+    seed(db, reset=True)
+    db.commit()
+    sponsor, pm = _demo_user(db, "sponsor"), _demo_user(db, "project_manager")
+    for copy in db.scalars(select(ProposalVersion)):
+        assert copy.contributors == [copy.submitted_by]
+        approval = db.scalar(
+            select(ProposalEvent).where(
+                ProposalEvent.version_id == copy.id, ProposalEvent.kind == "approve"
+            )
+        )
+        assert approval.actor_user_id == sponsor.id
+        assert sponsor.id not in copy.contributors
+    rota = db.scalar(select(Project).where(Project.seed_key == "project-brackenfold-rota"))
+    proposal = db.scalar(select(ProjectProposal).where(ProjectProposal.project_id == rota.id))
+    assert proposal.status == "sent"
+    _sign_in_as(client, pm)
+    body = client.get(f"/api/v1/projects/{rota.id}/proposal").json()
+    assert body["contributors"] == [pm.id] and sponsor.id not in body["contributors"]
+    _sign_in_as(client, _demo_user(db, "project_manager_2"))
+    response = client.post(
+        f"/api/v1/projects/{rota.id}/proposal/answer",
+        json={
+            "version": body["version"],
+            "answer": "accepted",
+            "answered_on": SEEDED_AT.date().isoformat(),
+            "note": "Accepted by phone",
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_after_a_reset_the_demo_sponsor_decides_the_proposal_waiting_for_approval(db, client):
+    """The orchestrator drafts and submits the waiting project's proposal after the project
+    manager reviews it: the project manager is its only contributor, so the demo sponsor may
+    approve it."""
+    from app import proposals as rules
+    from app.models import ProjectPlan, ProjectProposal
+    from app.models.base import utcnow
+    from app.models.proposal import TEXT_SECTIONS
+
+    seed(db, reset=True)
+    db.commit()
+    from app.models import User
+
+    sponsor = _demo_user(db, "sponsor")
+    project = db.scalar(select(Project).where(Project.seed_key == "project-brackenfold-intake"))
+    pm = db.get(User, project.pm_user_id)
+    assert pm.role == "project_manager"
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    proposal = rules.new_proposal(db, plan, None)
+    for name in TEXT_SECTIONS:
+        setattr(proposal, name, f"The proposal agent's {name.replace('_', ' ')}, reviewed")
+        rules.mark_section(
+            proposal, name, source="agent", reviewed_by=pm.id, reviewed_at=utcnow().isoformat()
+        )
+    db.flush()
+    assert rules.submit_refusal(db, proposal) is None
+    rules.submit(db, proposal, actor_user_id=None, trigger="orchestrator")
+    db.commit()
+    assert rules.latest_version(db, proposal.id).contributors == [pm.id]
+
+    url = f"/api/v1/projects/{project.id}/proposal"
+    _sign_in_as(client, sponsor)
+    body = client.get(url).json()
+    assert body["status"] == "submitted" and sponsor.id not in body["contributors"]
+    response = client.post(
+        f"{url}/approve",
+        json={"version": body["version"], "reason": "Matches the plan and the client's brief"},
+    )
+    assert response.status_code == 200, response.text
+    db.expire_all()
+    assert db.get(ProjectProposal, proposal.id).status == "approved"
