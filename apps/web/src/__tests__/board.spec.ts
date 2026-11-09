@@ -68,6 +68,7 @@ function card(changes: Partial<Card> = {}): Card {
     stopped: false,
     held_by: 'person',
     simulated: false,
+    client_simulated: false,
     waiting: [
       {
         step: 'pass_gate',
@@ -121,6 +122,7 @@ const SIMULATED = card({
   name: 'Store layout',
   held_by: 'agent',
   simulated: true,
+  client_simulated: true,
   waiting: [
     {
       step: 'client_answer',
@@ -240,7 +242,7 @@ describe('the board page', () => {
     expect(request.find('[data-test="card-health"]').exists()).toBe(false)
     // Anything simulated says so.
     const simulated = wrapper.find('[data-test="card-project-3"]')
-    expect(simulated.find('[data-test="card-simulated"]').text()).toBe('Simulated')
+    expect(simulated.find('[data-test="card-simulated"]').text()).toBe('Simulated client')
     expect(simulated.find('[data-test="waiting-agent"]').text()).toContain('(simulated)')
     expect(project.find('[data-test="card-simulated"]').exists()).toBe(false)
     wrapper.unmount()

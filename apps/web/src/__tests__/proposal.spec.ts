@@ -68,6 +68,7 @@ function proposal(changes: Partial<Proposal> = {}): Proposal {
     project_id: 5,
     project_name: 'Forecast',
     client_name: 'Northwind Example',
+    client_simulated: false,
     status: 'draft',
     summary: 'A pilot for 1650.00',
     scope_in: 'Two warehouses',
@@ -131,6 +132,7 @@ function version(number: number, kinds: string[] = []): ProposalVersion {
       kind: kind as ProposalVersion['events'][number]['kind'],
       actor_user_id: USER_ID,
       actor_name: 'Sam Sponsor',
+      source: 'person' as const,
       reason: kind === 'approve' ? REASON : null,
       sent_to: kind === 'sent' ? 'Dana' : null,
       sent_on: kind === 'sent' ? '2026-11-05' : null,
@@ -587,6 +589,39 @@ describe('the proposal section', () => {
       `Approved by Sam Sponsor: ${REASON}`,
       'Sent by Sam Sponsor to Dana on 2026-11-05 by Email',
     ])
+  })
+
+  it('labels the simulated client and its answer, and an orchestrator submission', async () => {
+    const sent = version(2, ['approve', 'sent'])
+    sent.submitted_by = null
+    sent.submitted_by_name = null
+    sent.events.push({
+      ...sent.events[0],
+      id: 3,
+      kind: 'answer',
+      actor_user_id: null,
+      actor_name: null,
+      source: 'simulated',
+      reason: null,
+      answer: 'accepted',
+      answered_on: '2026-11-05',
+      note: null,
+    })
+    await mountAs('auditor', {
+      stored: proposal({ status: 'accepted', latest_version: 2, client_simulated: true }),
+      versions: [sent],
+    })
+    expect(find('proposal-simulated')?.textContent?.trim()).toBe('Simulated client')
+    expect(find('proposal-version')?.textContent).toContain('submitted by the orchestrator')
+    expect(findAll('proposal-event').at(-1)?.textContent?.trim()).toBe(
+      'Simulated client: accepted on 2026-11-05, answered by the demo\'s simulation, not a real client',
+    )
+  })
+
+  it('shows no simulated label for a real client', async () => {
+    await mountAs('auditor', { stored: proposal({ status: 'sent', latest_version: 1 }) })
+    expect(find('proposal-status')).not.toBeNull()
+    expect(find('proposal-simulated')).toBeNull()
   })
 
   it('offers to create a proposal when there is none, and saves only changed text', async () => {
