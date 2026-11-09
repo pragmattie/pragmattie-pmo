@@ -46,6 +46,7 @@ from app.models import (
 )
 from app.models.proposal import TEXT_SECTIONS
 from app.orchestrator import NO_AGENT, StepAction, next_steps, run_pass
+from app.risks import drop_stale_suggestion, snapshot
 
 REQUEST = {
     "title": "Warehouse forecasting pilot",
@@ -1371,6 +1372,81 @@ def test_the_window_checks_again_before_opening(db, settings, rules):
     ]
     assert {r.subject_id for r in skipped} == {str(changed.id), str(scored.id)}
     assert all(r.action_taken["applied"] is False for r in skipped)
+
+
+def test_a_text_edit_during_the_window_drops_the_suggestion_and_asks_for_a_new_score(
+    db, settings, rules
+):
+    risk = _risk(db, _project(db, stage="delivery"))
+    claude = _scorer(probability=1, impact=2)
+    start = utcnow()
+    _pass(db, settings, now=start, rules=rules, client=claude)
+    after_score = start + timedelta(minutes=16)
+    _pass(db, settings, now=after_score, rules=rules, client=claude)
+    _pass(db, settings, now=after_score, rules=rules, client=claude)
+    assert [(a.step, a.status) for a in _actions(db)] == [
+        ("score_risk", "done"),
+        ("open_low_risk", "pending"),
+    ]
+    # A person rewrites the cause during the window; the PATCH runs the same code in its write.
+    edited = _fresh(db, risk)
+    before, suggestion_id = snapshot(edited), edited.suggested_audit_id
+    edited.cause = "A new cause the agent has not read."
+    assert drop_stale_suggestion(edited, before) == {
+        "probability": 1,
+        "impact": 2,
+        "audit_id": suggestion_id,
+    }
+    db.commit()
+
+    # Planned again for the new text, before the window comes due.
+    steps = next_steps(db, rules, agent_mode=settings.agent_mode)
+    assert [(s.step, s.subject_id) for s in steps if s.subject_type == "risk"] == [
+        ("score_risk", risk.id)
+    ]
+    report = _pass(
+        db, settings, now=after_score + timedelta(minutes=16), rules=rules, client=claude
+    )
+    assert [(o.step, o.outcome) for o in report.outcomes] == [
+        ("open_low_risk", "cancelled"),
+        ("score_risk", "inbox"),
+    ]
+    after = _fresh(db, risk)
+    # Not opened with the old suggestion: still proposed, with no score of any kind.
+    assert (after.status, after.probability, after.score) == ("proposed", None, None)
+    assert after.suggested_probability is None
+    assert not [r for r in _risk_register_rows(db, risk.id) if r.action_taken["action"] == "open"]
+    # The new score is asked for. The agent already scored this risk once, so the orchestrator's
+    # guard sends the step to the project manager rather than calling Claude again.
+    [item] = _items(db, "open")
+    assert (item.step, item.who) == ("score_risk", "project_manager")
+    assert len(claude.requests) == 1
+
+
+def test_a_window_whose_suggestion_was_dropped_mid_pass_skips(db, settings, rules):
+    """The window's own check: the suggestion is gone when the action runs, so nothing opens."""
+    risk = _risk(
+        db,
+        _project(db, stage="delivery"),
+        suggested_probability=1,
+        suggested_impact=2,
+        suggested_audit_id=5,
+    )
+    start = utcnow()
+    _pass(db, settings, now=start, rules=rules)
+    [action] = _actions(db)
+    edited = _fresh(db, risk)
+    before = snapshot(edited)
+    edited.title = "A new title"
+    drop_stale_suggestion(edited, before)
+    db.commit()
+    context = orchestrator.Context(db, settings, _scorer(), rules, action.reason)
+    orchestrator.ACTIONS["open_low_risk"].run(context, risk.id)
+    db.commit()
+    after = _fresh(db, risk)
+    assert (after.status, after.probability) == ("proposed", None)
+    [skipped] = [r for r in _orchestrator_rows(db) if r.status == "skipped"]
+    assert skipped.action_taken["reason"] == orchestrator.LOW_RISK_CHANGED
 
 
 def test_a_person_score_wins_over_the_agent(db, settings, rules):

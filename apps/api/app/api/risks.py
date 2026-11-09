@@ -37,7 +37,9 @@ unscored risk (`risk_agent.score`), with the same `AGENT_MODE` rules and dry run
 the score as the risk's suggestion (`suggested_*`), never its real score; `shadow` returns it and
 saves nothing. A risk marked `needs_judgement`, one a person has scored or one that is not
 proposed is refused (409) before any call. The orchestrator's `score_risk` step calls the same
-code. A person uses a suggestion through the PATCH (their own score) and the open route.
+code. A person uses a suggestion through the PATCH (their own score) and the open route. A PATCH
+that changes the title, cause or effect clears the suggestion in the same write
+(`drop_stale_suggestion`), and its audit row records what was cleared (`suggestion_cleared`).
 
 `POST .../risks/from-library` adds starter templates (`app.api.risk_library`) as `proposed`
 risks from a person, unscored, one audit row each; an unknown template id adds nothing (422).
@@ -79,6 +81,7 @@ from app.risks import (
     band_owner,
     band_rank,
     decide_proposed,
+    drop_stale_suggestion,
     record_escalation,
     record_risk_change,
     rescore_decisions,
@@ -620,17 +623,24 @@ def update_risk(
     escalated = rescore_decisions(risk, policy, before)
     if snapshot(risk) == before:
         return RiskOut.model_validate(risk)
+    # In the same write as the text change, so no window can apply a suggestion for old text.
+    cleared = drop_stale_suggestion(risk, before)
 
     _flush(db)
     closing = before["status"] != "closed" and risk.status == "closed"
     reopened = before["status"] == "accepted" and risk.status == "open"
+    details: dict = {}
+    if reopened:
+        details["reopened"] = True
+    if cleared is not None:
+        details["suggestion_cleared"] = cleared
     record_risk_change(
         db,
         risk,
         action="close" if closing else "update",
         before=before,
         actor_user_id=user.id,
-        details={"reopened": True} if reopened else None,
+        details=details or None,
     )
     if escalated:
         record_escalation(db, risk, actor_user_id=user.id)

@@ -81,6 +81,10 @@ unscored, not `needs_judgement` and the suggestion is unchanged; otherwise a ski
 The opening row has `trigger = orchestrator`, `window_minutes` and `suggested_audit_id`. A Medium
 or High suggestion is an inbox item for the project manager to open it or change the score, since
 opening it escalates it to the sponsor. A person's own score always wins over a suggestion.
+A person's edit to the title, cause or effect clears the suggestion in the same write (the edit's
+audit row records it as `suggestion_cleared`), so a pending window is cancelled or skips and
+`score_risk` is planned again for the new text. A risk marked `needs_judgement` never shows an
+agent score: the inbox and the risk page leave the suggestion out.
 
 **Record.** One `pmo_audit` row per call, agent `risk_agent`, subject the risk, task `score`,
 success or failure: model, prompt version, tokens, cost, the score and what code adjusted. A failed

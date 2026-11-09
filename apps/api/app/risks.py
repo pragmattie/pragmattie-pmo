@@ -4,6 +4,9 @@
 Run it after the risk policy file changes: stored scores and bands are otherwise only refreshed
 when a risk is next edited.
 
+`drop_stale_suggestion` clears the risk agent's suggested score when a person's edit changes the
+text it was made for (title, cause or effect); the edit's audit row records what was cleared.
+
 `risk_from_template` turns a starter risk library template into a `proposed`, unscored risk.
 
 Every create, change, close, decision and re-score of a risk is one audit row: agent
@@ -111,6 +114,37 @@ def snapshot(risk: Risk) -> dict[str, Any]:
     if values["review_date"] is not None:
         values["review_date"] = values["review_date"].isoformat()
     return values
+
+
+# The text the risk agent scores from: a change to any of it makes its suggestion stale.
+SCORED_TEXT = ("title", "cause", "effect")
+SUGGESTION_FIELDS = (
+    "suggested_probability",
+    "suggested_impact",
+    "suggested_probability_reason",
+    "suggested_impact_reason",
+    "suggested_model",
+    "suggested_audit_id",
+)
+
+
+def drop_stale_suggestion(risk: Risk, before: dict[str, Any]) -> dict[str, Any] | None:
+    """Clear the risk agent's suggestion when an edit changed the text it was made for (`before`
+    is the risk's snapshot before the edit). Returns what was cleared, for the edit's audit row,
+    or None when nothing was. With no suggestion left, the orchestrator plans `score_risk` again
+    and a pending `open_low_risk` window skips, since its suggestion is gone."""
+    if risk.suggested_probability is None and risk.suggested_audit_id is None:
+        return None
+    if all(getattr(risk, name) == before[name] for name in SCORED_TEXT):
+        return None
+    cleared = {
+        "probability": risk.suggested_probability,
+        "impact": risk.suggested_impact,
+        "audit_id": risk.suggested_audit_id,
+    }
+    for name in SUGGESTION_FIELDS:
+        setattr(risk, name, None)
+    return cleared
 
 
 def band_owner(policy: RiskPolicy, band: str | None) -> str | None:
