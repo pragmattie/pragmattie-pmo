@@ -684,7 +684,7 @@ def test_an_error_while_saving_is_audited_and_saves_nothing(
 ):
     mode("enforce")
 
-    def broken(db, proposal, checked):
+    def broken(db, proposal, checked, **_):
         proposal.summary = "half saved"
         db.flush()
         raise RuntimeError("disk full")
