@@ -175,7 +175,7 @@ features:
   - id: P6-proposal-automation
     title: Proposal automation and the simulated client
     rules: [R1, R3, R4, R5]
-    notes: Drafts when the plan is complete; submits after a window once a person reviewed each section; a demo client answers, labelled simulated; people approve and send; audited.
+    notes: Drafts once the plan is complete; submits after a window once each section is reviewed; a demo client answers, labelled simulated; people approve and send.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports
