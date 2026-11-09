@@ -899,6 +899,7 @@ DELETED = {
 # off in tests.
 REFUSED = {
     ("POST", "/api/v1/projects/{project_id}/risks/suggest"),
+    ("POST", "/api/v1/projects/{project_id}/risks/{risk_id}/suggest-score"),
     ("POST", "/api/v1/requests/{request_id}/draft"),
     ("POST", f"{PROPOSAL}/draft"),
     ("POST", f"{PLAN}/draft"),
