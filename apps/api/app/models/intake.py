@@ -61,6 +61,7 @@ class ProjectRequest(Base):
         Index("ix_project_requests_wanted_by", "wanted_by"),
         # A request becomes at most one project, and a project comes from at most one request.
         UniqueConstraint("project_id", name="uq_project_requests_project"),
+        UniqueConstraint("seed_key", name="uq_project_requests_seed_key"),
         # Audit rows name a request by id, so an id is never reused. MySQL never reuses one;
         # SQLite needs AUTOINCREMENT for that.
         {"sqlite_autoincrement": True},
@@ -88,6 +89,8 @@ class ProjectRequest(Base):
     project_id: Mapped[int | None] = mapped_column(
         ForeignKey(f"{PROJECTS_TABLE}.id", name="fk_project_requests_project")
     )
+    # Set only on a request `python -m app.seed` made (item 6.9), as on clients and projects.
+    seed_key: Mapped[str | None] = mapped_column(String(64))
     version: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

@@ -45,6 +45,12 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
                 "SELECT sql FROM sqlite_master WHERE name = 'risks'"
             ).scalar_one()
         assert "AUTOINCREMENT" in risks_sql
+        # Project ids are never reused either, so a demo reset can't mix up audit rows (0025).
+        with create_engine(get_settings().database_url).connect() as conn:
+            projects_sql = conn.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE name = 'projects'"
+            ).scalar_one()
+        assert "AUTOINCREMENT" in projects_sql
         request_fks = {
             fk["name"]: fk["referred_table"]
             for fk in inspector.get_foreign_keys("project_requests")
@@ -58,7 +64,10 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
             uq["name"]: uq["column_names"]
             for uq in inspector.get_unique_constraints("project_requests")
         }
-        assert request_uniques == {"uq_project_requests_project": ["project_id"]}
+        assert request_uniques == {
+            "uq_project_requests_project": ["project_id"],
+            "uq_project_requests_seed_key": ["seed_key"],
+        }
         request_indexes = {ix["name"] for ix in inspector.get_indexes("project_requests")}
         assert {
             "ix_project_requests_status",

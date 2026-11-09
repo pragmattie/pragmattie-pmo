@@ -74,6 +74,9 @@ class Project(Base):
         UniqueConstraint("seed_key", name="uq_projects_seed_key"),
         Index("ix_projects_created_at", "created_at"),
         CheckConstraint(column("status").in_(STATUSES), name="ck_projects_status"),
+        # Audit rows name a project by id, and a demo reset makes the seeded projects again, so
+        # an id is never reused. MySQL never reuses one; SQLite needs AUTOINCREMENT for that.
+        {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
