@@ -2,7 +2,7 @@
 none touches the network."""
 
 import dataclasses
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,6 +40,7 @@ from app.models import (
     User,
     utcnow,
 )
+from app.models.planning import ProjectAssumption
 from app.models.portfolio import CANCELLED
 from app.models.proposal import TEXT_SECTIONS
 from app.orchestrator import next_steps
@@ -277,6 +278,50 @@ def test_an_agent_that_leaves_a_section_empty_fails_and_goes_to_the_project_mana
     assert len(errors) == 1 + orchestrator.MAX_RETRIES
     assert errors[-1].error.startswith("the proposal agent left these sections empty: ")
     assert _fresh(db, proposal.id).status == "draft"
+
+
+def _assume(db: Session, project: Project, owner: User, text: str) -> None:
+    db.add(
+        ProjectAssumption(
+            project_id=project.id,
+            text=text,
+            owner_user_id=owner.id,
+            confirm_by=date(2027, 1, 1),
+        )
+    )
+    db.commit()
+
+
+def test_a_project_with_no_assumptions_gets_the_none_recorded_sentence(db, settings, rules):
+    project, _ = _ready(db)
+    _no_risk_steps(db, project)
+    # No assumptions and no scope out: the agent leaves both null, as the real model did.
+    claude = FakeClaude(_reply(_output(scope_in="The pilot", assumptions=None)))
+    report = _pass(db, settings, rules=rules, client=claude)
+    assert [(o.step, o.outcome) for o in report.outcomes] == [("draft_proposal", "done")]
+    proposal = db.scalar(select(ProjectProposal).where(ProjectProposal.project_id == project.id))
+    assert proposal.assumptions == "No assumptions were recorded for this project."
+    assert proposal.scope_out == "Nothing was recorded as out of scope for this project."
+    # An agent draft like any other: a person reviews it before submit.
+    assert proposal.section_sources["assumptions"]["source"] == "agent"
+    assert proposal.section_sources["assumptions"]["reviewed_by"] is None
+    assert "assumptions" in proposal_rules.unreviewed_sections(proposal)
+    run = db.scalar(select(AuditDecision).where(AuditDecision.agent == "proposal_agent"))
+    assert set(run.output["nothing_recorded"]) == {"assumptions", "scope_out"}
+    assert "assumptions" in run.action_taken["replaced"]
+
+
+def test_a_project_with_assumptions_whose_draft_comes_back_empty_still_fails(db, settings, rules):
+    project, pm = _ready(db)
+    _no_risk_steps(db, project)
+    _assume(db, project, pm, "The client's data is available")
+    claude = FakeClaude(_reply(_output(scope_in="The pilot", assumptions=None)))
+    report = _pass(db, settings, rules=rules, client=claude)
+    assert [(o.step, o.outcome) for o in report.outcomes] == [("draft_proposal", "failed")]
+    proposal = db.scalar(select(ProjectProposal).where(ProjectProposal.project_id == project.id))
+    assert not proposal.assumptions
+    errors = [r for r in _orchestrator_rows(db) if r.status == "error"]
+    assert errors[-1].error == orchestrator.LEFT_EMPTY.format(sections="assumptions")
 
 
 # --- Submitting

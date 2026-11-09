@@ -152,7 +152,9 @@ OUTPUT_SCHEMA: dict[str, Any] = {
                 },
             },
         },
-        "report_period": {"type": ["string", "null"], "enum": [*REPORT_PERIODS, None]},
+        "report_period": {
+            "anyOf": [{"type": "string", "enum": list(REPORT_PERIODS)}, {"type": "null"}]
+        },
         "report_due_day": {"type": ["integer", "null"]},
     },
 }
