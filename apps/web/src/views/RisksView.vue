@@ -304,6 +304,14 @@ function startEdit() {
   formOpen.value = true
 }
 
+// "Use this score": the edit form, starting from the risk agent's suggested probability and
+// impact. The person still checks and saves it; nothing is applied until then.
+function startEditWithSuggestion() {
+  formRisk.value = selected.value ? withSuggestedScore(selected.value) : null
+  formError.value = ''
+  formOpen.value = true
+}
+
 async function save(input: RiskInput) {
   if (projectId.value === null) return
   busy.value = true
@@ -753,6 +761,7 @@ async function addFromLibrary() {
         :message-type="messageType"
         @close="drawerOpen = false"
         @edit="startEdit"
+        @use-suggestion="startEditWithSuggestion"
         @close-risk="confirmClose = true"
         @accept="startAccept"
         @open-proposed="openSelected"
