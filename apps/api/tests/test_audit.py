@@ -204,6 +204,42 @@ def test_api_validates_paging(db, client, sign_in):
     assert client.get("/api/v1/audit", params={"offset": -1}).status_code == 422
 
 
+def test_api_filters_by_person_and_names_them(db, client, sign_in):
+    auditor = sign_in(client, db, "auditor")
+    other = User(
+        email="pm@pmo.example",
+        display_name="Pat Example",
+        password_hash="not-a-real-hash",
+        role="project_manager",
+    )
+    db.add(other)
+    db.commit()
+    record_decision(db, **_fields(agent="robot"))
+    record_decision(db, **_fields(agent="person", trigger="human", actor_user_id=other.id))
+    record_decision(db, **_fields(agent="self", trigger="human", actor_user_id=auditor.id))
+    db.commit()
+
+    items = client.get("/api/v1/audit").json()["items"]
+    names = {item["agent"]: item["actor_name"] for item in items}
+    # A person's display name, and null for an agent.
+    assert names == {"robot": None, "person": "Pat Example", "self": auditor.display_name}
+
+    body = client.get("/api/v1/audit", params={"actor_user_id": other.id}).json()
+    assert body["total"] == 1
+    assert body["items"][0]["agent"] == "person"
+    assert body["items"][0]["actor_user_id"] == other.id
+    assert body["items"][0]["actor_name"] == "Pat Example"
+    assert client.get("/api/v1/audit", params={"actor_user_id": 999}).json()["total"] == 0
+    assert client.get("/api/v1/audit", params={"actor_user_id": "x"}).status_code == 422
+
+
+@pytest.mark.parametrize("role", ["sponsor", "project_manager"])
+def test_api_refuses_roles_without_audit_read(db, client, sign_in, role):
+    sign_in(client, db, role)
+    assert client.get("/api/v1/audit").status_code == 403
+    assert client.get("/api/v1/audit", params={"actor_user_id": 1}).status_code == 403
+
+
 # --- Append-only, enforced in the ORM
 
 

@@ -73,11 +73,11 @@ describe('menu', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it.each([
-    ['admin', ['home', 'inbox', 'board', 'projects', 'intake', 'risks', 'audit', 'standards']],
-    ['sponsor', ['home', 'inbox', 'board', 'projects', 'intake', 'risks', 'standards']],
-    ['project_manager', ['home', 'inbox', 'board', 'projects', 'intake', 'risks', 'standards']],
-    ['ethics_reviewer', ['home', 'inbox', 'board', 'projects', 'intake', 'risks', 'audit', 'standards']],
-    ['auditor', ['home', 'inbox', 'board', 'projects', 'intake', 'risks', 'audit', 'standards']],
+    ['admin', ['home', 'inbox', 'board', 'projects', 'intake', 'risks', 'audit']],
+    ['sponsor', ['home', 'inbox', 'board', 'projects', 'intake', 'risks']],
+    ['project_manager', ['home', 'inbox', 'board', 'projects', 'intake', 'risks']],
+    ['ethics_reviewer', ['home', 'inbox', 'board', 'projects', 'intake', 'risks', 'audit']],
+    ['auditor', ['home', 'inbox', 'board', 'projects', 'intake', 'risks', 'audit']],
   ])('shows %s the pages that role may use', async (role, expected) => {
     vi.stubGlobal('fetch', signedInAs(role))
     const { wrapper } = await mountAt('/')
@@ -85,9 +85,16 @@ describe('menu', () => {
   })
 
   it('follows the actions the API sends, not the role name', async () => {
-    vi.stubGlobal('fetch', signedInAs('auditor', ['standards:read']))
+    vi.stubGlobal('fetch', signedInAs('auditor', ['audit:read']))
     const { wrapper } = await mountAt('/')
-    expect(menu(wrapper)).toEqual(['home', 'standards'])
+    expect(menu(wrapper)).toEqual(['home', 'audit'])
+  })
+
+  it('says Inbox, not Needs you', async () => {
+    vi.stubGlobal('fetch', signedInAs('sponsor'))
+    const { wrapper } = await mountAt('/')
+    expect(wrapper.get('[data-test="nav-inbox"]').text()).toContain('Inbox')
+    expect(wrapper.text()).not.toContain('Needs you')
   })
 
   it('is hidden when nobody is signed in', async () => {
@@ -96,11 +103,33 @@ describe('menu', () => {
     expect(wrapper.find('[data-test="nav"]').exists()).toBe(false)
   })
 
-  it('opens a placeholder page', async () => {
-    vi.stubGlobal('fetch', signedInAs('auditor'))
-    const { wrapper, router } = await mountAt('/audit')
-    expect(router.currentRoute.value.name).toBe('audit')
-    expect(wrapper.get('[data-test="page-title"]').text()).toBe('Audit')
+  it('hides a page with no view for everyone, and its address leads home', async () => {
+    vi.stubGlobal('fetch', signedInAs('admin'))
+    const { wrapper, router } = await mountAt('/standards')
+    expect(router.currentRoute.value.name).toBe('home')
+    expect(menu(wrapper)).not.toContain('standards')
+    expect(wrapper.find('[data-test="placeholder"]').exists()).toBe(false)
+  })
+
+  it('opens no placeholder page from any menu item', async () => {
+    vi.stubGlobal('fetch', signedInAs('admin'))
+    const { wrapper, router } = await mountAt('/')
+    for (const item of menu(wrapper).filter((name) => name !== 'home')) {
+      await router.push({ name: item })
+      await flushPromises()
+      expect(router.currentRoute.value.name).toBe(item)
+      expect(wrapper.text()).not.toContain('arrives in a later milestone')
+    }
+  })
+
+  it.each([
+    ['/projects/3', 'projects'],
+    ['/intake/4', 'intake'],
+  ])('highlights the menu page of a detail page (%s)', async (path, item) => {
+    vi.stubGlobal('fetch', signedInAs('sponsor'))
+    const { wrapper } = await mountAt(path)
+    expect(wrapper.get(`[data-test="nav-${item}"]`).classes()).toContain('v-list-item--active')
+    expect(wrapper.get('[data-test="nav-home"]').classes()).not.toContain('v-list-item--active')
   })
 
   it('sends a role away from a page it cannot use', async () => {

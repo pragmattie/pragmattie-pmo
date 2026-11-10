@@ -3,13 +3,16 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { type Baseline, gateApi, type GateSubject } from '../lib/gates'
-import { formFor, type InboxEntry, subjectLink } from '../lib/inbox'
+import { formFor, type InboxEntry, riskLink, subjectLink } from '../lib/inbox'
 import { REQUEST_CONFLICT } from '../lib/intake'
 import { projectApi } from '../lib/projects'
 import {
+  agentSuggestion,
   ApiError,
   canAcceptRisk,
+  canEditRisk,
   CONFLICT_MESSAGE,
+  type HeatCell,
   type Heatmap,
   type HistoryEntry,
   MIN_ACCEPT_REASON,
@@ -22,6 +25,7 @@ import ChangesSection from './ChangesSection.vue'
 import GateSection from './GateSection.vue'
 import ProposalSection from './ProposalSection.vue'
 import RiskDrawer from './RiskDrawer.vue'
+import RiskScoreForm from './RiskScoreForm.vue'
 
 // One inbox item's existing form, inside the inbox: the gate decision, the risk with Accept, Open
 // and Reject, the proposal with approve, return and mark sent, or the change requests with their
@@ -53,6 +57,7 @@ const ready = ref(false)
 // The risk form.
 const risk = ref<Risk | null>(null)
 const bands = ref<Heatmap['bands']>([])
+const cells = ref<HeatCell[]>([])
 const history = ref<HistoryEntry[]>([])
 const historyTotal = ref(0)
 const busy = ref(false)
@@ -77,6 +82,16 @@ const canAccept = computed(
     !!risk.value &&
     canAcceptRisk(risk.value, auth.user?.role, auth.can('risk:accept'), bands.value),
 )
+// A `score_risk` item, including a risk that needs a person's judgement, is scored in place.
+const scoring = computed(
+  () =>
+    props.entry.step === 'score_risk' &&
+    auth.can('project:write') &&
+    !!risk.value &&
+    canEditRisk(risk.value),
+)
+const probability = ref<number | null>(null)
+const impact = ref<number | null>(null)
 const canClear = computed(
   () =>
     !!risk.value &&
@@ -102,6 +117,7 @@ async function loadRisk() {
   ])
   risk.value = found
   bands.value = heatmap.bands
+  cells.value = heatmap.cells
   history.value = past.items
   historyTotal.value = past.total
 }
@@ -149,15 +165,37 @@ function rejectRisk() {
   return decideRisk(() => riskApi.reject(projectId, found.id, body), 'Risk rejected.')
 }
 
-// Editing or closing a risk is done in the risk register.
+// "Use this score": fills the scoring form with the agent's suggestion; nothing is saved yet.
+function useSuggestion() {
+  const suggestion = risk.value ? agentSuggestion(risk.value) : null
+  if (!suggestion) return
+  probability.value = suggestion.probability
+  impact.value = suggestion.impact
+}
+
+// Saves the score through the existing risk update route, with the risk's version. A version
+// conflict shows the register's conflict message and the latest risk.
+function saveScore() {
+  const found = risk.value
+  const projectId = props.entry.project_id
+  if (!found || projectId === null || probability.value === null || impact.value === null) return
+  const body = { version: found.version, probability: probability.value, impact: impact.value }
+  return decideRisk(() => riskApi.update(projectId, found.id, body), 'Risk scored.')
+}
+
+// Editing or closing a risk is done in the risk register, at that risk with its drawer open.
 function toRegister() {
-  router.push({ name: 'risks', query: { project: props.entry.project_id } })
+  router.push(riskLink(props.entry))
 }
 
 onMounted(async () => {
   const projectId = props.entry.project_id
   try {
-    if (form.value === 'risk') await loadRisk()
+    if (form.value === 'risk') {
+      await loadRisk()
+      probability.value = risk.value?.probability ?? null
+      impact.value = risk.value?.impact ?? null
+    }
     if (form.value === 'proposal' && projectId !== null) {
       clientName.value = (await projectApi.get(projectId)).client_name
     }
@@ -201,6 +239,14 @@ onMounted(async () => {
     />
 
     <template v-else-if="form === 'risk' && risk">
+      <RiskScoreForm
+        v-if="scoring"
+        v-model:probability="probability"
+        v-model:impact="impact"
+        :cells="cells"
+        :busy="busy"
+        @save="saveScore"
+      />
       <RiskDrawer
         :risk="risk"
         :history="history"
@@ -218,6 +264,7 @@ onMounted(async () => {
         @accept="acceptOpen = true"
         @open-proposed="openRisk"
         @reject="rejectOpen = true"
+        @use-suggestion="useSuggestion"
         @more-history="() => undefined"
       />
       <v-dialog v-model="acceptOpen" max-width="480">

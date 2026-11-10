@@ -193,6 +193,8 @@ interface FakeOptions {
   projects?: { id: number; name: string }[]
   // The register's list, when a test needs other risks than RISKS.
   risks?: Risk[]
+  // Risk ids the API doesn't know (404).
+  missing?: number[]
 }
 
 function fakeApi(role: string, options: FakeOptions = {}) {
@@ -269,18 +271,21 @@ function fakeApi(role: string, options: FakeOptions = {}) {
       if (options.patchStatus === 403) return json({ detail: HELD }, 403)
       return json(risk(Number(one[1]), { status: 'closed', version: 2 }))
     }
+    if (one && options.missing?.includes(Number(one[1]))) {
+      return json({ detail: 'risk not found' }, 404)
+    }
     if (one) return json(options.stored ?? risk(Number(one[1])))
     return json({ detail: `unexpected ${method} ${path}` }, 404)
   })
 }
 
-async function mountRisks(role: string, options: FakeOptions = {}) {
+async function mountRisks(role: string, options: FakeOptions = {}, path = '/risks') {
   const fetchMock = fakeApi(role, options)
   vi.stubGlobal('fetch', fetchMock)
   const pinia = createPinia()
   setActivePinia(pinia)
   const router = makeRouter(true)
-  router.push('/risks')
+  router.push(path)
   await router.isReady()
   const wrapper = mount({ template: '<v-layout><App /></v-layout>', components: { App } }, {
     global: { plugins: [pinia, router, makeVuetify()] },
@@ -977,5 +982,53 @@ describe('escalation hold and final rejections', () => {
     await flushPromises()
     expect(wrapper.get('[data-test="drawer-message"]').text()).toBe(HELD)
     expect(document.querySelector('[data-test="form-error"]')?.textContent?.trim()).toBe(HELD)
+  })
+})
+
+describe('opening the register at one risk', () => {
+  it('opens that risk in the drawer from ?project=<id>&risk=<id>', async () => {
+    const { wrapper, router } = await mountRisks('project_manager', {}, '/risks?project=3&risk=2')
+    expect(wrapper.get('[data-test="drawer-title"]').text()).toBe('Risk 2')
+    expect(router.currentRoute.value.query.risk).toBe('2')
+  })
+
+  it('shows the register with no drawer and no error for an unknown risk', async () => {
+    const { wrapper } = await mountRisks(
+      'project_manager',
+      { missing: [99] },
+      '/risks?project=3&risk=99',
+    )
+    expect(wrapper.find('[data-test="risk-drawer"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="risk-table"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('risk not found')
+  })
+
+  it("opens no drawer for another project's risk", async () => {
+    const { wrapper } = await mountRisks(
+      'project_manager',
+      { stored: risk(4, { project_id: 9 }) },
+      '/risks?project=3&risk=4',
+    )
+    expect(wrapper.find('[data-test="risk-drawer"]').exists()).toBe(false)
+  })
+})
+
+describe('ways back from the register', () => {
+  it('shows Projects › project › Risks', async () => {
+    const { wrapper } = await mountRisks('auditor')
+    const trail = wrapper.get('[data-test="breadcrumbs"]').text()
+    expect(trail.replace(/\s*›\s*/g, ' › ')).toBe('Projects › Harbour Analytics › Risks')
+    expect(wrapper.find('[data-test="back-to-inbox"]').exists()).toBe(false)
+  })
+
+  it('shows Back to Inbox when opened from the Inbox, returning with the item expanded', async () => {
+    const { wrapper } = await mountRisks(
+      'project_manager',
+      {},
+      '/risks?project=3&risk=2&from=inbox&item=item-5',
+    )
+    const back = wrapper.get('[data-test="back-to-inbox"]')
+    expect(back.text()).toBe('Back to Inbox')
+    expect(back.attributes('href')).toBe('/inbox?open=item-5')
   })
 })

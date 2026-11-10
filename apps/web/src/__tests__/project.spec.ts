@@ -174,7 +174,7 @@ describe('the project helpers', () => {
 })
 
 describe('the project page', () => {
-  it('replaces the placeholder with the list of projects', async () => {
+  it('shows the list of projects', async () => {
     await mountAt('/projects')
     expect(find('placeholder')).toBeNull()
     expect(find('page-title')?.textContent).toBe('Projects')
@@ -239,20 +239,41 @@ describe('the project page', () => {
 })
 
 describe('the request page', () => {
-  it('goes back to the project the request became, then the queue', async () => {
+  it('has one way back, the breadcrumb trail, and no older back buttons', async () => {
     await mountAt('/intake/1')
-    const link = find('back-to-project')
-    expect(link?.textContent).toContain('Back to the project')
-    expect(link?.getAttribute('href')).toBe('/projects/5')
-    expect(find('back')?.getAttribute('href')).toBe('/intake')
-    expect(find('project-link')).toBeNull()
-    expect(document.body.textContent).not.toContain('Open its project')
-  })
-
-  it('only goes back to the queue before the request passes the gate', async () => {
-    await mountAt('/intake/1', { request: { status: 'submitted', project_id: null, version: 2 } })
     expect(find('page-title')).not.toBeNull()
     expect(find('back-to-project')).toBeNull()
-    expect(find('back')?.textContent).toContain('Back to the queue')
+    expect(find('back')).toBeNull()
+    expect(document.body.textContent).not.toContain('Back to the project')
+    expect(document.body.textContent).not.toContain('Back to the queue')
+    expect(find('breadcrumbs')?.querySelector('a')?.getAttribute('href')).toBe('/intake')
+    expect(find('back-to-inbox')).toBeNull()
   })
+})
+
+describe('ways back from a detail page', () => {
+  const trail = () => find('breadcrumbs')?.textContent?.replace(/\s*›\s*/g, ' › ').trim()
+
+  it('shows Projects › project on a project page, with Projects highlighted', async () => {
+    await mountAt('/projects/5')
+    expect(trail()).toBe('Projects › Warehouse demand forecast')
+    expect(find('nav-projects')?.classList.contains('v-list-item--active')).toBe(true)
+    expect(find('back-to-inbox')).toBeNull()
+  })
+
+  it('shows Intake › request on a request page, with Intake highlighted', async () => {
+    await mountAt('/intake/1')
+    expect(trail()).toBe('Intake › Warehouse demand forecast')
+    expect(find('nav-intake')?.classList.contains('v-list-item--active')).toBe(true)
+  })
+
+  it.each(['/projects/5', '/intake/1'])(
+    'shows Back to Inbox on %s when opened from the Inbox, returning with the item expanded',
+    async (path) => {
+      await mountAt(`${path}?from=inbox&item=item-3`)
+      const back = find('back-to-inbox')
+      expect(back?.textContent).toContain('Back to Inbox')
+      expect(back?.getAttribute('href')).toBe('/inbox?open=item-3')
+    },
+  )
 })

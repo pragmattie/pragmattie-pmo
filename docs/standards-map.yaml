@@ -188,6 +188,10 @@ features:
     title: Agent drafts work against the real API
     rules: [R4, R5]
     notes: A test checks every agent schema against the structured-output rules; an empty source gives a plain none-recorded sentence, audited and reviewed by a person.
+  - id: P6-inbox-navigation
+    title: Inbox, ways back and the audit log
+    rules: [R1, R4, R5]
+    notes: A person scores a judgement risk in the Inbox through the existing update route, which checks every rule again. The audit log is read-only.
   # --- P7 Delivery and closure
   - id: P7-status-reports
     title: Status reports

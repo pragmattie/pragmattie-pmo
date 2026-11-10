@@ -81,6 +81,7 @@ def decisions_query(
     subject_id: str | None = None,
     status: str | None = None,
     tier: str | None = None,
+    actor_user_id: int | None = None,
 ) -> Select:
     """Audit rows matching the given filters (unordered; page it with `ORDER_BY`)."""
     filters = {
@@ -89,6 +90,7 @@ def decisions_query(
         AuditDecision.subject_id: subject_id,
         AuditDecision.status: status,
         AuditDecision.tier: tier,
+        AuditDecision.actor_user_id: actor_user_id,
     }
     stmt = select(AuditDecision)
     for column, value in filters.items():
@@ -98,7 +100,7 @@ def decisions_query(
 
 
 def list_decisions(
-    db: Session, *, limit: int, offset: int = 0, **filters: str | None
+    db: Session, *, limit: int, offset: int = 0, **filters: str | int | None
 ) -> list[AuditDecision]:
     rows, _ = paginate(
         db, decisions_query(**filters), order_by=ORDER_BY, limit=limit, offset=offset
@@ -106,6 +108,6 @@ def list_decisions(
     return rows
 
 
-def count_decisions(db: Session, **filters: str | None) -> int:
+def count_decisions(db: Session, **filters: str | int | None) -> int:
     stmt = decisions_query(**filters).subquery()
     return db.scalar(select(func.count()).select_from(stmt)) or 0
