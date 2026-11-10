@@ -174,7 +174,7 @@ describe('the project helpers', () => {
 })
 
 describe('the project page', () => {
-  it('replaces the placeholder with the list of projects', async () => {
+  it('shows the list of projects', async () => {
     await mountAt('/projects')
     expect(find('placeholder')).toBeNull()
     expect(find('page-title')?.textContent).toBe('Projects')
@@ -255,4 +255,31 @@ describe('the request page', () => {
     expect(find('back-to-project')).toBeNull()
     expect(find('back')?.textContent).toContain('Back to the queue')
   })
+})
+
+describe('ways back from a detail page', () => {
+  const trail = () => find('breadcrumbs')?.textContent?.replace(/\s*›\s*/g, ' › ').trim()
+
+  it('shows Projects › project on a project page, with Projects highlighted', async () => {
+    await mountAt('/projects/5')
+    expect(trail()).toBe('Projects › Warehouse demand forecast')
+    expect(find('nav-projects')?.classList.contains('v-list-item--active')).toBe(true)
+    expect(find('back-to-inbox')).toBeNull()
+  })
+
+  it('shows Intake › request on a request page, with Intake highlighted', async () => {
+    await mountAt('/intake/1')
+    expect(trail()).toBe('Intake › Warehouse demand forecast')
+    expect(find('nav-intake')?.classList.contains('v-list-item--active')).toBe(true)
+  })
+
+  it.each(['/projects/5', '/intake/1'])(
+    'shows Back to Inbox on %s when opened from the Inbox, returning with the item expanded',
+    async (path) => {
+      await mountAt(`${path}?from=inbox&item=item-3`)
+      const back = find('back-to-inbox')
+      expect(back?.textContent).toContain('Back to Inbox')
+      expect(back?.getAttribute('href')).toBe('/inbox?open=item-3')
+    },
+  )
 })
