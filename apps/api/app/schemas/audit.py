@@ -43,4 +43,6 @@ class AuditDecisionOut(BaseModel):
     error: str | None
     supersedes_id: int | None
     actor_user_id: int | None
+    # The person's display name; null for an agent (or a user no longer on record).
+    actor_name: str | None = None
     created_at: datetime
