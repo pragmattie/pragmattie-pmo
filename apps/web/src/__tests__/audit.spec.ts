@@ -161,6 +161,7 @@ describe('the Audit page', () => {
     const { wrapper, fetchMock } = await mountAt('/audit', 'auditor')
     await wrapper.get('[data-test="filter-agent"] input').setValue('risk')
     await wrapper.get('[data-test="filter-subject-type"] input').setValue('risk')
+    await new Promise((resolve) => setTimeout(resolve, 350))
     setSelect(wrapper, 'filter-status', 'rejected')
     setSelect(wrapper, 'filter-person', 11)
     await flushPromises()
@@ -170,6 +171,36 @@ describe('the Audit page', () => {
       subject_type: 'risk',
       status: 'rejected',
       actor_user_id: '11',
+      limit: '25',
+      offset: '0',
+    })
+  })
+
+  it('sends one request for several quick keystrokes in a text filter', async () => {
+    const { wrapper, fetchMock } = await mountAt('/audit', 'auditor')
+    const before = auditCalls(fetchMock).length
+    vi.useFakeTimers()
+    try {
+      const agent = wrapper.get('[data-test="filter-agent"] input')
+      for (const text of ['r', 'ri', 'ris', 'risk']) {
+        await agent.setValue(text)
+        vi.advanceTimersByTime(100)
+      }
+      const subject = wrapper.get('[data-test="filter-subject-type"] input')
+      await subject.setValue('ri')
+      vi.advanceTimersByTime(100)
+      await subject.setValue('risk')
+      expect(auditCalls(fetchMock)).toHaveLength(before)
+      vi.advanceTimersByTime(300)
+    } finally {
+      vi.useRealTimers()
+    }
+    await flushPromises()
+    const calls = auditCalls(fetchMock).slice(before)
+    expect(calls).toHaveLength(1)
+    expect(Object.fromEntries(calls[0].url.searchParams)).toEqual({
+      agent: 'risk',
+      subject_type: 'risk',
       limit: '25',
       offset: '0',
     })

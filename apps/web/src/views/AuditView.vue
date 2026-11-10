@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useDisplay } from 'vuetify'
 
 import {
@@ -21,6 +21,10 @@ import type { Person } from '../lib/risks'
 const display = useDisplay()
 
 const filters = reactive<AuditFilters>({ ...NO_AUDIT_FILTERS })
+// The text filters as typed; they reach `filters` once typing pauses, so a word sends one request.
+const TYPING_MS = 300
+const typed = reactive({ agent: NO_AUDIT_FILTERS.agent, subject_type: NO_AUDIT_FILTERS.subject_type })
+let typingTimer: ReturnType<typeof setTimeout> | undefined
 const page = ref(1)
 const perPage = ref(25)
 const rows = ref<AuditRow[]>([])
@@ -66,6 +70,8 @@ function open(row: AuditRow) {
 }
 
 function clearFilters() {
+  clearTimeout(typingTimer)
+  Object.assign(typed, { agent: NO_AUDIT_FILTERS.agent, subject_type: NO_AUDIT_FILTERS.subject_type })
   Object.assign(filters, NO_AUDIT_FILTERS)
 }
 
@@ -98,6 +104,14 @@ const details = computed(() => {
   ]
 })
 
+watch(
+  () => ({ ...typed }),
+  (value) => {
+    clearTimeout(typingTimer)
+    typingTimer = setTimeout(() => Object.assign(filters, value), TYPING_MS)
+  },
+)
+
 // A change of filter goes back to the first page.
 watch(
   () => ({ ...filters }),
@@ -107,6 +121,8 @@ watch(
   },
 )
 watch([page, perPage], () => load())
+
+onBeforeUnmount(() => clearTimeout(typingTimer))
 
 onMounted(async () => {
   load()
@@ -133,7 +149,7 @@ onMounted(async () => {
     <v-row density="compact" class="mb-2">
       <v-col cols="12" sm="6" md="3">
         <v-text-field
-          v-model="filters.agent"
+          v-model="typed.agent"
           label="Agent"
           clearable
           hide-details
@@ -143,7 +159,7 @@ onMounted(async () => {
       </v-col>
       <v-col cols="12" sm="6" md="3">
         <v-text-field
-          v-model="filters.subject_type"
+          v-model="typed.subject_type"
           label="Subject type"
           clearable
           hide-details
