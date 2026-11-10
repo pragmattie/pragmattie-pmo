@@ -385,7 +385,7 @@ row, with `trigger = orchestrator`. An error on one subject is recorded and the 
 ## Decision inbox
 
 Code: `apps/api/app/inbox.py`, routes `GET /api/v1/inbox` and `GET /api/v1/inbox/count`
-(`project:read`), page **Needs you** in the web. It is not an agent and calls no model: it shows
+(`project:read`), page **Inbox** in the web. It is not an agent and calls no model: it shows
 the decisions the orchestrator has left waiting on a person, and decides nothing itself.
 
 **What it lists.** The signed-in person's open inbox items (a `person` step, a held window action,
