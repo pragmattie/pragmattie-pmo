@@ -239,21 +239,15 @@ describe('the project page', () => {
 })
 
 describe('the request page', () => {
-  it('goes back to the project the request became, then the queue', async () => {
+  it('has one way back, the breadcrumb trail, and no older back buttons', async () => {
     await mountAt('/intake/1')
-    const link = find('back-to-project')
-    expect(link?.textContent).toContain('Back to the project')
-    expect(link?.getAttribute('href')).toBe('/projects/5')
-    expect(find('back')?.getAttribute('href')).toBe('/intake')
-    expect(find('project-link')).toBeNull()
-    expect(document.body.textContent).not.toContain('Open its project')
-  })
-
-  it('only goes back to the queue before the request passes the gate', async () => {
-    await mountAt('/intake/1', { request: { status: 'submitted', project_id: null, version: 2 } })
     expect(find('page-title')).not.toBeNull()
     expect(find('back-to-project')).toBeNull()
-    expect(find('back')?.textContent).toContain('Back to the queue')
+    expect(find('back')).toBeNull()
+    expect(document.body.textContent).not.toContain('Back to the project')
+    expect(document.body.textContent).not.toContain('Back to the queue')
+    expect(find('breadcrumbs')?.querySelector('a')?.getAttribute('href')).toBe('/intake')
+    expect(find('back-to-inbox')).toBeNull()
   })
 })
 
