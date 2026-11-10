@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 
 import InboxDecision from '../components/InboxDecision.vue'
 import {
@@ -8,6 +9,7 @@ import {
   EMPTY,
   type InboxEntry,
   inboxApi,
+  inboxKey,
   MIN_HOLD_REASON,
   mayHold,
   NO_DECISIONS,
@@ -16,24 +18,27 @@ import {
   receivesItems,
   roleText,
   stepTitle,
+  waitingText,
   waitsOnText,
 } from '../lib/inbox'
 import { useAuthStore } from '../stores/auth'
 import { useInboxStore } from '../stores/inbox'
 
-// "Needs you": every decision waiting on the signed-in person, oldest first. Each shows why it is
+// The Inbox: every decision waiting on the signed-in person, oldest first. Each shows why it is
 // here, when it arrived, the facts and the recommendation, and opens its existing form in place.
 // A window action shows when it happens and, for its role only, a Hold button. Someone who
 // decides nothing (the admin, sent a proposal decision every approver contributed to) sees the
 // item and why it came to them, with no decision form.
 const auth = useAuthStore()
+const route = useRoute()
 const counter = useInboxStore()
 const items = ref<InboxEntry[]>([])
 const total = ref(0)
 const loading = ref(false)
 const error = ref('')
 const message = ref('')
-const open = ref<string[]>([])
+// Back to Inbox from a page opened here returns with that item expanded (`?open=<key>`).
+const open = ref<string[]>(typeof route.query.open === 'string' ? [route.query.open] : [])
 
 const decides = computed(() => decidesAnything(auth.can))
 const receives = computed(() => receivesItems(auth.can, auth.user?.role))
@@ -49,7 +54,7 @@ const holdOpen = computed({
   },
 })
 
-const key = (entry: InboxEntry) => `${entry.kind}-${entry.id}`
+const key = inboxKey
 
 function failed(err: unknown): string {
   return err instanceof Error ? err.message : 'Something went wrong. Please try again.'
@@ -104,7 +109,10 @@ onMounted(() => {
 <template>
   <v-container class="py-8">
     <div class="d-flex align-center mb-4">
-      <h1 class="text-h4 text-primary">Needs you</h1>
+      <h1 class="text-h4 text-primary" data-test="page-title">Inbox</h1>
+      <span v-if="receives && !loading && !error" class="text-body-1 ml-3" data-test="inbox-waiting">
+        {{ waitingText(total) }}
+      </span>
       <v-spacer />
       <v-btn v-if="receives" variant="text" :loading="loading" data-test="inbox-refresh" @click="load()">
         Refresh

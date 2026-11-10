@@ -42,7 +42,7 @@ export const NO_DECISIONS =
 // proposal copy): they act on why it came to them, outside the inbox.
 export const NOT_YOURS_TO_DECIDE =
   "You don't approve or return this. Act on why it came to you; a person who may decide it will."
-export const EMPTY = 'Nothing needs you right now.'
+export const EMPTY = 'Your inbox is empty: nothing is waiting on you.'
 
 // The actions that let a role decide something; a role with none of them has an empty inbox.
 const DECIDING_ACTIONS = [
@@ -126,11 +126,38 @@ export function formFor(entry: Pick<InboxEntry, 'step' | 'subject_type'>): Decis
   return 'link'
 }
 
+// An item's key in the inbox list, and in the `item` query a page opened from it carries.
+export function inboxKey(entry: Pick<InboxEntry, 'kind' | 'id'>): string {
+  return `${entry.kind}-${entry.id}`
+}
+
+// The query a link in the inbox adds, so the page it opens shows Back to Inbox, which returns to
+// the inbox with this item expanded.
+export function fromInbox(entry: Pick<InboxEntry, 'kind' | 'id'>) {
+  return { from: 'inbox', item: inboxKey(entry) }
+}
+
 // Where the subject lives, for steps done on its own page (drafting a value case or a plan).
 export function subjectLink(entry: InboxEntry) {
-  if (entry.subject_type === 'request') return { name: 'request', params: { id: entry.subject_id } }
-  if (entry.project_id !== null) return { name: 'project', params: { id: entry.project_id } }
+  const query = fromInbox(entry)
+  if (entry.subject_type === 'request') {
+    return { name: 'request', params: { id: entry.subject_id }, query }
+  }
+  if (entry.project_id !== null) return { name: 'project', params: { id: entry.project_id }, query }
   return null
+}
+
+// The risk register at one risk, with its drawer open (Edit and Close on a risk in the inbox).
+export function riskLink(entry: InboxEntry) {
+  return {
+    name: 'risks',
+    query: { project: entry.project_id, risk: entry.subject_id, ...fromInbox(entry) },
+  }
+}
+
+// "3 waiting", on the Inbox page and in the menu dot's label.
+export function waitingText(count: number): string {
+  return `${count} waiting`
 }
 
 export const inboxApi = {

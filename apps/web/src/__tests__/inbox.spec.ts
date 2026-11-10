@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from '../App.vue'
 import {
   dueText,
+  EMPTY,
   formFor,
   type InboxEntry,
   mayHold,
@@ -184,7 +185,7 @@ async function expandAll(wrapper: Wrapper) {
   await flushPromises()
 }
 
-describe('the Needs you page', () => {
+describe('the Inbox page', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.useRealTimers()
@@ -204,6 +205,34 @@ describe('the Needs you page', () => {
       wrapper.unmount()
     },
   )
+
+  it('is titled Inbox and keeps the count on the page', async () => {
+    vi.stubGlobal('fetch', signedInAs('project_manager'))
+    const { wrapper } = await mountAt('/inbox')
+    expect(wrapper.get('[data-test="page-title"]').text()).toBe('Inbox')
+    expect(wrapper.get('[data-test="inbox-waiting"]').text()).toBe('2 waiting')
+    wrapper.unmount()
+  })
+
+  it('says the inbox is empty when nothing is waiting', async () => {
+    vi.stubGlobal('fetch', signedInAs('ethics_reviewer'))
+    const { wrapper } = await mountAt('/inbox')
+    expect(wrapper.get('[data-test="inbox-empty"]').text()).toBe(EMPTY)
+    expect(EMPTY).toContain('inbox is empty')
+    wrapper.unmount()
+  })
+
+  it('links to the subject with from=inbox, and returns with that item expanded', async () => {
+    vi.stubGlobal('fetch', signedInAs('project_manager'))
+    const { wrapper } = await mountAt('/inbox?open=item-2')
+    // The item named in `open` is expanded on arrival.
+    const plan = wrapper.get('[data-test="inbox-item-item-2"]')
+    const link = plan.get('[data-test="inbox-open-subject"]')
+    expect(link.attributes('href')).toBe('/projects/2?from=inbox&item=item-2')
+    expect(wrapper.find('[data-test="inbox-item-window-9"] [data-test="inbox-reason"]').exists())
+      .toBe(false)
+    wrapper.unmount()
+  })
 
   it('tells the auditor plainly that nothing will appear', async () => {
     const role = 'auditor'
@@ -299,19 +328,22 @@ describe('the inbox count', () => {
     vi.useRealTimers()
   })
 
-  it('shows on the menu and the home page', async () => {
+  it('shows a dot on the menu, labelled with the count, and the count on the home page', async () => {
     vi.stubGlobal('fetch', signedInAs('project_manager'))
     const { wrapper } = await mountAt('/')
-    expect(wrapper.find('[data-test="inbox-badge"]').text()).toBe('2')
-    expect(wrapper.find('[data-test="home-inbox"]').text()).toBe('2 decisions need you')
+    const dot = wrapper.get('[data-test="inbox-dot"]')
+    expect(dot.text()).toBe('')
+    expect(dot.attributes('aria-label')).toBe('2 waiting')
+    expect(wrapper.find('[data-test="inbox-badge"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="home-inbox"]').text()).toBe('Inbox: 2 waiting')
     wrapper.unmount()
   })
 
-  it('shows no badge when nothing is waiting', async () => {
+  it('shows no dot when nothing is waiting', async () => {
     vi.stubGlobal('fetch', signedInAs('auditor'))
     const { wrapper } = await mountAt('/')
-    expect(wrapper.find('[data-test="inbox-badge"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="home-inbox"]').text()).toBe('0 decisions need you')
+    expect(wrapper.find('[data-test="inbox-dot"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="home-inbox"]').text()).toBe('Inbox: 0 waiting')
     wrapper.unmount()
   })
 

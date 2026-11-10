@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 
 import ChangesSection from '../components/ChangesSection.vue'
 import GateSection from '../components/GateSection.vue'
+import PageTrail from '../components/PageTrail.vue'
 import PlanSection from '../components/PlanSection.vue'
 import ProposalSection from '../components/ProposalSection.vue'
 import type { AnyGate, Baseline } from '../lib/gates'
@@ -136,6 +137,7 @@ watch(projectId, load, { immediate: true })
     </template>
 
     <template v-else-if="project">
+      <PageTrail :crumbs="[{ title: 'Projects', to: { name: 'projects' } }, { title: project.name }]" />
       <div class="d-flex flex-wrap align-center ga-2 mb-2">
         <h1 class="text-h4 text-primary" data-test="page-title">{{ project.name }}</h1>
         <v-spacer />

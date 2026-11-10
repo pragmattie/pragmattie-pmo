@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 
+import PageTrail from '../components/PageTrail.vue'
 import RiskDrawer from '../components/RiskDrawer.vue'
 import RiskForm from '../components/RiskForm.vue'
 import RiskHeatMap from '../components/RiskHeatMap.vue'
@@ -74,6 +75,18 @@ const canClearSelected = computed(
 
 const projects = ref<Project[]>([])
 const projectId = ref<number | null>(null)
+const projectName = computed(() => projects.value.find((p) => p.id === projectId.value)?.name ?? '')
+// The way back: Projects › <project> › Risks.
+const crumbs = computed(() => [
+  { title: 'Projects', to: { name: 'projects' } },
+  ...(projectId.value === null
+    ? []
+    : [{ title: projectName.value, to: { name: 'project', params: { id: projectId.value } } }]),
+  { title: 'Risks' },
+])
+// A risk to open once its project's register has loaded (`?risk=<id>`, from the Inbox's Edit and
+// Close). An unknown risk, or one on another project, opens no drawer and shows no error.
+let wantedRisk: number | null = null
 const people = ref<Person[]>([])
 const pageError = ref('')
 
@@ -205,16 +218,32 @@ onMounted(async () => {
   }
   const fromRoute = Number(route.query.project)
   const known = projects.value.some((p) => p.id === fromRoute)
+  const riskId = Number(route.query.risk)
+  if (known && Number.isInteger(riskId) && riskId > 0) wantedRisk = riskId
   projectId.value = known ? fromRoute : (projects.value[0]?.id ?? null)
 })
 
-watch(projectId, (id) => {
+watch(projectId, async (id) => {
   if (id === null) return
+  const wanted = wantedRisk
+  wantedRisk = null
   drawerOpen.value = false
   selected.value = null
-  if (Number(route.query.project) !== id) router.replace({ query: { ...route.query, project: id } })
+  // A switch of project drops the risk from the address; the first load keeps it.
+  const { risk: _risk, ...rest } = route.query
+  const query = wanted === null ? rest : route.query
+  if (Number(route.query.project) !== id || (wanted === null && _risk !== undefined)) {
+    router.replace({ query: { ...query, project: id } })
+  }
   page.value = 1
-  refresh()
+  await refresh()
+  if (wanted === null) return
+  try {
+    const found = await riskApi.get(id, wanted)
+    if (found.project_id === id && projectId.value === id) await openRisk(found)
+  } catch {
+    // Not found, or not this project's: the register shows with no drawer.
+  }
 })
 
 // A change of filter goes back to the first page.
@@ -479,6 +508,7 @@ async function addFromLibrary() {
 
 <template>
   <v-container fluid class="py-6">
+    <PageTrail :crumbs="crumbs" />
     <div class="d-flex flex-wrap align-center ga-3 mb-4">
       <h1 class="text-h4 text-primary flex-grow-1" data-test="page-title">Risk register</h1>
       <template v-if="canWrite && projectId !== null">

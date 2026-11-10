@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useDisplay } from 'vuetify'
 
-import { NAV_ITEMS } from './lib/nav'
+import { waitingText } from './lib/inbox'
+import { menuItemFor, NAV_ITEMS } from './lib/nav'
+import { hasView } from './router'
 
 import { useAuthStore } from './stores/auth'
 import { useInboxStore } from './stores/inbox'
@@ -11,12 +13,19 @@ import { useInboxStore } from './stores/inbox'
 const auth = useAuthStore()
 const inbox = useInboxStore()
 const router = useRouter()
+const route = useRoute()
 // At phone width the menu folds away behind a button so pages get the full screen.
 const { smAndDown } = useDisplay()
 const menuOpen = ref(!smAndDown.value)
 watch(smAndDown, (small) => (menuOpen.value = !small))
-// Only the pages this role may use; the API still refuses anything else.
-const navItems = computed(() => NAV_ITEMS.filter((item) => auth.can(item.action)))
+// Only the pages this role may use and that have a view; the API still refuses anything else.
+const navItems = computed(() =>
+  NAV_ITEMS.filter((item) => hasView(item.name) && auth.can(item.action)),
+)
+// The menu item to highlight, on a detail page too (Projects for a project, Intake for a request).
+const current = computed(() => menuItemFor(route.name as string | undefined))
+// The inbox dot shows while anything waits on the signed-in person; its label keeps the count.
+const waiting = computed(() => inbox.count ?? 0)
 // The inbox count polls while someone is signed in (paused while the tab is hidden).
 watch(
   () => auth.user?.id,
@@ -67,14 +76,15 @@ async function logout() {
           :key="item.name"
           :to="{ name: item.name }"
           :title="item.title"
+          :active="current === item.name"
           :data-test="`nav-${item.name}`"
         >
-          <template v-if="item.name === 'inbox' && inbox.count" #append>
-            <v-badge
-              :content="inbox.count"
-              color="accent"
-              inline
-              data-test="inbox-badge"
+          <template v-if="item.name === 'inbox' && waiting > 0" #append>
+            <span
+              class="inbox-dot"
+              role="img"
+              :aria-label="waitingText(waiting)"
+              data-test="inbox-dot"
             />
           </template>
         </v-list-item>
@@ -88,3 +98,13 @@ async function logout() {
     </v-footer>
   </v-app>
 </template>
+
+<style scoped>
+.inbox-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgb(var(--v-theme-accent));
+}
+</style>

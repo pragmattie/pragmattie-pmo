@@ -23,7 +23,7 @@ onMounted(() => health.check())
     </v-chip>
     <p v-if="auth.user && inbox.count !== null" class="text-body-1 mt-6" data-test="home-inbox">
       <router-link :to="{ name: 'inbox' }">
-        {{ inbox.count === 1 ? '1 decision needs you' : `${inbox.count} decisions need you` }}
+        Inbox: {{ inbox.count }} waiting
       </router-link>
     </p>
   </v-container>

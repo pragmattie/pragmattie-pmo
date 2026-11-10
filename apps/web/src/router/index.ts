@@ -5,24 +5,30 @@ import { setUnauthorizedHandler } from '../lib/api'
 import { NAV_ITEMS } from '../lib/nav'
 import { safeRedirect } from '../lib/redirect'
 import { useAuthStore } from '../stores/auth'
+import AuditView from '../views/AuditView.vue'
 import BoardView from '../views/BoardView.vue'
 import HomeView from '../views/HomeView.vue'
 import InboxView from '../views/InboxView.vue'
 import IntakeView from '../views/IntakeView.vue'
 import LoginView from '../views/LoginView.vue'
-import PlaceholderView from '../views/PlaceholderView.vue'
 import ProjectView from '../views/ProjectView.vue'
 import ProposalPrintView from '../views/ProposalPrintView.vue'
 import RequestView from '../views/RequestView.vue'
 import RisksView from '../views/RisksView.vue'
 
-// Menu pages that have a real view; the rest show a placeholder.
+// Menu pages that have a real view. The rest are hidden from the menu and their address leads
+// home.
 const VIEWS: Record<string, Component> = {
   inbox: InboxView,
   board: BoardView,
   projects: ProjectView,
   intake: IntakeView,
   risks: RisksView,
+  audit: AuditView,
+}
+
+export function hasView(name: string): boolean {
+  return name in VIEWS
 }
 
 export function makeRouter(memory = false) {
@@ -31,13 +37,16 @@ export function makeRouter(memory = false) {
     routes: [
       { path: '/', name: 'home', component: HomeView },
       { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
-      ...NAV_ITEMS.map((item) => ({
-        path: item.path,
-        name: item.name,
-        component: VIEWS[item.name] ?? PlaceholderView,
-        props: VIEWS[item.name] ? {} : { title: item.title },
-        meta: { action: item.action },
-      })),
+      ...NAV_ITEMS.map((item) =>
+        hasView(item.name)
+          ? {
+              path: item.path,
+              name: item.name,
+              component: VIEWS[item.name],
+              meta: { action: item.action },
+            }
+          : { path: item.path, name: item.name, redirect: { name: 'home' } },
+      ),
       // One project request: its fields, history and the buttons its status allows.
       {
         path: '/intake/:id(\\d+)',

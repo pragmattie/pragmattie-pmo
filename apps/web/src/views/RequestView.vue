@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import GateSection from '../components/GateSection.vue'
+import PageTrail from '../components/PageTrail.vue'
 import ReadinessSection from '../components/ReadinessSection.vue'
 import RequestForm from '../components/RequestForm.vue'
 import ValueCaseSection from '../components/ValueCaseSection.vue'
@@ -217,6 +218,9 @@ function describe(entry: HistoryEntry): string {
 
 <template>
   <v-container class="py-8">
+    <PageTrail
+      :crumbs="[{ title: 'Intake', to: { name: 'intake' } }, { title: request?.title ?? 'Request' }]"
+    />
     <div class="d-flex flex-wrap ga-4 mb-2">
       <v-btn
         v-if="request?.project_id"

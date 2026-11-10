@@ -324,6 +324,18 @@ export function heatGrid(cells: HeatCell[]): HeatCell[][] {
   )
 }
 
+// What a probability and impact would score (probability x impact), with the band the API's risk
+// policy gives that heat map cell. A preview only: the API works out the saved score and band.
+export function scorePreview(
+  cells: HeatCell[],
+  probability: number | null,
+  impact: number | null,
+): { score: number; band: string | null } | null {
+  if (probability === null || impact === null) return null
+  const cell = cells.find((c) => c.probability === probability && c.impact === impact)
+  return { score: probability * impact, band: cell?.band || null }
+}
+
 export function openTotal(heatmap: Heatmap | null): number {
   if (!heatmap) return 0
   return heatmap.bands.reduce((sum, band) => sum + band.count, 0) + heatmap.unscored
