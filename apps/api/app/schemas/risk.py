@@ -335,3 +335,18 @@ class RiskScoreSuggestion(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: CostStr | None = None
+
+
+class ScaleLevelOut(BaseModel):
+    """One level of a scoring scale: its number, label and what it means."""
+
+    level: int
+    label: str
+    definition: str
+
+
+class RiskScalesOut(BaseModel):
+    """The probability and impact scales from the risk policy, lowest level first."""
+
+    probability: list[ScaleLevelOut]
+    impact: list[ScaleLevelOut]

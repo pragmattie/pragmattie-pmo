@@ -6,13 +6,18 @@ There is deliberately no update or delete here: a correction is a new row record
 
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, and_, func, not_, select
 from sqlalchemy.orm import Session
 
-from app.models.audit import AuditDecision
+from app.models import AuditDecision, User
 from app.schemas.common import paginate
 
 _FIELDS = frozenset(AuditDecision.__table__.columns.keys()) - {"id", "created_at"}
+
+# Sign-in and sign-out rows: the `auth` agent's rows about a login. Its other rows (a role change,
+# an unlock) are decisions and stay in view when sign-ins are hidden.
+SIGN_IN_AGENT = "auth"
+SIGN_IN_SUBJECT = "login"
 
 # Newest first; the primary key breaks ties so pages are stable.
 ORDER_BY = (AuditDecision.created_at.desc(), AuditDecision.id.desc())
@@ -82,6 +87,7 @@ def decisions_query(
     status: str | None = None,
     tier: str | None = None,
     actor_user_id: int | None = None,
+    hide_sign_ins: bool = False,
 ) -> Select:
     """Audit rows matching the given filters (unordered; page it with `ORDER_BY`)."""
     filters = {
@@ -96,11 +102,41 @@ def decisions_query(
     for column, value in filters.items():
         if value is not None:
             stmt = stmt.where(column == value)
+    if hide_sign_ins:
+        stmt = stmt.where(
+            not_(
+                and_(
+                    AuditDecision.agent == SIGN_IN_AGENT,
+                    AuditDecision.subject_type == SIGN_IN_SUBJECT,
+                )
+            )
+        )
     return stmt
 
 
+def facets(db: Session) -> dict[str, list]:
+    """The values present in the log, for the audit page's filter lists: each distinct agent,
+    subject type and status, sorted, and every person who took a decision (deactivated people
+    included), by name."""
+
+    def distinct(column) -> list[str]:
+        return list(db.scalars(select(column).distinct().order_by(column)).all())
+
+    people = db.execute(
+        select(User.id, User.display_name)
+        .where(User.id.in_(select(AuditDecision.actor_user_id).distinct()))
+        .order_by(User.display_name, User.id)
+    ).all()
+    return {
+        "agents": distinct(AuditDecision.agent),
+        "subject_types": distinct(AuditDecision.subject_type),
+        "statuses": distinct(AuditDecision.status),
+        "people": [{"id": id_, "display_name": name} for id_, name in people],
+    }
+
+
 def list_decisions(
-    db: Session, *, limit: int, offset: int = 0, **filters: str | int | None
+    db: Session, *, limit: int, offset: int = 0, **filters: str | int | bool | None
 ) -> list[AuditDecision]:
     rows, _ = paginate(
         db, decisions_query(**filters), order_by=ORDER_BY, limit=limit, offset=offset
@@ -108,6 +144,6 @@ def list_decisions(
     return rows
 
 
-def count_decisions(db: Session, **filters: str | int | None) -> int:
+def count_decisions(db: Session, **filters: str | int | bool | None) -> int:
     stmt = decisions_query(**filters).subquery()
     return db.scalar(select(func.count()).select_from(stmt)) or 0
