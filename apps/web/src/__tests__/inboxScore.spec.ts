@@ -104,6 +104,20 @@ const HEATMAP = {
   unscored: 1,
 }
 
+// The labelled scales as the risk policy route sends them.
+const SCALES = {
+  probability: [1, 2, 3, 4, 5].map((level) => ({
+    level,
+    label: ['Very low', 'Low', 'Medium', 'High', 'Very high'][level - 1],
+    definition: `Probability definition ${level}.`,
+  })),
+  impact: [1, 2, 3, 4, 5].map((level) => ({
+    level,
+    label: ['Very low', 'Low', 'Medium', 'High', 'Very high'][level - 1],
+    definition: `Impact definition ${level}.`,
+  })),
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -122,6 +136,10 @@ function fakeApi(stored: Risk, patchStatus = 200) {
     }
     if (path === '/api/v1/projects/3/risks/6') return json(stored)
     if (path === '/api/v1/projects/3/risks/heatmap') return json(HEATMAP)
+    if (path === '/api/v1/risk-policy/scales') return json(SCALES)
+    if (path === '/api/v1/users') {
+      return json({ items: [{ id: 21, display_name: 'Rosa Owner' }], total: 1, limit: 100, offset: 0 })
+    }
     if (path === '/api/v1/projects/3/risks/6/history') {
       return json({ items: [], total: 0, limit: 50, offset: 0 })
     }
@@ -220,6 +238,33 @@ describe('scoring a risk in the Inbox', () => {
     const { wrapper } = await mountItem(JUDGEMENT, { role: 'sponsor' })
     expect(wrapper.find('[data-test="risk-drawer"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="score-form"]').exists()).toBe(false)
+  })
+
+  it('offers each level with its label and definition, and shows the chosen one as help', async () => {
+    const { wrapper } = await mountItem(JUDGEMENT)
+    const form = wrapper.findComponent(RiskScoreForm)
+    const field = (test: string) =>
+      form.findAllComponents({ name: 'VSelect' }).find((c) => c.attributes('data-test') === test)!
+    expect(field('score-probability').props('items')[2]).toEqual({
+      title: '3 Medium',
+      value: 3,
+      props: { subtitle: 'Probability definition 3.' },
+    })
+    expect(field('score-impact').props('items').map((i: { title: string }) => i.title)).toEqual([
+      '1 Very low',
+      '2 Low',
+      '3 Medium',
+      '4 High',
+      '5 Very high',
+    ])
+    await choose(wrapper, 3, 4)
+    expect(form.text()).toContain('Probability definition 3.')
+    expect(form.text()).toContain('Impact definition 4.')
+  })
+
+  it("names the risk's owner rather than showing an id", async () => {
+    const { wrapper } = await mountItem({ ...JUDGEMENT, owner_user_id: 21 })
+    expect(wrapper.get('[data-test="field-Owner"]').text()).toBe('Rosa Owner')
   })
 
   it('opens the register at that risk, with its drawer, from Edit', async () => {
