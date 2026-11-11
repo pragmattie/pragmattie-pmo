@@ -1,7 +1,7 @@
 // The audit log (item 6.12): every agent and human decision, newest first, read-only. The API
 // pages and filters it; nothing here can change a row.
 
-import { call, type Page, type Person } from './risks'
+import { call, label, type Page, type Person } from './risks'
 
 export interface AuditRow {
   id: number
@@ -35,22 +35,52 @@ export interface AuditFilters {
   subject_type: string | null
   status: string | null
   actor_user_id: number | null
+  // Leave out the sign-in and sign-out rows, so the auditor sees decisions first.
+  hide_sign_ins: boolean
 }
 
+// The filters a page opens with: any value, sign-ins hidden.
 export const NO_AUDIT_FILTERS: AuditFilters = {
   agent: null,
   subject_type: null,
   status: null,
   actor_user_id: null,
+  hide_sign_ins: true,
 }
 
-// The statuses an audit row may have (the API's closed set).
-export const AUDIT_STATUSES = ['ok', 'error', 'rejected', 'skipped']
+// The values present in the log, for the filter lists (`GET /api/v1/audit/facets`). People
+// include anyone who took a decision, deactivated or not.
+export interface AuditFacets {
+  agents: string[]
+  subject_types: string[]
+  statuses: string[]
+  people: Person[]
+}
+
+// Plain words for internal names the generic label would get wrong.
+const AUDIT_LABELS: Record<string, string> = {
+  auth: 'Sign-in and accounts',
+  ok: 'OK',
+}
+
+// An agent, subject type or status in plain words: `change_request` is "Change request".
+export function auditLabel(value: string): string {
+  return AUDIT_LABELS[value] ?? label(value)
+}
+
+// A facet's values as list items: plain words shown, the internal name sent.
+export function facetItems(values: string[]): { title: string; value: string }[] {
+  return values.map((value) => ({ title: auditLabel(value), value }))
+}
 
 // The query string for one page of the log.
 export function auditQuery(filters: AuditFilters, page: number, perPage: number): string {
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(filters)) {
+    if (key === 'hide_sign_ins') {
+      if (value) params.set(key, 'true')
+      continue
+    }
     const text = typeof value === 'string' ? value.trim() : value
     if (text !== null && text !== '') params.set(key, String(text))
   }
@@ -73,5 +103,5 @@ export function recorded(value: unknown): string {
 
 export const auditApi = {
   list: (query: string) => call<Page<AuditRow>>(`/api/v1/audit?${query}`),
-  people: () => call<Page<Person>>('/api/v1/users?limit=100'),
+  facets: () => call<AuditFacets>('/api/v1/audit/facets'),
 }

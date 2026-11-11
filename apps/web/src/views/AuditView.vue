@@ -1,37 +1,38 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useDisplay } from 'vuetify'
 
 import {
-  AUDIT_STATUSES,
+  type AuditFacets,
   auditApi,
+  auditLabel,
   type AuditFilters,
   auditQuery,
   type AuditRow,
+  facetItems,
   NO_AUDIT_FILTERS,
   recorded,
   whoText,
 } from '../lib/audit'
 import { parseUtc } from '../lib/inbox'
-import type { Person } from '../lib/risks'
 
 // The audit log, read-only, for roles with audit:read (the API refuses everyone else): every
-// agent and human decision, newest first, paged by the API, filtered by agent, subject type,
-// status and person. A row opens a drawer with everything it recorded. Nothing here changes a row.
+// agent and human decision, newest first, paged by the API. Agent, subject type, status and
+// person are picked from lists of the values in the log, in plain words; sign-ins are hidden by
+// default. A row opens a drawer with everything it recorded. Nothing here changes a row.
 const display = useDisplay()
 
 const filters = reactive<AuditFilters>({ ...NO_AUDIT_FILTERS })
-// The text filters as typed; they reach `filters` once typing pauses, so a word sends one request.
-const TYPING_MS = 300
-const typed = reactive({ agent: NO_AUDIT_FILTERS.agent, subject_type: NO_AUDIT_FILTERS.subject_type })
-let typingTimer: ReturnType<typeof setTimeout> | undefined
 const page = ref(1)
 const perPage = ref(25)
 const rows = ref<AuditRow[]>([])
 const total = ref(0)
 const loading = ref(false)
 const error = ref('')
-const people = ref<Person[]>([])
+const facets = ref<AuditFacets>({ agents: [], subject_types: [], statuses: [], people: [] })
+const agentItems = computed(() => facetItems(facets.value.agents))
+const subjectTypeItems = computed(() => facetItems(facets.value.subject_types))
+const statusItems = computed(() => facetItems(facets.value.statuses))
 
 const drawerOpen = ref(false)
 const selected = ref<AuditRow | null>(null)
@@ -70,8 +71,6 @@ function open(row: AuditRow) {
 }
 
 function clearFilters() {
-  clearTimeout(typingTimer)
-  Object.assign(typed, { agent: NO_AUDIT_FILTERS.agent, subject_type: NO_AUDIT_FILTERS.subject_type })
   Object.assign(filters, NO_AUDIT_FILTERS)
 }
 
@@ -83,11 +82,11 @@ const details = computed(() => {
   return [
     ['When', when(row.created_at)],
     ['Who', whoText(row)],
-    ['Agent', row.agent],
+    ['Agent', auditLabel(row.agent)],
     ['Trigger', row.trigger],
-    ['Subject', `${row.subject_type} ${row.subject_id}`],
+    ['Subject', `${auditLabel(row.subject_type)} ${row.subject_id}`],
     ['Version', `${row.version} (attempt ${row.attempt})`],
-    ['Status', row.status],
+    ['Status', auditLabel(row.status)],
     ['Tier', recorded(row.tier)],
     ['Inputs', recorded(row.signals)],
     ['Output', recorded(row.output)],
@@ -104,14 +103,6 @@ const details = computed(() => {
   ]
 })
 
-watch(
-  () => ({ ...typed }),
-  (value) => {
-    clearTimeout(typingTimer)
-    typingTimer = setTimeout(() => Object.assign(filters, value), TYPING_MS)
-  },
-)
-
 // A change of filter goes back to the first page.
 watch(
   () => ({ ...filters }),
@@ -122,14 +113,12 @@ watch(
 )
 watch([page, perPage], () => load())
 
-onBeforeUnmount(() => clearTimeout(typingTimer))
-
 onMounted(async () => {
   load()
   try {
-    people.value = (await auditApi.people()).items
+    facets.value = await auditApi.facets()
   } catch {
-    // The person filter stays empty; the log still loads.
+    // The filter lists stay empty; the log still loads.
   }
 })
 </script>
@@ -147,20 +136,26 @@ onMounted(async () => {
     </v-alert>
 
     <v-row density="compact" class="mb-2">
-      <v-col cols="12" sm="6" md="3">
-        <v-text-field
-          v-model="typed.agent"
+      <v-col cols="12" sm="6" md="2">
+        <v-select
+          v-model="filters.agent"
           label="Agent"
+          :items="agentItems"
+          placeholder="Any"
+          persistent-placeholder
           clearable
           hide-details
           density="compact"
           data-test="filter-agent"
         />
       </v-col>
-      <v-col cols="12" sm="6" md="3">
-        <v-text-field
-          v-model="typed.subject_type"
+      <v-col cols="12" sm="6" md="2">
+        <v-select
+          v-model="filters.subject_type"
           label="Subject type"
+          :items="subjectTypeItems"
+          placeholder="Any"
+          persistent-placeholder
           clearable
           hide-details
           density="compact"
@@ -171,27 +166,41 @@ onMounted(async () => {
         <v-select
           v-model="filters.status"
           label="Status"
-          :items="AUDIT_STATUSES"
+          :items="statusItems"
+          placeholder="Any"
+          persistent-placeholder
           clearable
           hide-details
           density="compact"
           data-test="filter-status"
         />
       </v-col>
-      <v-col cols="12" sm="6" md="3">
+      <v-col cols="12" sm="6" md="2">
         <v-select
           v-model="filters.actor_user_id"
           label="Person"
-          :items="people"
+          :items="facets.people"
           item-title="display_name"
           item-value="id"
+          placeholder="Any"
+          persistent-placeholder
           clearable
           hide-details
           density="compact"
           data-test="filter-person"
         />
       </v-col>
-      <v-col cols="12" md="1" class="d-flex align-center">
+      <v-col cols="12" sm="6" md="2" class="d-flex align-center">
+        <v-switch
+          v-model="filters.hide_sign_ins"
+          label="Hide sign-ins"
+          color="secondary"
+          hide-details
+          density="compact"
+          data-test="filter-hide-sign-ins"
+        />
+      </v-col>
+      <v-col cols="12" md="2" class="d-flex align-center">
         <v-btn variant="text" data-test="filter-clear" @click="clearFilters">Clear</v-btn>
       </v-col>
     </v-row>
@@ -214,7 +223,11 @@ onMounted(async () => {
       <template #[`item.created_at`]="{ item }">
         <span :data-test="`audit-row-${item.id}`">{{ when(item.created_at) }}</span>
       </template>
-      <template #[`item.subject`]="{ item }">{{ item.subject_type }} {{ item.subject_id }}</template>
+      <template #[`item.agent`]="{ item }">{{ auditLabel(item.agent) }}</template>
+      <template #[`item.subject`]="{ item }">
+        {{ auditLabel(item.subject_type) }} {{ item.subject_id }}
+      </template>
+      <template #[`item.status`]="{ item }">{{ auditLabel(item.status) }}</template>
       <template #[`item.who`]="{ item }">{{ whoText(item) }}</template>
     </v-data-table-server>
 
