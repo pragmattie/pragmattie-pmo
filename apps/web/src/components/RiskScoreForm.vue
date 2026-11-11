@@ -1,20 +1,29 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import { bandColor, type HeatCell, LEVELS, scorePreview } from '../lib/risks'
+import {
+  bandColor,
+  type HeatCell,
+  type RiskScales,
+  scaleHint,
+  scaleItems,
+  scorePreview,
+} from '../lib/risks'
 
-// Scores a risk in place (a `score_risk` item in the Inbox): probability and impact on the 1 to 5
-// scales of the risk policy, the score and band they give, and Save. The page saves through the
+// Scores a risk in place (a `score_risk` item in the Inbox): probability and impact on the
+// labelled 1 to 5 scales of the risk policy, each level with its definition, the score and band they give, and Save. The page saves through the
 // existing risk update route, where the API checks every rule again and works out the real score.
 const props = defineProps<{
   cells: HeatCell[]
   busy: boolean
+  scales?: RiskScales | null
 }>()
 const probability = defineModel<number | null>('probability', { required: true })
 const impact = defineModel<number | null>('impact', { required: true })
 const emit = defineEmits<{ save: [] }>()
 
-const levelItems = LEVELS.map((level) => ({ title: String(level), value: level }))
+const probabilityItems = computed(() => scaleItems(props.scales?.probability))
+const impactItems = computed(() => scaleItems(props.scales?.impact))
 const preview = computed(() => scorePreview(props.cells, probability.value, impact.value))
 </script>
 
@@ -27,8 +36,9 @@ const preview = computed(() => scorePreview(props.cells, probability.value, impa
           <v-select
             v-model="probability"
             label="Probability (1 to 5)"
-            :items="levelItems"
-            hide-details
+            :items="probabilityItems"
+            :hint="scaleHint(scales?.probability, probability)"
+            persistent-hint
             data-test="score-probability"
           />
         </v-col>
@@ -36,8 +46,9 @@ const preview = computed(() => scorePreview(props.cells, probability.value, impa
           <v-select
             v-model="impact"
             label="Impact (1 to 5)"
-            :items="levelItems"
-            hide-details
+            :items="impactItems"
+            :hint="scaleHint(scales?.impact, impact)"
+            persistent-hint
             data-test="score-impact"
           />
         </v-col>

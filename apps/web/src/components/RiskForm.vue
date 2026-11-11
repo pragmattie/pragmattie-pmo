@@ -5,12 +5,14 @@ import {
   CATEGORIES,
   KINDS,
   label,
-  LEVELS,
   OBJECTIVES,
   type Person,
   RESPONSES_BY_KIND,
   type Risk,
   type RiskInput,
+  type RiskScales,
+  scaleHint,
+  scaleItems,
 } from '../lib/risks'
 
 // Adds a blank risk, or edits one. The API checks every rule again; these checks only save a
@@ -21,6 +23,8 @@ const props = defineProps<{
   people: Person[]
   busy: boolean
   error: string
+  // The policy's labelled scales; bare 1 to 5 until they load.
+  scales?: RiskScales | null
 }>()
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
@@ -85,7 +89,8 @@ watch(
   },
 )
 
-const levelItems = LEVELS.map((level) => ({ title: String(level), value: level }))
+const probabilityItems = computed(() => scaleItems(props.scales?.probability))
+const impactItems = computed(() => scaleItems(props.scales?.impact))
 const option = (value: string) => ({ title: label(value), value })
 const required = (value: unknown) => (value !== null && value !== '' ? true : 'Required')
 const maxLength = (max: number) => (value: string) =>
@@ -196,7 +201,9 @@ async function submit() {
               <v-select
                 v-model="form.probability"
                 label="Probability (1 to 5)"
-                :items="levelItems"
+                :items="probabilityItems"
+                :hint="scaleHint(scales?.probability, form.probability)"
+                persistent-hint
                 :clearable="form.needs_judgement"
                 :rules="[levelRule, pairRule]"
                 data-test="field-probability"
@@ -206,7 +213,9 @@ async function submit() {
               <v-select
                 v-model="form.impact"
                 label="Impact (1 to 5)"
-                :items="levelItems"
+                :items="impactItems"
+                :hint="scaleHint(scales?.impact, form.impact)"
+                persistent-hint
                 :clearable="form.needs_judgement"
                 :rules="[levelRule, pairRule]"
                 data-test="field-impact"
