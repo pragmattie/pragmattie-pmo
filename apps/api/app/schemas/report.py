@@ -11,6 +11,8 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from app.models.report import REASON_MAX, SECTION_MAX
+from app.schemas.audit import CostStr
+from app.schemas.common import MoneyStr
 from app.schemas.plan import Version
 
 ReportStatus = Literal["draft", "published", "withdrawn"]
@@ -88,6 +90,16 @@ class FlagOut(BaseModel):
     text: str
 
 
+class SectionState(BaseModel):
+    """Who wrote a section (item 7.4): the status report agent or a person, and who reviewed an
+    agent's draft. `unreviewed` is an agent's draft no person has edited or confirmed yet."""
+
+    source: Literal["agent", "person"] | None = None
+    reviewed_by: int | None = None
+    reviewed_at: datetime | None = None
+    unreviewed: bool = False
+
+
 class ReportSummaryOut(BaseModel):
     id: int
     status: ReportStatus
@@ -127,12 +139,14 @@ class ReportOut(BaseModel):
     figures: list[FigureOut]
     ratings: dict[str, RatingOut]
     sections: dict[str, str | None]
+    section_states: dict[str, SectionState]
     flags: list[FlagOut]
     figures_at: datetime
     replaces_id: int | None
     replace_reason: str | None
     replaced_by_id: int | None = None
-    created_by: int
+    # None for a draft the orchestrator created when the report fell due (item 7.4).
+    created_by: int | None
     created_by_name: str | None = None
     published_by: int | None
     published_by_name: str | None = None
@@ -143,3 +157,34 @@ class ReportOut(BaseModel):
     version: int
     created_at: datetime
     updated_at: datetime
+
+
+class DraftKept(BaseModel):
+    section: str
+    reason: str
+
+
+class ReportDraftResult(BaseModel):
+    """The answer of `POST /projects/{id}/status-reports/{rid}/draft` (item 7.4).
+
+    A dry run has `request` (the exact request that would be sent) and `cost_ceiling_usd` (the
+    most it can cost, rounded up to the cent), and nothing is called or saved. A real run has the
+    drafted sections with the figures' values filled in, the figure keys it used, its tokens and
+    cost and its audit row. `replaced` names the sections saved as unreviewed agent drafts (empty
+    in `shadow`); `kept` the ones the agent leaves alone, and why."""
+
+    mode: Literal["shadow", "enforce"]
+    dry_run: bool
+    model: str
+    prompt_version: str
+    request: dict[str, Any] | None = None
+    cost_ceiling_usd: MoneyStr | None = None
+    sections: dict[str, str] = {}
+    figure_keys: list[str] = []
+    replaced: list[str] = []
+    kept: list[DraftKept] = []
+    report_version: int | None = None
+    audit_id: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: CostStr | None = None

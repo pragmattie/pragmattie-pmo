@@ -638,10 +638,17 @@ REPORTS = "/api/v1/projects/{project_id}/status-reports"
 REPORT = f"{REPORTS}/{{report_id}}"
 
 
-def _report_sample(suffix: str = "", body: dict | None = None, *, status: str | None = None):
+def _report_sample(
+    suffix: str = "",
+    body: dict | None = None,
+    *,
+    status: str | None = None,
+    agent_summary: bool = False,
+):
     """A project in delivery with baseline 1 (from `_change_sample`) and a weekly reporting
     period, its current period's end in `{period_end}`. With `status`, it has a report for that
-    period in that status (a published one, so every reader may see it, or a draft to write)."""
+    period in that status (a published one, so every reader may see it, or a draft to write).
+    With `agent_summary`, its summary is the status report agent's unreviewed draft."""
 
     def sample(target: int) -> dict:
         url = _change_sample()(target)["url"].removesuffix("/changes") + "/status-reports"
@@ -662,7 +669,10 @@ def _report_sample(suffix: str = "", body: dict | None = None, *, status: str | 
                     ratings={
                         "overall": {"rating": "green", "measure": None, "rule": "r", "text": "t"}
                     },
-                    sections={},
+                    sections={"summary": "On track"} if agent_summary else {},
+                    section_sources={"summary": {"source": "agent", "reviewed_by": None}}
+                    if agent_summary
+                    else {},
                     flags=[],
                     figures_at=datetime(2026, 1, 1),
                     created_by=target,
@@ -957,6 +967,11 @@ SAMPLES = {
     ("POST", f"{REPORT}/withdraw"): _report_sample(
         "/withdraw", {"version": 1, "reason": "Wrong period"}, status="published"
     ),
+    # AGENT_MODE is off in tests, so an allowed caller gets the refusal (409), never a call.
+    ("POST", f"{REPORT}/draft"): _report_sample("/draft?dry_run=true", status="draft"),
+    ("POST", f"{REPORT}/sections/{{section}}/confirm"): _report_sample(
+        "/sections/summary/confirm", {"version": 1}, status="draft", agent_summary=True
+    ),
     ("POST", HOLD): _hold_sample,
     # ORCHESTRATOR_MODE is off in tests, so an allowed caller gets an empty pass, never a call.
     ("POST", "/api/v1/orchestrator/run"): lambda _target: {"url": "/api/v1/orchestrator/run"},
@@ -1012,6 +1027,7 @@ REFUSED = {
     ("POST", "/api/v1/requests/{request_id}/draft"),
     ("POST", f"{PROPOSAL}/draft"),
     ("POST", f"{PLAN}/draft"),
+    ("POST", f"{REPORT}/draft"),
 }
 
 # Routes that also need a role the gates policy lists: other roles holding the action get 403.
@@ -1169,8 +1185,11 @@ def test_matrix_covers_the_existing_routes():
         ("POST", f"{REPORT}/refresh"),
         ("POST", f"{REPORT}/publish"),
         ("POST", f"{REPORT}/withdraw"),
+        ("POST", f"{REPORT}/sections/{{section}}/confirm"),
     ):
         assert by_method[(method, path)] == Action.REPORT_PUBLISH
+    # Item 7.4: running the status report agent needs project:write, as for the other agents.
+    assert by_method[("POST", f"{REPORT}/draft")] == Action.PROJECT_WRITE
     project = "/api/v1/projects/{project_id}"
     for path in (project, f"{project}/brief", f"{project}/stakeholders", f"{project}/assumptions"):
         assert by_method[("GET", path)] == Action.PROJECT_READ

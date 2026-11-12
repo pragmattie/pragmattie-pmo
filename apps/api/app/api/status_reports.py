@@ -7,14 +7,24 @@ come from records and whose ratings come from written rules (`app.reports`).
   `period_end`, with its figures, ratings and empty text. A period has at most one draft and one
   published report. A correction of a published report names it (`replaces_id`) with a reason.
 - `GET .../{rid}` (`project:read`): one report.
-- `PATCH .../{rid}` (`report:publish`): edit a draft's text sections.
+- `PATCH .../{rid}` (`report:publish`): edit a draft's text sections; each section sent becomes
+  the person's.
 - `POST .../{rid}/refresh` (`report:publish`): read a draft's figures from the records again and
   rate them again.
 - `POST .../{rid}/publish` (`report:publish`): publish a draft. Refused (409, with the flags)
-  while the checker flags anything in the text. A published report is frozen; publishing a
+  while the checker flags anything in the text, and (409) while any section is still an
+  unreviewed agent draft. A published report is frozen; publishing a
   correction withdraws the report it replaces, with the correction's reason.
 - `POST .../{rid}/withdraw` (`report:publish`): withdraw a draft or a published report, with a
   reason.
+- `POST .../{rid}/draft` (`project:write`, item 7.4): run the status report agent
+  (`app.agents.status_report_agent`) on a draft, gated by `AGENT_MODE`: `off` refuses (409,
+  recorded), `shadow` runs it and saves nothing, `enforce` saves each section that is empty or
+  still its unreviewed draft as an unreviewed agent draft and keeps every section a person edited
+  or confirmed. With `?dry_run=true` it returns the exact request and its most possible cost, and
+  calls nothing.
+- `POST .../{rid}/sections/{section}/confirm` (`report:publish`): a person accepts an agent's
+  draft section as it is.
 
 Only roles with `report:publish` see drafts (and drafts withdrawn before they were published).
 Anyone else gets a 404 for one, so a draft's existence isn't shown; they see published reports
@@ -30,7 +40,8 @@ it, or while it is invalid, creating and refreshing answer 503, recorded as a re
 """
 
 import logging
-from typing import Annotated, Any
+from decimal import ROUND_UP, Decimal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -39,10 +50,12 @@ from sqlalchemy.orm import Session
 from app import delivery
 from app import policy as policies
 from app import reports as rules
+from app.agents import risk_agent, status_report_agent
 from app.api.intake import _commit, _names
 from app.api.projects import Db, Reader
-from app.audit import next_attempt, record_decision, record_refusal
+from app.audit import record_refusal
 from app.authz import Action, can, require_audited
+from app.config import get_settings
 from app.models import Project, ProjectPlan, User
 from app.models.base import utcnow
 from app.models.report import DRAFT, PUBLISHED, SECTIONS, WITHDRAWN, StatusReport
@@ -52,6 +65,7 @@ from app.schemas.report import (
     PeriodOut,
     PeriodsPage,
     ReportCreate,
+    ReportDraftResult,
     ReportOut,
     ReportSummaryOut,
     ReportTextIn,
@@ -63,8 +77,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["status reports"])
 
-AUDIT_AGENT = "status_report"
-SUBJECT = "status_report"
+AUDIT_AGENT = rules.AUDIT_AGENT
+SUBJECT = rules.SUBJECT
 PROJECT_SUBJECT = "project"
 
 PROJECT_NOT_FOUND = "project not found"
@@ -86,6 +100,15 @@ NOT_A_CORRECTION = "only a correction names a report it replaces"
 NOT_DRAFT = "only a draft can change; a published report is frozen"
 HAS_FLAGS = "the report can't be published while the checker has flags open"
 ALREADY_WITHDRAWN = "this report is already withdrawn"
+UNREVIEWED = (
+    "the report can't be published while a section is still the agent's draft: confirm or edit "
+    "each one first"
+)
+AGENT_OFF = "the status report agent is off (AGENT_MODE=off); a person can write the report by hand"
+AGENT_FAILED = "the status report agent couldn't draft the report; nothing was saved"
+NOT_AGENT_DRAFT = "only a section that is an agent's unreviewed draft can be confirmed"
+
+Section = Literal["summary", "done", "next", "issues", "decisions"]
 
 
 # --- Loading
@@ -159,18 +182,7 @@ def _periods(db: Session, project: Project, plan: ProjectPlan | None) -> list[ru
 
 
 def _snapshot(report: StatusReport) -> dict[str, Any]:
-    return {
-        "status": report.status,
-        "period_start": report.period_start.isoformat(),
-        "period_end": report.period_end.isoformat(),
-        "figures": report.figures,
-        "ratings": {name: r["rating"] for name, r in report.ratings.items()},
-        "sections": report.sections,
-        "flags": report.flags,
-        "replaces_id": report.replaces_id,
-        "replace_reason": report.replace_reason,
-        "withdrawn_reason": report.withdrawn_reason,
-    }
+    return rules.snapshot(report)
 
 
 def _refuse(
@@ -222,26 +234,7 @@ def _record(
     action: str,
     **extra: Any,
 ) -> None:
-    record_decision(
-        db,
-        agent=AUDIT_AGENT,
-        trigger="human",
-        subject_type=SUBJECT,
-        subject_id=str(report.id),
-        version=report.version,
-        attempt=next_attempt(
-            db,
-            agent=AUDIT_AGENT,
-            subject_type=SUBJECT,
-            subject_id=str(report.id),
-            version=report.version,
-        ),
-        status="ok",
-        actor_user_id=user.id,
-        signals=before,
-        output=_snapshot(report),
-        action_taken={"action": action, "project_id": report.project_id, **extra},
-    )
+    rules.record(db, report, actor_user_id=user.id, before=before, action=action, **extra)
 
 
 def _refusal_recorder(action: str):
@@ -297,6 +290,10 @@ TextWriter = _writer("edit_text")
 RefreshWriter = _writer("refresh")
 PublishWriter = _writer("publish")
 WithdrawWriter = _writer("withdraw")
+Confirmer = _writer("confirm")
+Drafter = Annotated[
+    User, Depends(require_audited(Action.PROJECT_WRITE, _refusal_recorder("draft")))
+]
 
 
 def _locked_project(db: Session, project_id: int) -> Project:
@@ -366,32 +363,12 @@ def _reportable(
     return plan, _periods(db, project, plan)
 
 
-def _fill(
-    db: Session,
-    report: StatusReport,
-    plan: ProjectPlan,
-    period: rules.Period,
-    policy: ReportingPolicy,
-) -> None:
-    """Read the figures from the records, rate them and run the checker."""
-    next_ = rules.next_period(plan.report_period, plan.report_due_day, period)
-    report.figures_at = utcnow()
-    report.figures = rules.build_figures(
-        db, report.project_id, plan, period, next_, report.figures_at.date()
-    )
-    report.ratings = rules.rate(report.figures, policy)
-    _check(report)
-
-
 def _period_of(report: StatusReport) -> rules.Period:
-    return rules.Period(report.period_start, report.period_end, report.due_on)
+    return rules.period_of(report)
 
 
 def _check(report: StatusReport) -> list[dict[str, str]]:
-    report.flags = [
-        f.as_dict() for f in rules.check(report.sections, report.figures, _period_of(report))
-    ]
-    return report.flags
+    return rules.run_check(report)
 
 
 # --- Output
@@ -408,10 +385,24 @@ def _out(db: Session, report: StatusReport) -> ReportOut:
         {
             **{c: getattr(report, c) for c in StatusReport.__table__.columns.keys()},
             "replaced_by_id": replaced_by,
+            "section_states": _section_states(report),
             "created_by_name": people.get(report.created_by),
             "published_by_name": people.get(report.published_by),
         }
     )
+
+
+def _section_states(report: StatusReport) -> dict[str, dict[str, Any]]:
+    sources = report.section_sources or {}
+    return {
+        name: {
+            "source": (sources.get(name) or {}).get("source"),
+            "reviewed_by": (sources.get(name) or {}).get("reviewed_by"),
+            "reviewed_at": (sources.get(name) or {}).get("reviewed_at"),
+            "unreviewed": rules.is_unreviewed(report, name),
+        }
+        for name in SECTIONS
+    }
 
 
 def _summary(report: StatusReport) -> ReportSummaryOut:
@@ -525,20 +516,16 @@ def create_status_report(
             period_end=period.end.isoformat(),
             replaces_id=body.replaces_id,
         )
-    report = StatusReport(
-        project_id=project.id,
-        period_start=period.start,
-        period_end=period.end,
-        due_on=period.due_on,
-        status=DRAFT,
-        sections=dict.fromkeys(SECTIONS),
+    report = rules.new_draft(
+        db,
+        project.id,
+        plan,
+        period,
+        policy,
+        created_by=user.id,
         replaces_id=body.replaces_id,
         replace_reason=body.reason,
-        created_by=user.id,
     )
-    _fill(db, report, plan, period, policy)
-    db.add(report)
-    db.flush()
     _record(
         db,
         user,
@@ -567,6 +554,12 @@ def edit_status_report(
     before = _snapshot(report)
     changed = {k: (v or None) for k, v in body.sections.model_dump(exclude_unset=True).items()}
     report.sections = {**report.sections, **changed}
+    # Each section the person sent is now theirs (item 7.4), so the agent never replaces it.
+    now = utcnow().isoformat()
+    for name in changed:
+        rules.mark_section(
+            report, name, source=rules.PERSON_SOURCE, reviewed_by=user.id, reviewed_at=now
+        )
     _check(report)
     db.flush()
     _record(db, user, report, before=before, action="text_edited", sections=sorted(changed))
@@ -585,7 +578,7 @@ def refresh_status_report(
     policy = _policy(db, user, project, report, action)
     plan, _ = _reportable(db, user, project, report, action)
     before = _snapshot(report)
-    _fill(db, report, plan, _period_of(report), policy)
+    rules.fill(db, report, plan, _period_of(report), policy)
     db.flush()
     _record(db, user, report, before=before, action="refreshed")
     _commit(db)
@@ -600,6 +593,19 @@ def publish_status_report(
     project = _locked_project(db, project_id)
     report = _locked_report(db, user, project, report_id, body.version, action)
     _require_draft(db, user, project, report, action)
+    unreviewed = rules.unreviewed_sections(report)
+    if unreviewed:
+        raise _refuse(
+            db,
+            user,
+            project,
+            report,
+            action=action,
+            refusal="unreviewed_sections",
+            code=status.HTTP_409_CONFLICT,
+            detail={"message": UNREVIEWED, "sections": unreviewed},
+            sections=unreviewed,
+        )
     flags = rules.check(report.sections, report.figures, _period_of(report))
     if flags:
         found = [f.as_dict() for f in flags]
@@ -682,5 +688,120 @@ def withdraw_status_report(
     report.withdrawn_reason = body.reason
     db.flush()
     _record(db, user, report, before=before, action="withdrawn")
+    _commit(db)
+    return _out(db, report)
+
+
+# --- The status report agent (item 7.4)
+
+
+def get_claude_client() -> risk_agent.ClaudeClient:
+    """The status report agent's Claude client; tests replace it through `dependency_overrides`."""
+    return risk_agent.AnthropicClient(get_settings())
+
+
+@router.post("/{project_id}/status-reports/{report_id}/draft", response_model=ReportDraftResult)
+def draft_status_report(
+    project_id: int,
+    report_id: int,
+    user: Drafter,
+    db: Db,
+    claude: Annotated[risk_agent.ClaudeClient, Depends(get_claude_client)],
+    dry_run: bool = False,
+) -> ReportDraftResult:
+    action = "draft"
+    settings = get_settings()
+    project = _project(db, project_id)
+    report = _report(db, project.id, report_id, user)
+    if settings.agent_mode == "off":
+        raise _refuse(
+            db,
+            user,
+            project,
+            report,
+            action=action,
+            refusal="agent_off",
+            code=status.HTTP_409_CONFLICT,
+            detail=AGENT_OFF,
+        )
+    _require_draft(db, user, project, report, action)
+    common = {
+        "mode": settings.agent_mode,
+        "dry_run": dry_run,
+        "model": settings.status_report_agent_model,
+        "prompt_version": status_report_agent.PROMPT_VERSION,
+    }
+    if dry_run:
+        data = status_report_agent.request_data(db, report)
+        api_request = status_report_agent.build_request(data, settings)
+        ceiling = status_report_agent.cost_ceiling(api_request, settings)
+        return ReportDraftResult(
+            **common,
+            request=api_request,
+            cost_ceiling_usd=ceiling.quantize(Decimal("0.01"), rounding=ROUND_UP),
+        )
+    save_it = settings.agent_mode == "enforce"
+    try:
+        result = status_report_agent.run(
+            db, claude, report, settings=settings, save_it=save_it, actor_user_id=user.id
+        )
+    except risk_agent.AgentError:
+        logger.exception("status report agent run failed for report %s", report_id)
+        _commit(db)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, AGENT_FAILED) from None
+    _commit(db)
+    return ReportDraftResult(
+        **common,
+        sections=result.checked.sections,
+        figure_keys=result.checked.keys,
+        replaced=result.replaced,
+        kept=result.kept,
+        report_version=report.version,
+        audit_id=result.audit_id,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cost_usd=result.cost_usd,
+    )
+
+
+@router.post(
+    "/{project_id}/status-reports/{report_id}/sections/{section}/confirm",
+    response_model=ReportOut,
+)
+def confirm_section(
+    project_id: int,
+    report_id: int,
+    section: Section,
+    body: ReportVersionIn,
+    user: Confirmer,
+    db: Db,
+) -> ReportOut:
+    """A person accepts an agent's draft section as it is."""
+    action = "confirm"
+    project = _locked_project(db, project_id)
+    report = _locked_report(db, user, project, report_id, body.version, action)
+    _require_draft(db, user, project, report, action)
+    if not rules.is_unreviewed(report, section):
+        raise _refuse(
+            db,
+            user,
+            project,
+            report,
+            action=action,
+            refusal="not_agent_draft",
+            code=status.HTTP_409_CONFLICT,
+            detail=NOT_AGENT_DRAFT,
+            section=section,
+        )
+    before = _snapshot(report)
+    rules.mark_section(
+        report,
+        section,
+        source=rules.AGENT_SOURCE,
+        reviewed_by=user.id,
+        reviewed_at=utcnow().isoformat(),
+    )
+    db.flush()
+    _record(db, user, report, before=before, action="section_confirmed", section=section)
     _commit(db)
     return _out(db, report)
