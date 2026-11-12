@@ -13,6 +13,7 @@ import {
   NOT_YOURS_TO_DECIDE,
   POLL_MS,
   receivesItems,
+  subjectLink,
   waitsOnText,
 } from '../lib/inbox'
 import { makeVuetify } from '../plugins/vuetify'
@@ -401,5 +402,20 @@ describe('the inbox helpers', () => {
     expect(formFor({ step: 'send_proposal', subject_type: 'proposal' })).toBe('proposal')
     expect(formFor({ step: 'decide_change_pm', subject_type: 'change_request' })).toBe('changes')
     expect(formFor({ step: 'draft_value_case', subject_type: 'request' })).toBe('link')
+    expect(formFor({ step: 'publish_status_report', subject_type: 'status_report' })).toBe('link')
+  })
+
+  it("links a status report item to the report on its project's Status reports page", () => {
+    const item = entry({
+      step: 'publish_status_report',
+      subject_type: 'status_report',
+      subject_id: 31,
+      project_id: 5,
+    })
+    expect(subjectLink(item)).toEqual({
+      name: 'status-reports',
+      params: { id: 5 },
+      query: { from: 'inbox', item: `${item.kind}-${item.id}`, report: '31' },
+    })
   })
 })

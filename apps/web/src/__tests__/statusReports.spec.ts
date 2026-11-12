@@ -4,12 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
 import {
+  changedSections,
   figureText,
   liveReport,
   type Period,
   type StatusReport,
   sourceLink,
   sourceText,
+  unreviewedSections,
 } from '../lib/statusReports'
 import { makeVuetify } from '../plugins/vuetify'
 import { makeRouter } from '../router'
@@ -93,6 +95,7 @@ function report(changes: Partial<StatusReport> = {}): StatusReport {
       risk: rating('amber', 'risk.amber_at.High', '1 open High risks'),
     },
     sections: { summary: 'Pilot live is 4 working days late.', done: null },
+    section_states: {},
     flags: [],
     figures_at: '2027-03-10T09:00:00',
     replaces_id: null,
@@ -244,6 +247,42 @@ describe('the status report helpers', () => {
   })
 })
 
+// A draft the status report agent wrote (item 7.4): summary and next are its unreviewed drafts,
+// done is a person's.
+const AGENT_STATE = { source: 'agent' as const, reviewed_by: null, reviewed_at: null, unreviewed: true }
+const PERSON_STATE = { source: 'person' as const, reviewed_by: 7, reviewed_at: '2027-03-10T09:30:00', unreviewed: false }
+
+function agentDraft(changes: Partial<StatusReport> = {}) {
+  return report({
+    sections: {
+      summary: 'Spend to date is 400.00.',
+      done: 'The pilot went live.',
+      next: 'From 8 March 2027 the team prepares the handover.',
+      issues: null,
+      decisions: null,
+    },
+    section_states: { summary: AGENT_STATE, done: PERSON_STATE, next: AGENT_STATE },
+    ...changes,
+  })
+}
+
+describe('the agent draft helpers (item 7.4)', () => {
+  it('names the unreviewed sections and only the changed text', () => {
+    const draft = agentDraft()
+    expect(unreviewedSections(draft)).toEqual(['summary', 'next'])
+    expect(unreviewedSections(report())).toEqual([])
+    expect(
+      changedSections(draft, {
+        summary: 'Spend to date is 400.00.',
+        done: 'The pilot went live on time.',
+        next: 'From 8 March 2027 the team prepares the handover.',
+        issues: '',
+        decisions: '',
+      }),
+    ).toEqual({ done: 'The pilot went live on time.' })
+  })
+})
+
 describe('the Status reports page', () => {
   it('lists the periods and shows a report with its ratings, rules, sourced figures and text', async () => {
     await mountAt('/projects/5/status-reports?report=31', { role: 'sponsor', found: report({ status: 'published', published_by_name: 'Pat Manager' }), listed: [PUBLISHED] })
@@ -361,6 +400,63 @@ describe('the Status reports page', () => {
     })
     expect(find('report-withdrawn')?.textContent).toContain('Spend was misread')
     expect(find('replaced-by')?.textContent).toContain('report 31')
+  })
+
+  it("marks the agent's sections and confirms each one, with Publish off until all are", async () => {
+    const confirmed = agentDraft({
+      version: 3,
+      section_states: { summary: PERSON_STATE, done: PERSON_STATE, next: AGENT_STATE },
+    })
+    const { sent } = await mountAt('/projects/5/status-reports?report=31', {
+      found: agentDraft(),
+      answer: (method, path) => (method === 'POST' && path.endsWith('/confirm') ? json(confirmed) : null),
+    })
+    expect(find('agent-chip-summary')?.textContent).toContain('Agent draft, not reviewed')
+    expect(find('agent-chip-next')).not.toBeNull()
+    expect(find('agent-chip-done')).toBeNull()
+    expect(find('confirm-done')).toBeNull()
+    expect((find('publish') as HTMLButtonElement).disabled).toBe(true)
+    expect(find('unreviewed')?.textContent).toContain('Confirm or edit each')
+    await click('confirm-summary')
+    expect(sent[0]).toEqual({
+      method: 'POST',
+      path: '/api/v1/projects/5/status-reports/31/sections/summary/confirm',
+      body: { version: 2 },
+    })
+    expect(find('notice')?.textContent).toContain('Section confirmed.')
+    expect(find('agent-chip-summary')).toBeNull()
+    expect(find('agent-chip-next')).not.toBeNull()
+    expect((find('publish') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('turns Publish on once every agent section is confirmed', async () => {
+    await mountAt('/projects/5/status-reports?report=31', {
+      found: agentDraft({ section_states: { summary: PERSON_STATE, next: PERSON_STATE } }),
+    })
+    expect(find('agent-chip-summary')).toBeNull()
+    expect((find('publish') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it("saves only the sections a person changed, so the agent's others stay unreviewed", async () => {
+    const { sent } = await mountAt('/projects/5/status-reports?report=31', {
+      found: agentDraft(),
+      answer: (method) => (method === 'PATCH' ? json(agentDraft({ version: 3 })) : null),
+    })
+    await type('section-input-next', 'The team hands over in the next period.')
+    await click('save')
+    expect(sent[0].method).toBe('PATCH')
+    expect(sent[0].body).toEqual({
+      version: 2,
+      sections: { next: 'The team hands over in the next period.' },
+    })
+  })
+
+  it("shows no Confirm on a report the reader can't edit", async () => {
+    await mountAt('/projects/5/status-reports?report=31', {
+      role: 'sponsor',
+      found: agentDraft({ status: 'published', published_at: '2027-03-10T10:00:00' }),
+    })
+    expect(find('confirm-summary')).toBeNull()
   })
 
   it('names the project in the page trail', async () => {
