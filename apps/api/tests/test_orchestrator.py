@@ -2,7 +2,7 @@
 touches the network."""
 
 import dataclasses
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 import pytest
@@ -14,10 +14,12 @@ from test_intake import add_value_case
 from test_intake_agent import FakeClaude
 from test_intake_agent import _reply as intake_reply
 from test_risk_agent import _score_reply as score_reply
+from test_status_reports import _project as reporting_project
 
 import app.api.orchestrator as orchestrator_api
-from app import orchestrator
+from app import delivery, orchestrator
 from app import policy as policy_module
+from app import reports as report_rules
 from app.agents import risk_agent
 from app.autonomy import AGENT, PERSON, STEPS, WINDOW, Step
 from app.config import Settings, get_settings
@@ -41,11 +43,14 @@ from app.models import (
     ProjectRequest,
     ProposalEvent,
     Risk,
+    StatusReport,
     User,
     ValueCase,
     utcnow,
 )
+from app.models.baseline import ProjectBaseline
 from app.models.proposal import TEXT_SECTIONS
+from app.models.report import SECTIONS
 from app.orchestrator import NO_AGENT, StepAction, next_steps, run_pass
 from app.risks import drop_stale_suggestion, snapshot
 
@@ -278,6 +283,42 @@ def _change(db: Session, project: Project, user: User, decider: str) -> int:
     return change.id
 
 
+def _in_delivery(db: Session, owner: User, started: date) -> Project:
+    """A project in delivery since `started` (baseline 1's day), with a weekly report due on
+    Mondays."""
+    ids = reporting_project(db, owner)
+    baseline = db.get(ProjectBaseline, ids["baseline"])
+    baseline.created_at = datetime.combine(started, time(9))
+    db.commit()
+    return db.get(Project, ids["pid"])
+
+
+def _due_periods(db: Session, project: Project) -> list[report_rules.Period]:
+    """The project's periods whose report is due today, oldest first."""
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    started = report_rules.first_baseline(db, project.id).created_at.date()
+    today = delivery.today()
+    periods = report_rules.periods(plan.report_period, plan.report_due_day, started, today)
+    return [p for p in periods if p.due_on <= today]
+
+
+def _report(
+    db: Session, project: Project, owner: User, period, sections: dict | None = None
+) -> StatusReport:
+    """A person's draft for `period`, with `sections` written by them."""
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    report = report_rules.new_draft(
+        db, project.id, plan, period, policy_module.get_reporting(), created_by=owner.id
+    )
+    for name, text in (sections or {}).items():
+        report.sections = {**report.sections, name: text}
+        report_rules.mark_section(
+            report, name, source="person", reviewed_by=owner.id, reviewed_at=None
+        )
+    db.commit()
+    return report
+
+
 def _world(db: Session) -> dict[str, int]:
     """A subject in every state that has a next step."""
     pm = _user(db)
@@ -321,6 +362,12 @@ def _world(db: Session) -> dict[str, int]:
         ids[name] = _proposal(db, project, pm, status, filled)
     ids["decide_change_pm"] = _change(db, delivery, pm, "project_manager")
     ids["decide_change_sponsor"] = _change(db, delivery, pm, "sponsor")
+    # Item 7.4: a project whose report is due, and an older period's draft a person wrote.
+    reporting = _in_delivery(db, pm, date.today() - timedelta(days=21))
+    ids["draft_status_report"] = reporting.id
+    older = _due_periods(db, reporting)[-2]
+    written = dict.fromkeys(SECTIONS, "Written by a person.")
+    ids["publish_status_report"] = _report(db, reporting, pm, older, written).id
     return ids
 
 
@@ -400,6 +447,15 @@ def test_every_step_id_comes_from_some_state(db, rules):
     assert _found(steps, "decide_change_pm", ids["decide_change_pm"]).waits_on == "project_manager"
     assert (
         _found(steps, "decide_change_sponsor", ids["decide_change_sponsor"]).waits_on == "sponsor"
+    )
+    due = _found(steps, "draft_status_report", ids["draft_status_report"])
+    assert (due.subject_type, due.mode, due.waits_on) == ("project", AGENT, "status_report_agent")
+    assert due.reason.startswith("the status report for ")
+    publish = _found(steps, "publish_status_report", ids["publish_status_report"])
+    assert (publish.subject_type, publish.mode, publish.waits_on) == (
+        "status_report",
+        PERSON,
+        "project_manager",
     )
     # The same state gives the same steps, in the same order.
     assert next_steps(db, rules) == steps
@@ -710,6 +766,7 @@ def test_enforce_never_performs_a_person_step_whatever_the_policy_says(
         ("accept_risk", "accept_risk"),
         ("decide_change_pm", "decide_change_pm"),
         ("decide_change_sponsor", "decide_change_sponsor"),
+        ("publish_status_report", "publish_status_report"),
     ):
         assert (step, str(ids[key])) in inbox
     assert not [o for o in report.outcomes if o.step in person_steps and o.outcome == "done"]

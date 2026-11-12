@@ -24,6 +24,14 @@ agent steps the autonomy policy allows, and hands every other step to a person.
   its delay; a real client's answer goes to a person. Each action checks again when it runs and,
   when its subject changed, writes a skipped row and changes nothing. Approving and sending stay
   with people.
+- Status reports (item 7.4): `draft_status_report` notices that a project in delivery has a
+  report due (today is on or after the latest period's due day) and creates that period's draft
+  (no person; its own audit row) and has the status report agent draft its text. Only the latest
+  due period is drafted, never an older one, and only once: never when the period has a
+  published report, when the agent has already drafted one of its reports, or when its only
+  reports were withdrawn. A draft a person already made gets only its empty sections drafted.
+  `publish_status_report` puts every other draft in the project manager's inbox: only a person
+  publishes (a floor step).
 
 Run it with `python -m app.orchestrator once` (one pass) or `run` (a pass every
 `ORCHESTRATOR_INTERVAL_SECONDS` until Ctrl+C).
@@ -44,9 +52,17 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app import delivery, simulated_client
+from app import policy as policies
 from app import proposals as proposal_rules
-from app import simulated_client
-from app.agents import intake_agent, planner_agent, proposal_agent, risk_agent
+from app import reports as report_rules
+from app.agents import (
+    intake_agent,
+    planner_agent,
+    proposal_agent,
+    risk_agent,
+    status_report_agent,
+)
 from app.audit import next_attempt, record_decision
 from app.autonomy import (
     AGENT,
@@ -72,11 +88,13 @@ from app.models import (
     ProjectRequest,
     ReadinessCheck,
     Risk,
+    StatusReport,
     ValueCase,
     utcnow,
 )
 from app.models.orchestrator import REASON_MAX, open_key
 from app.models.portfolio import CANCELLED, LIVE_STAGES, is_live
+from app.models.report import DRAFT, PUBLISHED
 from app.plans import missing
 from app.policy import RiskPolicy, score_risk
 from app.proposals import empty_sections, plan_facts, submit_refusal, unreviewed_sections
@@ -100,6 +118,7 @@ PROJECT = "project"
 RISK = "risk"
 PROPOSAL = "proposal"
 CHANGE_REQUEST = "change_request"
+STATUS_REPORT = "status_report"
 
 MAX_RETRIES = 3
 RETRY_AFTER = timedelta(minutes=5)
@@ -113,6 +132,10 @@ PROJECT_MANAGER = "project_manager"
 # Steps a pass never performs: the floor steps (R1), and every step no agent may do (a change
 # decision), whatever a policy says.
 PERSON_ONLY = FLOOR_STEPS | {step for step, agents in STEP_AGENTS.items() if not agents}
+
+# Steps that come back for the same subject on a new occasion (a project's report each period):
+# their reason names the occasion, and an action already done counts only for the same reason.
+RECURRING_STEPS = frozenset({"draft_status_report"})
 
 NO_AGENT = "no agent does this yet"
 AGENT_ALREADY_RAN = "an agent already did this step, but it is still open"
@@ -469,6 +492,100 @@ def _proposal_steps(
     return []
 
 
+REPORT_DUE = "the status report for {start} to {end} was due on {due} and its text isn't drafted"
+REPORT_TO_PUBLISH = (
+    "the status report for {start} to {end} is a draft: the project manager reviews it and "
+    "publishes it"
+)
+
+
+def _due_period(db: Session, project: Project) -> tuple[ProjectPlan, report_rules.Period] | None:
+    """The plan and the latest period whose report is due (today is on or after its due day),
+    for a live project in delivery with a reporting period and baseline 1; else None."""
+    if delivery.refusal(project) is not None:
+        return None
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    if plan is None or plan.report_period is None or plan.report_due_day is None:
+        return None
+    first = report_rules.first_baseline(db, project.id)
+    if first is None:
+        return None
+    today = delivery.today()
+    due = [
+        p
+        for p in report_rules.periods(
+            plan.report_period, plan.report_due_day, first.created_at.date(), today
+        )
+        if p.due_on <= today
+    ]
+    return (plan, due[-1]) if due else None
+
+
+def _agent_drafted(db: Session, report_ids: list[int]) -> bool:
+    """Whether the status report agent has saved a draft (an `enforce` run) on any of them."""
+    if not report_ids:
+        return False
+    stmt = select(AuditDecision.action_taken).where(
+        AuditDecision.agent == status_report_agent.AGENT,
+        AuditDecision.subject_type == status_report_agent.AUDIT_SUBJECT,
+        AuditDecision.subject_id.in_([str(i) for i in report_ids]),
+        AuditDecision.status == "ok",
+    )
+    return any(
+        isinstance(action, dict) and action.get("mode") == "enforce" for action in db.scalars(stmt)
+    )
+
+
+def report_due(db: Session, project: Project) -> tuple[str, StatusReport | None] | None:
+    """Why `draft_status_report` applies to the project now, and the period's draft if a person
+    already made one; None when it doesn't apply: no report is due, the period has a published
+    report, the agent already drafted one of its reports, its only reports were withdrawn, or
+    its draft has no empty section."""
+    found = _due_period(db, project)
+    if found is None:
+        return None
+    _, period = found
+    reports = list(
+        db.scalars(
+            select(StatusReport)
+            .where(StatusReport.project_id == project.id, StatusReport.period_end == period.end)
+            .order_by(StatusReport.id)
+        )
+    )
+    if any(r.status == PUBLISHED for r in reports) or _agent_drafted(db, [r.id for r in reports]):
+        return None
+    draft = next((r for r in reports if r.status == DRAFT), None)
+    if draft is None and reports:
+        return None
+    if draft is not None and not report_rules.empty_sections(draft):
+        return None
+    reason = REPORT_DUE.format(
+        start=period.start.isoformat(), end=period.end.isoformat(), due=period.due_on.isoformat()
+    )
+    return reason, draft
+
+
+def _delivery_steps(db: Session, project: Project, make: Callable) -> list[NextStep]:
+    due = report_due(db, project)
+    if due is None:
+        return []
+    return [make("draft_status_report", PROJECT, project.id, due[0])]
+
+
+def _report_steps(db: Session, report: StatusReport, make: Callable) -> list[NextStep]:
+    """A draft goes to the project manager to review and publish, unless the agent is about to
+    draft it."""
+    if report.status != DRAFT:
+        return []
+    due = report_due(db, db.get(Project, report.project_id))
+    if due is not None and due[1] is not None and due[1].id == report.id:
+        return []
+    reason = REPORT_TO_PUBLISH.format(
+        start=report.period_start.isoformat(), end=report.period_end.isoformat()
+    )
+    return [make("publish_status_report", STATUS_REPORT, report.id, reason)]
+
+
 def _change_steps(change: ChangeRequest, make: Callable) -> list[NextStep]:
     if change.status != "submitted":
         return []
@@ -502,6 +619,8 @@ def next_steps(
     for project in db.scalars(projects.order_by(Project.id)):
         if project.stage == "planning":
             steps.extend(_planning_steps(db, project, make))
+        else:
+            steps.extend(_delivery_steps(db, project, make))
         risks = select(Risk).where(
             Risk.project_id == project.id, Risk.status.in_(("proposed", "open"))
         )
@@ -513,6 +632,11 @@ def next_steps(
         changes = select(ChangeRequest).where(ChangeRequest.project_id == project.id)
         for change in db.scalars(changes.order_by(ChangeRequest.id)):
             steps.extend(_change_steps(change, make))
+        drafts = select(StatusReport).where(
+            StatusReport.project_id == project.id, StatusReport.status == DRAFT
+        )
+        for report in db.scalars(drafts.order_by(StatusReport.id)):
+            steps.extend(_report_steps(db, report, make))
     return steps
 
 
@@ -539,10 +663,17 @@ def subject_steps(
         return _request_steps(db, request, make) if request is not None else []
     if subject_type == PROJECT:
         project = db.get(Project, subject_id)
-        if is_live(project) and project.stage == "planning":
+        if not is_live(project):
+            return []
+        if project.stage == "planning":
             return _planning_steps(db, project, make)
-        return []
-    model = {RISK: Risk, PROPOSAL: ProjectProposal, CHANGE_REQUEST: ChangeRequest}.get(subject_type)
+        return _delivery_steps(db, project, make)
+    model = {
+        RISK: Risk,
+        PROPOSAL: ProjectProposal,
+        CHANGE_REQUEST: ChangeRequest,
+        STATUS_REPORT: StatusReport,
+    }.get(subject_type)
     row = db.get(model, subject_id) if model is not None else None
     if row is None or not is_live(db.get(Project, row.project_id)):
         return []
@@ -550,6 +681,8 @@ def subject_steps(
         return _risk_steps(db, row, rules, make) if row.status in ("proposed", "open") else []
     if isinstance(row, ProjectProposal):
         return _proposal_steps(db, row, make, now)
+    if isinstance(row, StatusReport):
+        return _report_steps(db, row, make)
     return _change_steps(row, make)
 
 
@@ -729,6 +862,51 @@ def _client_answer(ctx: Context, proposal_id: int) -> int:
         return _skipped(ctx, "client_answer", proposal_id, str(exc), subject=PROPOSAL)
 
 
+REPORT_CHANGED = (
+    "the project no longer needs this report drafted (a person published, withdrew or wrote it, "
+    "another period fell due, or it left delivery)"
+)
+
+
+def _draft_status_report(ctx: Context, project_id: int) -> int:
+    """Draft the due report (item 7.4): create the period's draft when it has none (no person;
+    its own audit row), then have the status report agent fill its empty sections, as
+    unreviewed drafts for the project manager to review. Skipped, changing nothing, when the
+    step no longer applies or now names another period."""
+    db = ctx.db
+    project = db.get(Project, project_id, with_for_update=True, populate_existing=True)
+    due = report_due(db, project) if is_live(project) else None
+    if due is None or due[0][:REASON_MAX] != ctx.planned_reason:
+        return _skipped(ctx, "draft_status_report", project_id, REPORT_CHANGED, subject=PROJECT)
+    report = due[1]
+    if report is None:
+        plan, period = _due_period(db, project)
+        report = report_rules.new_draft(
+            db, project.id, plan, period, policies.get_reporting(), created_by=None
+        )
+        report_rules.record(
+            db,
+            report,
+            actor_user_id=None,
+            before=None,
+            action="created",
+            trigger=TRIGGER,
+            by=ORCHESTRATOR,
+            step="draft_status_report",
+        )
+    result = status_report_agent.run(
+        db,
+        ctx.client,
+        report,
+        settings=ctx.settings,
+        save_it=True,
+        actor_user_id=None,
+        trigger=TRIGGER,
+        only_empty=True,
+    )
+    return result.audit_id
+
+
 SCORE_RISK_SKIPPED = "the risk agent may no longer score this risk"
 LOW_RISK_CHANGED = (
     "the risk changed while the window waited (no longer proposed, scored by a person, needs "
@@ -822,6 +1000,7 @@ ACTIONS: dict[str, StepAction] = {
     # No Claude call: rules only, so neither counts against the caps.
     "submit_proposal": StepAction(_submit_proposal, uses_claude=False),
     "client_answer": StepAction(_client_answer, uses_claude=False),
+    "draft_status_report": StepAction(_draft_status_report),
 }
 assert not PERSON_ONLY & ACTIONS.keys(), "a person always takes these steps (R1)"
 
@@ -1121,6 +1300,8 @@ class _Pass:
             OrchestratorAction.subject_id == str(step.subject_id),
             OrchestratorAction.status == "done",
         )
+        if step.step in RECURRING_STEPS:
+            stmt = stmt.where(OrchestratorAction.reason == step.full_reason)
         return self.db.scalar(stmt.limit(1)) is not None
 
     def open_item(self, step: NextStep) -> InboxItem | None:
