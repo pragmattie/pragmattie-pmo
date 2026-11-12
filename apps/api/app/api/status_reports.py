@@ -616,23 +616,43 @@ def publish_status_report(
         )
     before = _snapshot(report)
     now = utcnow()
-    withdrawn_id = None
+    withdrawn: StatusReport | None = None
+    old_before = None
     if report.replaces_id is not None:
         old = db.scalar(
             select(StatusReport).where(StatusReport.id == report.replaces_id).with_for_update()
         )
         if old is not None and old.status == PUBLISHED:
+            old_before = _snapshot(old)
             old.status = WITHDRAWN
             old.withdrawn_by = user.id
             old.withdrawn_at = now
             old.withdrawn_reason = report.replace_reason
-            withdrawn_id = old.id
+            withdrawn = old
     report.status = PUBLISHED
     report.flags = []
     report.published_by = user.id
     report.published_at = now
     db.flush()
-    _record(db, user, report, before=before, action="published", withdrew_id=withdrawn_id)
+    _record(
+        db,
+        user,
+        report,
+        before=before,
+        action="published",
+        withdrew_id=withdrawn.id if withdrawn else None,
+    )
+    if withdrawn is not None:
+        # The old report's own trail records its withdrawal, at its new version.
+        _record(
+            db,
+            user,
+            withdrawn,
+            before=old_before,
+            action="withdrawn",
+            reason=withdrawn.withdrawn_reason,
+            replaced_by_id=report.id,
+        )
     _commit(db)
     return _out(db, report)
 

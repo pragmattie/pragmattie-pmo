@@ -673,6 +673,8 @@ def rate(figures: list[dict[str, Any]], policy: ReportingPolicy) -> dict[str, di
 
 # A leading minus sign belongs to the number, so a negative figure quoted as written matches.
 _NUMBER = re.compile(r"(?:(?<![\w.,])-)?(?<![\w.,])\d+(?:\.\d+)?(?![\w]|[.,]\d)")
+# A currency sign, perhaps with one space, right before a number.
+_CURRENCY_BEFORE = re.compile(r"[$£€]\s?$")
 
 
 def _without_money(text: str) -> str:
@@ -691,6 +693,22 @@ def _without_money(text: str) -> str:
         return match.group(0)
 
     return _MONEY.sub(blank, text)
+
+
+def _without_known_numbers(text: str, numbers: set[Decimal]) -> str:
+    """`text` with each plain number that is one of the report's figures as written (its minus
+    sign included) blanked, whatever the figure's kind, so a percent or points figure quoted
+    without its unit isn't read as stray money. A number after a currency sign is left to the
+    money check."""
+
+    def blank(match: re.Match) -> str:
+        if _CURRENCY_BEFORE.search(text, 0, match.start()):
+            return match.group(0)
+        if Decimal(match.group(0)) in numbers:
+            return " " * len(match.group(0))
+        return match.group(0)
+
+    return _NUMBER.sub(blank, text)
 
 
 def check(
@@ -714,7 +732,7 @@ def check(
     flags: list[Flag] = []
     for section in SECTIONS:
         text = sections.get(section) or ""
-        undated = _without_dates(text)
+        undated = _without_known_numbers(_without_dates(text), numbers)
         for written, amount in _amounts(undated):
             if amount not in money:
                 flags.append(Flag("stray_money", section, written))

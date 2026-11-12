@@ -613,6 +613,27 @@ def test_a_negative_figure_quoted_as_written_is_not_flagged():
     assert [(f.rule, f.text) for f in flags] == [("stray_number", "-4"), ("stray_number", "3")]
 
 
+def test_a_percent_or_points_figure_quoted_without_units_is_not_money():
+    figures = [
+        {"key": "a", "kind": "percent", "value": "40.00"},
+        {"key": "b", "kind": "points", "value": "-12.10"},
+        {"key": "c", "kind": "money", "value": "1000.00"},
+    ]
+    period = rules.Period(date(2027, 3, 1), date(2027, 3, 7), date(2027, 3, 8))
+    text = "We spent 40.00 of the baseline, -12.10 points, against 1000.00."
+    assert rules.check({"summary": text}, figures, period) == []
+    # Numbers matching no figure are still flagged: stray money, a stray sign, a stray date.
+    stray = "Spent 41.00, then $40.00, 12.10 points and -999.00; done 2027-03-05."
+    flags = rules.check({"summary": stray}, figures, period)
+    assert [(f.rule, f.text) for f in flags] == [
+        ("stray_money", "41.00"),
+        ("stray_money", "$40.00"),
+        ("stray_money", "12.10"),
+        ("stray_money", "999.00"),
+        ("stray_date", "2027-03-05"),
+    ]
+
+
 # --- Who sees what
 
 
@@ -678,6 +699,18 @@ def test_a_correction_withdraws_the_published_report_with_its_reason(db, pm, spo
         "project_id": pid,
         "withdrew_id": old["id"],
     }
+    # The old report's own trail records its withdrawal at its new version.
+    withdraw_row = _rows(db, subject_id=str(old["id"]), status="ok")[-1]
+    assert withdraw_row.action_taken == {
+        "action": "withdrawn",
+        "project_id": pid,
+        "reason": "Spend was misread",
+        "replaced_by_id": new["id"],
+    }
+    # Created at 1, published at 2, withdrawn at 3.
+    assert withdraw_row.version == seen["version"] == 3
+    assert withdraw_row.signals["status"] == "published"
+    assert withdraw_row.output["status"] == "withdrawn"
 
 
 # --- Refusals and the audit trail
