@@ -18,6 +18,11 @@ day of the month (1 to 28) for monthly ones; the API checks it against the perio
 
 `version` guards concurrent edits as on the brief: SQLAlchemy adds it to every UPDATE
 (`version_id_col`), so a write that lost a race fails.
+
+Delivery progress (item 7.2) sits on the same rows, so a plan edit keeps it: a milestone's
+`reached_on` and `reached_note`, and a deliverable's `status`. Each has its own counter
+(`reached_version`, `status_version`) and is written without touching `version`, so recording
+progress never looks like a plan edit (`app.delivery`).
 """
 
 from datetime import date, datetime
@@ -48,6 +53,9 @@ DUE_DAY_MAX = {"weekly": 7, "fortnightly": 7, "monthly": 28}
 AGENT_SOURCE = "agent"
 PERSON_SOURCE = "person"
 SOURCES = (AGENT_SOURCE, PERSON_SOURCE)
+NOT_STARTED = "not_started"
+ACCEPTED = "accepted"
+DELIVERABLE_STATUSES = (NOT_STARTED, "in_progress", "ready_for_acceptance", ACCEPTED)
 
 
 class ProjectPlan(Base):
@@ -103,6 +111,9 @@ class PlanMilestone(Base):
     description: Mapped[str | None] = mapped_column(String(DESCRIPTION_MAX))
     contributors: Mapped[str | None] = mapped_column(String(CONTRIBUTORS_MAX))
     source: Mapped[str] = mapped_column(String(16), default=PERSON_SOURCE)
+    reached_on: Mapped[date | None] = mapped_column(Date)
+    reached_note: Mapped[str | None] = mapped_column(String(DESCRIPTION_MAX))
+    reached_version: Mapped[int] = mapped_column(default=1, server_default="1")
     version: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
@@ -114,6 +125,9 @@ class PlanDeliverable(Base):
     __tablename__ = DELIVERABLES_TABLE
     __table_args__ = (
         CheckConstraint(column("source").in_(SOURCES), name="ck_plan_deliverables_source"),
+        CheckConstraint(
+            column("status").in_(DELIVERABLE_STATUSES), name="ck_plan_deliverables_status"
+        ),
         {"sqlite_autoincrement": True},
     )
 
@@ -127,6 +141,10 @@ class PlanDeliverable(Base):
         ForeignKey(f"{MILESTONES_TABLE}.id", name="fk_plan_deliverables_milestone"), index=True
     )
     source: Mapped[str] = mapped_column(String(16), default=PERSON_SOURCE)
+    status: Mapped[str] = mapped_column(
+        String(32), default=NOT_STARTED, server_default=NOT_STARTED
+    )
+    status_version: Mapped[int] = mapped_column(default=1, server_default="1")
     version: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
