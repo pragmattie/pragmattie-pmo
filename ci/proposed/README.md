@@ -27,12 +27,12 @@ arrived).
 - **`policies/reporting.yaml`** (item 7.5): today's file plus a `flags` section, the limits in
   working days at which the orchestrator raises a status report in the Inbox.
   `overdue_pm_working_days: 10`: a period with no published report goes to the project manager 10
-  working days after its last day. `overdue_sponsor_working_days: 15`: and to the sponsor too
+  working days after its due day. `overdue_sponsor_working_days: 15`: and to the sponsor too
   after 15 (must be at least the project manager's). `unread_working_days: 5`: a published report
   the project's sponsor hasn't opened goes to the sponsor 5 working days after it was published.
-  Each is a whole number from 1 to 260. The limits count from the period's last day, not its due
-  day: a monthly report due on the 10th is about 7 working days past its period already, so a
-  person may want a larger project manager limit. Nothing else in the file changes.
+  Each is a whole number from 1 to 260. Both overdue limits count from the period's due day
+  (`due_on`), not its last day, so weekly, fortnightly and monthly plans are treated alike. The
+  numbers are drafts: the person applying the file sets them. Nothing else in the file changes.
 - **`policies/autonomy.yaml`** (item 7.5): today's file plus three person steps for the report
   flags: `report_overdue_pm` (who `project_manager`), `report_overdue_sponsor` (who `sponsor`)
   and `report_unread` (who `sponsor`). The code refuses any other mode or `who` for them, so an

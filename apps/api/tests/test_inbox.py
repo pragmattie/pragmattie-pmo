@@ -124,9 +124,12 @@ def test_each_role_sees_only_its_own_items(db, web, settings, actions, sign_in):
     assert ("draft_status_report", ids["draft_status_report"]) not in pm_steps
     assert ("publish_status_report", ids["publish_status_report"]) not in pm_steps
     # Item 7.5: the project long in delivery names its project manager and sponsor, so its
-    # draft step and its three report flags go to them; the 7.4 project's first period ended 15
-    # or more days ago, so its overdue flag goes to its named project manager. (Its sponsor
-    # flag, when raised, names nobody, so the sponsor signed in here sees it.)
+    # draft step and its three report flags go to them. The 7.4 project started 21 days ago on a
+    # weekly plan due on Mondays, so its first due day was 14 to 20 days ago: 10 to 14 working
+    # days whatever today is, at or past the drafted project manager limit (10), so its overdue
+    # flag always goes to its named project manager. Its sponsor flag (limit 15) isn't raised,
+    # and would name nobody if it were, so the sponsor signed in here would see it: the count
+    # below is the same either way.
     hidden = {"report_overdue_pm", "report_overdue_sponsor", "report_unread"}
     assert not {e["step"] for e in by_role["sponsor"]["items"]} & {"report_unread"}
     assert ("report_overdue_pm", ids["draft_status_report"]) not in pm_steps

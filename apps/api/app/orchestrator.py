@@ -34,7 +34,7 @@ agent steps the autonomy policy allows, and hands every other step to a person.
   publishes (a floor step).
 - Report flags (item 7.5), person steps raised in the Inbox, with limits in working days from the
   reporting policy file (`flags`): `report_overdue_pm` when a period of a project in delivery has
-  no published report `overdue_pm` working days after its last day, and `report_overdue_sponsor`
+  no published report `overdue_pm` working days after its due day, and `report_overdue_sponsor`
   too after `overdue_sponsor` days; `report_unread` when the project's sponsor hasn't opened a
   published report `unread` working days after it was published. A period whose report was
   published and then withdrawn isn't overdue, and a withdrawn report is never unread. Each flag
@@ -577,8 +577,8 @@ def report_due(db: Session, project: Project) -> tuple[str, StatusReport | None]
 # --- Report flags (item 7.5)
 
 REPORT_OVERDUE = (
-    "{n} period(s) have no published status report {limit} or more working days after they "
-    "ended; the oldest is {start} to {end}"
+    "{n} period(s) have no published status report {limit} or more working days after their "
+    "due day; the oldest is {start} to {end}"
 )
 REPORT_UNREAD = (
     "the sponsor hasn't opened the status report for {start} to {end}, published {limit} or more "
@@ -589,8 +589,9 @@ OVERDUE_STEPS = (("report_overdue_pm", "overdue_pm"), ("report_overdue_sponsor",
 
 def overdue_periods(db: Session, project: Project, limit: int) -> list[report_rules.Period]:
     """The project's periods, oldest first, with no report published (a report published and
-    then withdrawn counts as published) `limit` or more working days after their last day; none
-    unless the project is live and in delivery, with a reporting period and baseline 1."""
+    then withdrawn counts as published) `limit` or more working days after their due day
+    (`due_on`), so weekly, fortnightly and monthly plans count alike; none unless the project is
+    live and in delivery, with a reporting period and baseline 1."""
     if delivery.refusal(project) is not None:
         return []
     plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
@@ -612,7 +613,7 @@ def overdue_periods(db: Session, project: Project, limit: int) -> list[report_ru
         for p in report_rules.periods(
             plan.report_period, plan.report_due_day, first.created_at.date(), today
         )
-        if p.end not in published and working_days(p.end, today) >= limit
+        if p.end not in published and working_days(p.due_on, today) >= limit
     ]
 
 

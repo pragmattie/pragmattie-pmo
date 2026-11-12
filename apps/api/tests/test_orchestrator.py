@@ -1830,9 +1830,10 @@ def flags(monkeypatch):
 
 
 # Delivery starts Monday 4 January 2027; weekly reports are due on Mondays, so the first period
-# is 4 to 10 January.
+# is 4 to 10 January, due on Monday 11 January. Both overdue limits count from the due day.
 FLAG_START = date(2027, 1, 4)
 FIRST_END = date(2027, 1, 10)
+FIRST_DUE = date(2027, 1, 11)
 
 
 def _working_days_after(day: date, n: int) -> date:
@@ -1873,9 +1874,9 @@ def test_an_overdue_report_is_raised_at_its_limit_in_working_days(
 ):
     project, _owner, _sponsor = flag_project
     days = getattr(flags, limit)
-    _on(monkeypatch, _working_days_after(FIRST_END, days - 1))
+    _on(monkeypatch, _working_days_after(FIRST_DUE, days - 1))
     assert _flag_steps(db, rules, step) == []
-    _on(monkeypatch, _working_days_after(FIRST_END, days))
+    _on(monkeypatch, _working_days_after(FIRST_DUE, days))
     (flag,) = _flag_steps(db, rules, step)
     assert (flag.subject_type, flag.subject_id) == ("project", project.id)
     assert (flag.mode, flag.waits_on) == (PERSON, who)
@@ -1888,12 +1889,12 @@ def test_overdue_goes_to_the_project_manager_then_the_sponsor_and_leaves_on_publ
 ):
     actions()
     project, owner, _sponsor = flag_project
-    _on(monkeypatch, _working_days_after(FIRST_END, flags.overdue_pm))
+    _on(monkeypatch, _working_days_after(FIRST_DUE, flags.overdue_pm))
     _pass(db, settings, rules=rules)
     open_flags = {i.step: i for i in _items(db, "open") if i.step.startswith("report_")}
     assert set(open_flags) == {"report_overdue_pm"}
     assert open_flags["report_overdue_pm"].who == "project_manager"
-    _on(monkeypatch, _working_days_after(FIRST_END, flags.overdue_sponsor))
+    _on(monkeypatch, _working_days_after(FIRST_DUE, flags.overdue_sponsor))
     _pass(db, settings, rules=rules)
     open_flags = {i.step: i for i in _items(db, "open") if i.step.startswith("report_")}
     assert set(open_flags) == {"report_overdue_pm", "report_overdue_sponsor"}
@@ -1928,7 +1929,7 @@ def test_a_report_published_then_withdrawn_is_not_overdue(
     db, rules, flags, flag_project, monkeypatch
 ):
     project, owner, _sponsor = flag_project
-    _on(monkeypatch, _working_days_after(FIRST_END, flags.overdue_pm))
+    _on(monkeypatch, _working_days_after(FIRST_DUE, flags.overdue_pm))
     (period,) = orchestrator.overdue_periods(db, project, flags.overdue_pm)
     report = _published(db, project, owner, period)
     report.status = "withdrawn"

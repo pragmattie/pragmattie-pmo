@@ -369,7 +369,7 @@ def _overdue_facts(db: Session, project: Project, step: str) -> list[Fact]:
         return []
     late = orchestrator.overdue_periods(db, project, limit)
     return [
-        Fact("limit", "Limit", f"{limit} working days after the period ends"),
+        Fact("limit", "Limit", f"{limit} working days after the period's due day"),
         Fact(
             "overdue_periods",
             "Periods with no published report",

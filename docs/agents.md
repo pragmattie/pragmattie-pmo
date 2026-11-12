@@ -408,8 +408,9 @@ draft to the project manager's inbox to review and publish.
 
 **Report flags (item 7.5).** Three person steps, limited in working days by `flags` in the
 reporting policy file. `report_overdue_pm` goes to the project manager when a period of a project
-in delivery has no published report `overdue_pm` working days after its last day;
-`report_overdue_sponsor` goes to the sponsor too after `overdue_sponsor` days. `report_unread`
+in delivery has no published report `overdue_pm` working days after its due day;
+`report_overdue_sponsor` goes to the sponsor too after `overdue_sponsor` days, also counted from
+the due day, so weekly, fortnightly and monthly plans are treated alike. `report_unread`
 goes to the sponsor when the project's sponsor hasn't opened a published report `unread` working
 days after it was published. A report published and then withdrawn leaves its period not overdue,
 and a withdrawn report is never unread. No agent ever takes or clears a flag (the loader refuses
