@@ -13,6 +13,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
+from policy_files import autonomy_dir
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -38,7 +39,7 @@ from app.models import (
 )
 from app.models.planning import ProjectAssumption, ProjectBrief, ProjectStakeholder
 from app.plans import compute_total
-from app.policy import get_autonomy
+from app.policy import load_autonomy
 
 PROJECTS = "/api/v1/projects"
 TODAY = utcnow().date()
@@ -669,7 +670,7 @@ def test_the_orchestrators_draft_plan_step_runs_the_same_code(db, project, pm, m
     assert len(client.requests) == 1
     assert {m.owner_user_id for m in _rows(db, PlanMilestone, project)} == {pm.id}
     # Its successful run means the step is no longer offered.
-    steps = orchestrator.subject_steps(db, get_autonomy(), "project", project.id)
+    steps = orchestrator.subject_steps(db, load_autonomy(autonomy_dir()), "project", project.id)
     assert "draft_plan" not in {s.step for s in steps}
 
 

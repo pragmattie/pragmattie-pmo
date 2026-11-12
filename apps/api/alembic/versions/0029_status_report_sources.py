@@ -22,6 +22,8 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 REPORTS = table_name("status_reports")
+USERS = table_name("users")
+CREATED_BY_FK = "fk_status_reports_created_by"
 SECTIONS = ("summary", "done", "next", "issues", "decisions")
 KEEP_IDS = {"sqlite_autoincrement": True}
 
@@ -58,6 +60,13 @@ def downgrade() -> None:
             f"{left} status report(s) were made by the orchestrator and have no person; a person "
             "must decide what to do with them before this downgrade"
         )
+    # MySQL refuses to make a column NOT NULL while a foreign key uses it, so on MySQL the key is
+    # dropped first and recreated, unchanged, after. SQLite's batch mode rebuilds the table anyway.
+    mysql = op.get_bind().dialect.name == "mysql"
+    if mysql:
+        op.drop_constraint(CREATED_BY_FK, REPORTS, type_="foreignkey")
     with op.batch_alter_table(REPORTS, table_kwargs=KEEP_IDS) as batch:
         batch.drop_column("section_sources")
         batch.alter_column("created_by", existing_type=sa.Integer(), nullable=False)
+    if mysql:
+        op.create_foreign_key(CREATED_BY_FK, REPORTS, USERS, ["created_by"], ["id"])
