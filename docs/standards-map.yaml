@@ -197,6 +197,10 @@ features:
     title: Audit filter lists and labelled risk scales
     rules: [R5, R8, R12]
     notes: Audit filters list only logged values in plain words; sign-ins are hidden by default. Risks are scored on the policy's labelled scales with definitions.
+  - id: P7-delivery-progress
+    title: Delivery progress
+    rules: [R1, R5, R12]
+    notes: People mark milestones reached, move deliverables short of accepted and add append-only spend; lateness is in working days against the baseline; every write and refusal audited.
   - id: P7-status-reports
     title: Status reports
     rules: [R1, R5]
