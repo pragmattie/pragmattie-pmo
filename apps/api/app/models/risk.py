@@ -14,7 +14,7 @@ it to every UPDATE (`version_id_col`), so a write that lost a race fails instead
 """
 
 from datetime import date, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     JSON,
@@ -28,10 +28,13 @@ from sqlalchemy import (
     UniqueConstraint,
     column,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.migrations_filter import table_name
 from app.models.base import Base, utcnow
+
+if TYPE_CHECKING:
+    from app.models.auth import User
 
 RISKS_TABLE = table_name("risks")
 PROJECTS_TABLE = table_name("projects")
@@ -92,6 +95,9 @@ class Risk(Base):
     owner_user_id: Mapped[int | None] = mapped_column(
         ForeignKey(f"{USERS_TABLE}.id", name="fk_risks_owner_user"), index=True
     )
+    # Read-only, so the response can name the owner, deactivated people included. Loaded in one
+    # extra query per batch of risks, not one per risk.
+    owner: Mapped["User | None"] = relationship(viewonly=True, lazy="selectin")
     status: Mapped[str] = mapped_column(String(16))
     needs_judgement: Mapped[bool] = mapped_column(default=False)
     # Ticked by the project manager to show the risk (its title and response) in the client's
@@ -120,3 +126,7 @@ class Risk(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     __mapper_args__ = {"version_id_col": version}
+
+    @property
+    def owner_name(self) -> str | None:
+        return self.owner.display_name if self.owner is not None else None

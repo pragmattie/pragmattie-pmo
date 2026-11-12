@@ -137,6 +137,8 @@ class RiskOut(BaseModel):
     response: str
     response_plan: str
     owner_user_id: int | None
+    # The owner's display name, deactivated people included.
+    owner_name: str | None = None
     status: str
     needs_judgement: bool
     show_in_proposal: bool
