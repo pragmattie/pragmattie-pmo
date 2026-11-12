@@ -17,6 +17,7 @@ from app.authz import Action
 from app.autonomy import (
     AGENTS,
     FLOOR_STEPS,
+    STEP_AGENTS,
     STEPS,
     effective_mode,
     who_permission,
@@ -79,8 +80,7 @@ APPLIED = Path(__file__).resolve().parents[3] / "policies"
 
 
 def test_the_simulated_clients_answer_is_optional_and_defaults_to_accepted():
-    """Item 6.8: `agents.simulated_client.answer` is optional; today's applied file has none."""
-    assert load_autonomy(APPLIED).simulated_answer == "accepted"
+    """Item 6.8: `agents.simulated_client.answer` is optional."""
     assert load_autonomy(autonomy_dir()).simulated_answer == "accepted"
 
     def declined(data):
@@ -109,12 +109,24 @@ def test_only_the_simulated_client_has_an_answer():
     _refused(_with(misplaced), "unknown keys: answer")
 
 
-def test_the_proposed_file_is_todays_file_plus_the_answer():
+def test_the_proposed_file_is_todays_file_plus_the_status_report_steps():
+    """Item 7.4: the draft changes nothing in today's file; it adds two steps and one agent."""
     proposed = Path(__file__).resolve().parents[3] / "ci/proposed/policies/autonomy.yaml"
     if not proposed.exists():
         pytest.skip("the proposed autonomy file has been applied")
-    today = (APPLIED / "autonomy.yaml").read_text()
-    assert proposed.read_text() == today + "    answer: accepted\n"
+    today = yaml.safe_load((APPLIED / "autonomy.yaml").read_text())
+    draft = yaml.safe_load(proposed.read_text())
+    assert draft["version"] == today["version"]
+    assert draft["steps"] == {
+        **today["steps"],
+        "draft_status_report": {
+            "mode": "agent",
+            "agent": "status_report_agent",
+            "who": "project_manager",
+        },
+        "publish_status_report": {"mode": "person", "who": "project_manager"},
+    }
+    assert draft["agents"] == {**today["agents"], "status_report_agent": {"enabled": True}}
 
 
 def test_floor_steps_are_fixed_in_code():
@@ -124,7 +136,18 @@ def test_floor_steps_are_fixed_in_code():
         "accept_risk",
         "pass_gate",
         "decide_change_sponsor",
+        "publish_status_report",
     }
+
+
+def test_publishing_a_status_report_is_a_persons_step_with_report_publish():
+    assert STEP_AGENTS["publish_status_report"] == ()
+    assert who_permission("publish_status_report") == "report:publish"
+    assert STEP_AGENTS["draft_status_report"] == ("status_report_agent",)
+    loaded = load_autonomy(autonomy_dir())
+    assert loaded.steps["draft_status_report"].mode == "agent"
+    assert loaded.steps["draft_status_report"].who == "project_manager"
+    assert loaded.steps["publish_status_report"].mode == "person"
 
 
 # --- Refusing bad files
@@ -210,6 +233,7 @@ def test_each_step_names_the_permission_its_who_needs():
         "decide_change_sponsor": "gate:decide",
         "approve_proposal": "proposal:approve",
         "accept_risk": "risk:accept",
+        "publish_status_report": "report:publish",
     }
     for step in STEPS:
         assert who_permission(step) == special.get(step, "project:write")
@@ -227,6 +251,8 @@ def test_each_step_names_the_permission_its_who_needs():
         ("score_risk", "ethics_reviewer", "project:write"),
         ("send_proposal", "sponsor", "project:write"),
         ("decide_change_pm", "sponsor", "project:write"),
+        ("publish_status_report", "sponsor", "report:publish"),
+        ("draft_status_report", "sponsor", "project:write"),
     ],
 )
 def test_a_who_without_the_steps_permission_is_refused(step, role, permission):

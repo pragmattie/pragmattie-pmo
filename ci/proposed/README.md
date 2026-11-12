@@ -27,6 +27,18 @@ Nothing in this folder runs automatically.
   applied, creating or refreshing a status report answers 503 (reading still works). Tests use
   a fixture copy in `apps/api/tests/fixtures/policies/reporting/`, so applying it changes no test.
 
+- **`policies/autonomy.yaml`** (item 7.4), drafted at `ci/proposed/policies/autonomy.yaml`: the
+  applied file plus two steps and one agent switch. `draft_status_report` is `agent`
+  (`status_report_agent`, who `project_manager`): once a report is due and its period has no
+  report, the orchestrator creates the period's draft and the agent drafts its text, once per
+  period. `publish_status_report` is `person` (`project_manager`, who must hold
+  `report:publish`): the reviewed draft goes to the project manager's inbox. Publishing is now a
+  floor step, enforced in code. `agents.status_report_agent.enabled: true`. The loader requires
+  every step exactly once, so **after this item merges the live file is refused until this one
+  is applied**: the orchestrator stops and `GET /api/v1/autonomy` answers 503. Apply it in the
+  same sitting as the merge, as with earlier policy files, so the gap is minutes and nothing
+  hosted runs in between. Tests read this draft while it is pending.
+
 ## Applied
 
 - **`policies/autonomy.yaml`** (item 6.8): one line added, `answer: accepted` under
