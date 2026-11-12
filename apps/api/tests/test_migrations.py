@@ -624,3 +624,56 @@ def test_0026_gives_existing_copies_their_submitter_and_drops_the_column_on_down
             assert conn.exec_driver_sql("SELECT COUNT(*) FROM proposal_versions").scalar() == 2
     finally:
         get_settings.cache_clear()
+
+
+def test_0029_marks_existing_report_sections_as_a_persons_and_guards_the_downgrade(
+    tmp_path, monkeypatch
+):
+    """Nothing written before the status report agent counts as its draft; a report the
+    orchestrator made (no person) stops the downgrade."""
+    import json
+
+    import pytest
+
+    from app.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'migrate.db'}")
+    get_settings.cache_clear()
+    try:
+        config = Config(str(API_DIR / "alembic.ini"))
+        command.upgrade(config, "0028")
+        engine = create_engine(get_settings().database_url)
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO users (id, email, display_name, password_hash, role, is_active, "
+                "failed_logins, created_at) VALUES (1, 'pm@pmo.example', 'P', 'x', "
+                "'project_manager', 1, 0, '2026-11-12')"
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO projects (id, name, stage, sponsor, pm, status, version, created_at) "
+                "VALUES (1, 'F', 'delivery', 'S', 'P', 'on_track', 1, '2026-11-12')"
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO status_reports (id, project_id, period_start, period_end, due_on, "
+                "status, figures, ratings, sections, flags, figures_at, created_by, version, "
+                "created_at, updated_at) VALUES (1, 1, '2027-03-01', '2027-03-07', "
+                "'2027-03-08', 'draft', '[]', '{}', "
+                '\'{"summary": "On track", "done": "  ", "next": null}\', '
+                "'[]', '2027-03-08', 1, 1, '2027-03-08', '2027-03-08')"
+            )
+        command.upgrade(config, "0029")
+        with engine.connect() as conn:
+            stored = conn.exec_driver_sql(
+                "SELECT section_sources FROM status_reports WHERE id = 1"
+            ).scalar_one()
+        person = {"source": "person", "reviewed_by": None, "reviewed_at": None}
+        assert json.loads(stored) == {"summary": person}
+        with engine.begin() as conn:
+            conn.exec_driver_sql("UPDATE status_reports SET created_by = NULL")
+        with pytest.raises(RuntimeError, match="made by the orchestrator"):
+            command.downgrade(config, "0028")
+        with engine.begin() as conn:
+            conn.exec_driver_sql("UPDATE status_reports SET created_by = 1")
+        command.downgrade(config, "0028")
+    finally:
+        get_settings.cache_clear()
