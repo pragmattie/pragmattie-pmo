@@ -520,3 +520,14 @@ def test_the_board_route_says_the_client_is_simulated(db, web, rules, sign_in):
     cards = [c for column in found["columns"] for c in column["cards"]]
     [card] = [c for c in cards if c["key"] == f"project-{project.id}"]
     assert card["client_simulated"] is True and card["simulated"] is True
+
+
+def test_every_step_has_words_and_a_status_report_step_is_on_its_projects_card():
+    """Item 7.4: the two status report steps are named, and a report's step finds its project."""
+    from app.autonomy import STEPS
+
+    assert set(board.STEP_WORDS) == set(STEPS)
+    step = orchestrator.NextStep(
+        "publish_status_report", "status_report", 31, "a draft", "project_manager", "person"
+    )
+    assert board._card_key(step, {("status_report", 31): 5}) == "project-5"

@@ -498,3 +498,13 @@ def test_saving_unchanged_text_doesnt_review_an_agents_draft(db, web, pm, fake, 
     states = edited["section_states"]
     assert states["done"]["source"] == "person"
     assert [n for n in SECTIONS if states[n]["unreviewed"]] == ["summary", "next", "issues"]
+
+
+def test_a_cancelled_project_cant_be_drafted(db, web, pm, fake, mode, report):
+    from app.models import Project
+
+    db.get(Project, report["pid"]).status = "cancelled"
+    db.commit()
+    assert _draft(web, report).status_code == 409
+    assert fake.requests == []
+    assert _refusal_rows(db)[-1].action_taken["refusal"] == "cancelled"

@@ -79,6 +79,8 @@ const STEP_TITLES: Record<string, string> = {
   pass_gate: 'Decide the gate',
   decide_change_pm: 'Decide a change request',
   decide_change_sponsor: 'Decide a change request',
+  draft_status_report: 'Write the status report',
+  publish_status_report: 'Review and publish the status report',
 }
 
 export function stepTitle(step: string): string {

@@ -727,6 +727,18 @@ def draft_status_report(
             detail=AGENT_OFF,
         )
     _require_draft(db, user, project, report, action)
+    refused = delivery.refusal(project)
+    if refused is not None:
+        raise _refuse(
+            db,
+            user,
+            project,
+            report,
+            action=action,
+            refusal=refused[0],
+            code=status.HTTP_409_CONFLICT,
+            detail=refused[1],
+        )
     common = {
         "mode": settings.agent_mode,
         "dry_run": dry_run,
