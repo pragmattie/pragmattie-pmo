@@ -609,6 +609,29 @@ def _change_sample(suffix: str = "", body: dict | None = None, *, status: str | 
     return sample
 
 
+DELIVERY = "/api/v1/projects/{project_id}/delivery"
+
+
+def _delivery_sample(suffix: str = "", body: dict | None = None):
+    """A project in delivery with baseline 1 (from `_change_sample`); `{milestone}` and
+    `{deliverable}` in `suffix` name its milestone and deliverable."""
+
+    def sample(target: int) -> dict:
+        url = _change_sample()(target)["url"].removesuffix("/changes") + "/delivery"
+        with Session(engine) as session:
+            plan = session.scalar(select(ProjectPlan).order_by(ProjectPlan.id.desc()).limit(1))
+            milestone = session.scalar(
+                select(PlanMilestone.id).where(PlanMilestone.plan_id == plan.id)
+            )
+            deliverable = session.scalar(
+                select(PlanDeliverable.id).where(PlanDeliverable.plan_id == plan.id)
+            )
+        url += suffix.format(milestone=milestone, deliverable=deliverable)
+        return {"url": url, "json": body} if body is not None else {"url": url}
+
+    return sample
+
+
 HOLD = "/api/v1/orchestrator/actions/{action_id}/hold"
 
 
@@ -862,6 +885,16 @@ SAMPLES = {
         {"version": 1, "outcome": "reject", "reason": "Not worth it for this pilot phase"},
         status="submitted",
     ),
+    ("GET", DELIVERY): _delivery_sample(),
+    ("PUT", f"{DELIVERY}/milestones/{{milestone_id}}"): _delivery_sample(
+        "/milestones/{milestone}", {"version": 1, "reached_on": "2026-01-05"}
+    ),
+    ("PUT", f"{DELIVERY}/deliverables/{{deliverable_id}}"): _delivery_sample(
+        "/deliverables/{deliverable}", {"version": 1, "status": "in_progress"}
+    ),
+    ("POST", f"{DELIVERY}/spend"): _delivery_sample(
+        "/spend", {"amount": "10.00", "as_of": "2027-01-01", "note": "Finance report"}
+    ),
     ("POST", HOLD): _hold_sample,
     # ORCHESTRATOR_MODE is off in tests, so an allowed caller gets an empty pass, never a call.
     ("POST", "/api/v1/orchestrator/run"): lambda _target: {"url": "/api/v1/orchestrator/run"},
@@ -895,6 +928,7 @@ CREATED = {
     ("POST", f"{PLAN}/estimate-lines"),
     ("POST", PROPOSAL),
     ("POST", CHANGES),
+    ("POST", f"{DELIVERY}/spend"),
 }
 
 # Allowed deletes answer 204.
@@ -1007,6 +1041,10 @@ def test_matrix_covers_the_existing_routes():
         ("POST", f"{CHANGE}/submit"),
         ("POST", f"{CHANGE}/withdraw"),
         ("POST", f"{CHANGE}/decide"),
+        ("GET", DELIVERY),
+        ("PUT", f"{DELIVERY}/milestones/{{milestone_id}}"),
+        ("PUT", f"{DELIVERY}/deliverables/{{deliverable_id}}"),
+        ("POST", f"{DELIVERY}/spend"),
         ("POST", "/api/v1/orchestrator/run"),
         ("POST", HOLD),
         ("GET", "/api/v1/inbox"),
@@ -1100,6 +1138,13 @@ def test_matrix_covers_the_existing_routes():
         ("PATCH", CHANGE),
         ("POST", f"{CHANGE}/submit"),
         ("POST", f"{CHANGE}/withdraw"),
+    ):
+        assert by_method[(method, path)] == Action.PROJECT_WRITE
+    assert by_method[("GET", DELIVERY)] == Action.PROJECT_READ
+    for method, path in (
+        ("PUT", f"{DELIVERY}/milestones/{{milestone_id}}"),
+        ("PUT", f"{DELIVERY}/deliverables/{{deliverable_id}}"),
+        ("POST", f"{DELIVERY}/spend"),
     ):
         assert by_method[(method, path)] == Action.PROJECT_WRITE
     assert by_method[("POST", "/api/v1/orchestrator/run")] == Action.ORCHESTRATOR_RUN
