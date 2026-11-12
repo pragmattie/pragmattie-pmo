@@ -10,11 +10,16 @@
     report is due 10 November).
   A project's periods run from the one holding its first day in delivery to the one holding
   today; a report can be made for any of them.
-- **Figures** (`build_figures`): read from the records as of the period's last day, each with what
-  it counts (`note`) and its sources (table, row id and field). A figure with no source row
-  (a count of zero) has no sources. Milestones are measured against the current baseline's
-  targets, in working days (`app.delivery.days_late`), counting a milestone reached after the
-  period as not reached yet. Spend is the project's current figure (its newest entry).
+- **Figures** (`build_figures`): each with what it counts (`note`) and its sources (table, row
+  id and field). A figure with no source row (a count of zero) has no sources. Figures are as of
+  the period's last day where the records allow:
+  - the baseline is the newest one approved on or before the period's last day (not the latest
+    overall), and milestones are measured against its targets, in working days
+    (`app.delivery.days_late`), counting a milestone reached after the period as not reached yet;
+  - spend is the newest entry dated on or before the period's last day.
+  Figures with no history to read as of a date (deliverables by status, open risks by band, open
+  escalations and change requests waiting) are current values: each says so in its note
+  ("as of" the day the figures were read), and the report shows that day (`figures_at`).
   - Open escalations count only what is still waiting for a decision above the project manager:
     open risks escalated beyond the project manager, and submitted change requests a sponsor
     decides. Change requests waiting counts every submitted change, so one change can be in both.
@@ -23,15 +28,16 @@
   and the measure it used. The overall rating is the worst of the four.
 - **Checker** (`check`): flags each money figure, date or plain number in the text that isn't
   one of the report's figures. Money and dates are read as the proposal checker reads them
-  (`app.proposals`); a plain number is any other number, a percentage included, and matches when
-  it equals a figure's value (`12.5` matches `12.50`). Dates also match the period's start, end
+  (`app.proposals`); a plain number is any other number, a percentage included, keeps a leading
+  minus sign, and matches when it equals a figure's value (`12.5` matches `12.50`, `-12.10`
+  matches a figure of `-12.10` and `-4` doesn't match `4`). Dates also match the period's start, end
   and due day.
 """
 
 import re
 from calendar import monthrange
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -39,7 +45,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import delivery
-from app.baselines import latest_baseline
 from app.models import ChangeRequest, PlanDeliverable, ProjectPlan, ProjectSpend, Risk
 from app.models.baseline import ProjectBaseline
 from app.models.plan import DELIVERABLE_STATUSES
@@ -167,6 +172,19 @@ def first_baseline(db: Session, project_id: int) -> ProjectBaseline | None:
     )
 
 
+def baseline_as_of(db: Session, project_id: int, day: date) -> ProjectBaseline | None:
+    """The newest baseline approved on or before `day`."""
+    return db.scalar(
+        select(ProjectBaseline)
+        .where(
+            ProjectBaseline.project_id == project_id,
+            ProjectBaseline.created_at < datetime.combine(day + timedelta(days=1), time.min),
+        )
+        .order_by(ProjectBaseline.number.desc())
+        .limit(1)
+    )
+
+
 def _elapsed_pct(start: date, finish: date | None, on: date) -> Decimal:
     """The share of the time from `start` to `finish` that has passed by `on`, 0 to 100."""
     if finish is None or finish <= start:
@@ -176,13 +194,15 @@ def _elapsed_pct(start: date, finish: date | None, on: date) -> Decimal:
 
 
 def build_figures(
-    db: Session, project_id: int, plan: ProjectPlan, period: Period, next_: Period
+    db: Session, project_id: int, plan: ProjectPlan, period: Period, next_: Period, read_on: date
 ) -> list[dict[str, Any]]:
-    """The report's figures for `period`, read from the records now."""
-    first = first_baseline(db, project_id)
-    current = latest_baseline(db, project_id)
-    assert first is not None and current is not None  # a project in delivery has baseline 1
+    """The report's figures for `period`, read from the records on `read_on`."""
     end = period.end
+    first = first_baseline(db, project_id)
+    assert first is not None  # a project in delivery has baseline 1
+    # Every period ends on or after baseline 1's day, so there is always one; baseline 1 if not.
+    current = baseline_as_of(db, project_id, end) or first
+    now = f"as of {read_on.isoformat()}, the day the figures were read"
     figures: list[dict[str, Any]] = []
     add = figures.append
 
@@ -193,7 +213,8 @@ def build_figures(
             "Baseline number",
             "number",
             current.number,
-            "The number of the current baseline: 1 at the go-ahead, one more per approved change",
+            "The number of the baseline in force on the period's last day: 1 at the go-ahead, one "
+            "more per approved change",
             [_src(BASELINES, current.id, "number")],
         )
     )
@@ -203,7 +224,7 @@ def build_figures(
             "Baseline total",
             "money",
             _money(current.total),
-            "The current baseline's total, contingency included",
+            "The total of the baseline in force on the period's last day, contingency included",
             [_src(BASELINES, current.id, "total")],
         )
     )
@@ -230,8 +251,8 @@ def build_figures(
             "Baseline moved since baseline 1 (%)",
             "percent",
             _money(scope_pct) if scope_pct is not None else None,
-            "How far the current baseline total is from baseline 1's, either way, as a "
-            "percentage of baseline 1's total",
+            "How far the total of the baseline in force on the period's last day is from "
+            "baseline 1's, either way, as a percentage of baseline 1's total",
             [_src(BASELINES, first.id, "total"), _src(BASELINES, current.id, "total")],
         )
     )
@@ -270,7 +291,7 @@ def build_figures(
     # Spend.
     spend = db.scalar(
         select(ProjectSpend)
-        .where(ProjectSpend.project_id == project_id)
+        .where(ProjectSpend.project_id == project_id, ProjectSpend.as_of <= end)
         .order_by(ProjectSpend.id.desc())
         .limit(1)
     )
@@ -281,7 +302,8 @@ def build_figures(
             "Spend to date",
             "money",
             _money(spend.amount) if spend else None,
-            "The project's current spend figure (its newest entry); none until one is recorded",
+            "The project's newest spend entry dated on or before the period's last day; none "
+            "until one is recorded",
             spend_sources,
         )
     )
@@ -306,7 +328,8 @@ def build_figures(
             "Baseline spent (%)",
             "percent",
             _money(spent_pct) if spent_pct is not None else None,
-            "Spend to date as a percentage of the current baseline total",
+            "Spend to date as a percentage of the total of the baseline in force on the period's "
+            "last day",
             [*spend_sources, _src(BASELINES, current.id, "total")] if spend else [],
         )
     )
@@ -321,8 +344,8 @@ def build_figures(
             "Delivery time passed (%)",
             "percent",
             _money(elapsed),
-            "The share of the time from baseline 1 to the latest milestone target in the current "
-            "baseline that had passed by the period's last day",
+            "The share of the time from baseline 1 to the latest milestone target in the "
+            "baseline in force that had passed by the period's last day",
             [_src(BASELINES, first.id, "created_at")]
             + (
                 [_src(BASELINES, current.id, f"plan.milestones[{finish_id}].target_date")]
@@ -365,7 +388,7 @@ def build_figures(
                     f"Target: {m.name}",
                     "date",
                     target.isoformat(),
-                    "The milestone's target date in the current baseline",
+                    "The milestone's target date in the baseline in force on the period's last day",
                     [target_src],
                 )
             )
@@ -469,7 +492,7 @@ def build_figures(
                 f"Deliverables {status.replace('_', ' ')}",
                 "count",
                 len(rows),
-                f"Deliverables whose status is {status.replace('_', ' ')} now",
+                f"Deliverables whose status is {status.replace('_', ' ')}, {now}",
                 [_src(DELIVERABLES, d.id, "status") for d in rows],
             )
         )
@@ -492,9 +515,9 @@ def build_figures(
                 f"Open risks: {band}",
                 "count",
                 len(bands[band]),
-                f"Open risks in the risk register whose band is {band}"
+                f"Open risks in the risk register whose band is {band}, {now}"
                 if band != UNSCORED
-                else "Open risks in the risk register not yet scored",
+                else f"Open risks in the risk register not yet scored, {now}",
                 [_src(RISKS, r.id, "band") for r in bands[band]],
             )
         )
@@ -514,7 +537,7 @@ def build_figures(
             "count",
             len(escalated_risks) + len(escalated_changes),
             "Decisions waiting above the project manager: open risks escalated beyond the "
-            "project manager, and submitted change requests a sponsor decides",
+            f"project manager, and submitted change requests a sponsor decides; {now}",
             [_src(RISKS, r.id, "escalated_to") for r in escalated_risks]
             + [_src(CHANGES, c.id, "decider") for c in escalated_changes],
         )
@@ -525,7 +548,7 @@ def build_figures(
             "Change requests waiting",
             "count",
             len(waiting),
-            "Change requests submitted and waiting for a decision, whoever decides them",
+            f"Change requests submitted and waiting for a decision, whoever decides them; {now}",
             [_src(CHANGES, c.id, "status") for c in waiting],
         )
     )
@@ -648,7 +671,8 @@ def rate(figures: list[dict[str, Any]], policy: ReportingPolicy) -> dict[str, di
 
 # --- Checker
 
-_NUMBER = re.compile(r"(?<![\w.,])\d+(?:\.\d+)?(?![\w]|[.,]\d)")
+# A leading minus sign belongs to the number, so a negative figure quoted as written matches.
+_NUMBER = re.compile(r"(?:(?<![\w.,])-)?(?<![\w.,])\d+(?:\.\d+)?(?![\w]|[.,]\d)")
 
 
 def _without_money(text: str) -> str:

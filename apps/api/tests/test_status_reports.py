@@ -14,6 +14,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app import delivery
+from app import policy as policy_module
 from app import reports as rules
 from app.baselines import freeze
 from app.db import engine
@@ -458,6 +459,63 @@ def test_refresh_changes_a_draft_and_a_published_report_stays_as_it_was(db, pm, 
     assert _refusals(db) == ["not_draft", "not_draft"]
 
 
+def test_figures_are_as_of_the_period_end_where_the_records_allow(db, pm, ids):
+    pid, web, who = ids["pid"], pm[0], pm[1].id
+    plan = db.get(ProjectPlan, ids["plan"])
+    # Baseline 2, approved on Tuesday 9 March, after the period ending 7 March: 1500.00.
+    db.add(
+        PlanEstimateLine(plan_id=plan.id, description="Extra", category="people", amount="500.00")
+    )
+    change = _change(
+        db, pid, who, status="approved", decided_at=datetime(2027, 3, 9, 10), decider="sponsor"
+    )
+    second = freeze(db, plan, change_request_id=change.id)
+    second.created_at = datetime(2027, 3, 9, 10)
+    # Spend: 400.00 as of 5 March, then a newer entry dated 9 March, after the period.
+    before = ProjectSpend(
+        project_id=pid, amount="400.00", as_of=date(2027, 3, 5), note="Finance", created_by=who
+    )
+    db.add(before)
+    db.flush()
+    db.add(
+        ProjectSpend(
+            project_id=pid, amount="900.00", as_of=date(2027, 3, 9), note="Later", created_by=who
+        )
+    )
+    db.commit()
+
+    report = _create(web, pid).json()
+    figures = _figures(report)
+    assert figures["baseline_number"]["value"] == 1
+    assert figures["baseline_total"]["value"] == "1000.00"
+    assert figures["baseline_total"]["sources"] == [
+        {"table": "project_baselines", "id": ids["baseline"], "field": "total"}
+    ]
+    assert figures["scope_moved_pct"]["value"] == "0.00"
+    assert figures["spend_to_date"]["value"] == "400.00"
+    assert figures["spend_to_date"]["sources"] == [
+        {"table": "project_spend", "id": before.id, "field": "amount"}
+    ]
+    assert figures["spend_as_of"]["value"] == "2027-03-05"
+    assert figures["spent_pct"]["value"] == "40.00"
+    assert figures["approved_changes"]["value"] == 0
+    assert report["ratings"]["scope"]["rating"] == "green"
+
+    # The period holding 9 March reads the new baseline and spend.
+    later = _figures(_create(web, pid, date(2027, 3, 14)).json())
+    assert (later["baseline_number"]["value"], later["baseline_total"]["value"]) == (2, "1500.00")
+    assert later["spend_to_date"]["value"] == "900.00"
+    assert later["approved_changes"]["value"] == 1
+
+    # Figures with no history are current values, and their notes say as of when.
+    read_on = report["figures_at"][:10]
+    for key in ("deliverables_not_started", "open_escalations", "changes_waiting"):
+        assert f"as of {read_on}" in figures[key]["note"], key
+    _risk(db, pid, "Low")
+    refreshed = _figures(_act(web, pid, report["id"], "refresh", 1).json())
+    assert f"as of {read_on}" in refreshed["open_risks_low"]["note"]
+
+
 def test_escalations_count_only_decisions_waiting_above_the_project_manager(db, pm, ids):
     pid, who = ids["pid"], pm[1].id
     _risk(db, pid, "High", escalated_to="sponsor", escalated_band="High")
@@ -542,6 +600,17 @@ def test_plain_numbers_match_figures_whatever_their_form():
     text = "12.5% spent, 3 open, 1000 in total, phase Q1 and 4 more"
     flags = rules.check({"summary": text}, figures, period)
     assert [(f.rule, f.text) for f in flags] == [("stray_number", "4")]
+
+
+def test_a_negative_figure_quoted_as_written_is_not_flagged():
+    figures = [
+        {"key": "a", "kind": "percent", "value": "-12.10"},
+        {"key": "b", "kind": "count", "value": 4},
+    ]
+    period = rules.Period(date(2027, 3, 1), date(2027, 3, 7), date(2027, 3, 8))
+    text = "Spend is -12.10% behind time; 4 open, not -4, and 3-4 weeks out"
+    flags = rules.check({"summary": text}, figures, period)
+    assert [(f.rule, f.text) for f in flags] == [("stray_number", "-4"), ("stray_number", "3")]
 
 
 # --- Who sees what
@@ -634,6 +703,35 @@ def test_refusals_are_409_or_422_and_audited(db, pm, sign_in, ids):
     db.commit()
     assert _act(web, pid, rid, "refresh", 1).status_code == 409
     assert _refusals(db)[-1] == "cancelled"
+
+
+def test_without_the_reporting_policy_create_and_refresh_are_503_and_audited(
+    db, pm, ids, monkeypatch
+):
+    pid, web = ids["pid"], pm[0]
+    rid = _create(web, pid).json()["id"]
+
+    def missing():
+        raise policy_module.PolicyError("reporting.yaml: policy file not found")
+
+    monkeypatch.setattr(policy_module, "get_reporting", missing)
+    created = _create(web, pid, date(2027, 2, 28))
+    assert created.status_code == 503
+    assert "reporting policy" in created.json()["detail"]
+    assert _act(web, pid, rid, "refresh", 1).status_code == 503
+    rows = _rows(db, status="rejected")
+    assert [(r.action_taken["action"], r.action_taken["refusal"]) for r in rows] == [
+        ("create_refused", "policy_unavailable"),
+        ("refresh_refused", "policy_unavailable"),
+    ]
+    assert [(r.subject_type, r.subject_id) for r in rows] == [
+        ("project", str(pid)),
+        ("status_report", str(rid)),
+    ]
+    # Nothing was written: no new report, and the draft is as it was.
+    assert web.get(_url(pid, f"/{rid}")).json()["version"] == 1
+    listed = web.get(_url(pid)).json()["items"]
+    assert [r["id"] for p in listed for r in p["reports"]] == [rid]
 
 
 def test_every_write_is_one_audit_row(db, pm, ids):

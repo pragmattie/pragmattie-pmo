@@ -25,7 +25,8 @@ period in the plan, and a period of the project's. Every write on a report carri
 (stale is a 409). Every write is one audit row (agent `status_report`), and so is every refused
 attempt, a role without `report:publish` included. Nothing is sent anywhere from here. The
 ratings come from the reporting policy file (`app.policy.get_reporting`); until a person applies
-it, creating and refreshing answer 503.
+it, or while it is invalid, creating and refreshing answer 503, recorded as a refusal
+(`policy_unavailable`).
 """
 
 import logging
@@ -122,12 +123,24 @@ def _plan(db: Session, project_id: int) -> ProjectPlan | None:
     return db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project_id))
 
 
-def _policy() -> ReportingPolicy:
+def _policy(
+    db: Session, user: User, project: Project, report: StatusReport | None, action: str
+) -> ReportingPolicy:
+    """The reporting policy, or the refusal (503, one audit row) while it's missing or invalid."""
     try:
         return policies.get_reporting()
     except PolicyError:
         logger.exception("reporting policy failed to load")
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, UNAVAILABLE) from None
+    raise _refuse(
+        db,
+        user,
+        project,
+        report,
+        action=action,
+        refusal="policy_unavailable",
+        code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=UNAVAILABLE,
+    )
 
 
 def _periods(db: Session, project: Project, plan: ProjectPlan | None) -> list[rules.Period]:
@@ -362,9 +375,11 @@ def _fill(
 ) -> None:
     """Read the figures from the records, rate them and run the checker."""
     next_ = rules.next_period(plan.report_period, plan.report_due_day, period)
-    report.figures = rules.build_figures(db, report.project_id, plan, period, next_)
-    report.ratings = rules.rate(report.figures, policy)
     report.figures_at = utcnow()
+    report.figures = rules.build_figures(
+        db, report.project_id, plan, period, next_, report.figures_at.date()
+    )
+    report.ratings = rules.rate(report.figures, policy)
     _check(report)
 
 
@@ -459,8 +474,8 @@ def create_status_report(
     project_id: int, body: ReportCreate, user: CreateWriter, db: Db
 ) -> ReportOut:
     action = "create"
-    policy = _policy()
     project = _locked_project(db, project_id)
+    policy = _policy(db, user, project, None, action)
     plan, periods = _reportable(db, user, project, None, action)
     period = next((p for p in periods if p.end == body.period_end), None)
     if period is None:
@@ -564,10 +579,10 @@ def refresh_status_report(
     project_id: int, report_id: int, body: ReportVersionIn, user: RefreshWriter, db: Db
 ) -> ReportOut:
     action = "refresh"
-    policy = _policy()
     project = _locked_project(db, project_id)
     report = _locked_report(db, user, project, report_id, body.version, action)
     _require_draft(db, user, project, report, action)
+    policy = _policy(db, user, project, report, action)
     plan, _ = _reportable(db, user, project, report, action)
     before = _snapshot(report)
     _fill(db, report, plan, _period_of(report), policy)
