@@ -180,3 +180,20 @@ def _autonomy_policy(monkeypatch):
     from app import policy
 
     monkeypatch.setattr(policy, "get_autonomy", _test_autonomy)
+
+
+# The reporting policy is drafted in ci/proposed/policies/ and applied to policies/ by a person.
+# Tests use a fixture copy of the draft, so the ratings they check don't move when a person
+# changes a limit in the applied file.
+@cache
+def _test_reporting():
+    from app.policy import load_reporting
+
+    return load_reporting(Path(__file__).parent / "fixtures" / "policies" / "reporting")
+
+
+@pytest.fixture(autouse=True)
+def _reporting_policy(monkeypatch):
+    from app import policy
+
+    monkeypatch.setattr(policy, "get_reporting", _test_reporting)

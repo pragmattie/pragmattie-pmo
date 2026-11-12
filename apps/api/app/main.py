@@ -26,6 +26,7 @@ from app.api import (
     risk_policy,
     risks,
     standards,
+    status_reports,
     users,
 )
 from app.config import get_settings
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
     api.include_router(risks.router)
     api.include_router(risks.escalations_router)
     api.include_router(standards.router)
+    api.include_router(status_reports.router)
     api.include_router(users.router)
     app.include_router(api)
     return app
