@@ -362,8 +362,17 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
             "ck_status_reports_status",
             "ck_status_reports_period",
         }
+        # 0029: who wrote each section of a status report, and reports with no person.
+        report_columns = {c["name"]: c for c in inspector.get_columns("status_reports")}
+        assert not report_columns["section_sources"]["nullable"]
+        assert report_columns["created_by"]["nullable"]
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0028")
+        inspector = inspect(create_engine(get_settings().database_url))
+        report_columns = {c["name"]: c for c in inspector.get_columns("status_reports")}
+        assert "section_sources" not in report_columns
+        assert not report_columns["created_by"]["nullable"]
         command.downgrade(config, "0027")
         inspector = inspect(create_engine(get_settings().database_url))
         assert "status_reports" not in inspector.get_table_names()

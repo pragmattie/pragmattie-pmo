@@ -20,6 +20,7 @@
   Figures with no history to read as of a date (deliverables by status, open risks by band, open
   escalations and change requests waiting) are current values: each says so in its note
   ("as of" the day the figures were read), and the report shows that day (`figures_at`).
+  - The next period's start, end and due day come from the plan's reporting fields.
   - Open escalations count only what is still waiting for a decision above the project manager:
     open risks escalated beyond the project manager, and submitted change requests a sponsor
     decides. Change requests waiting counts every submitted change, so one change can be in both.
@@ -65,6 +66,7 @@ BASELINES = "project_baselines"
 MILESTONES = "plan_milestones"
 DELIVERABLES = "plan_deliverables"
 SPEND = "project_spend"
+PLANS = "project_plans"
 CHANGES = "change_requests"
 RISKS = "risks"
 
@@ -256,6 +258,25 @@ def build_figures(
             [_src(BASELINES, first.id, "total"), _src(BASELINES, current.id, "total")],
         )
     )
+
+    # The next period, worked out from the plan's reporting fields (item 7.4), so a person or the
+    # agent can name its dates in "planned for next period".
+    reporting = [_src(PLANS, plan.id, "report_period"), _src(PLANS, plan.id, "report_due_day")]
+    for key, label, day, note in (
+        ("next_period_start", "Next period starts", next_.start, "The next period's first day"),
+        ("next_period_end", "Next period ends", next_.end, "The next period's last day"),
+        ("next_period_due", "Next report due", next_.due_on, "The day the next report is due"),
+    ):
+        add(
+            _figure(
+                key,
+                label,
+                "date",
+                day.isoformat(),
+                f"{note}, from the plan's reporting period and due day",
+                reporting,
+            )
+        )
 
     # Approved changes in the period.
     approved = [
@@ -667,6 +688,39 @@ def rate(figures: list[dict[str, Any]], policy: ReportingPolicy) -> dict[str, di
         f"{ratings[worst]['rating']})",
     }
     return ratings
+
+
+# --- Who wrote each section (item 7.4)
+
+AGENT_SOURCE, PERSON_SOURCE = "agent", "person"
+
+
+def _source(report: Any, name: str) -> dict[str, Any]:
+    return (report.section_sources or {}).get(name) or {}
+
+
+def is_unreviewed(report: Any, name: str) -> bool:
+    """Whether the section is written and is an agent's draft no person has edited or confirmed."""
+    entry = _source(report, name)
+    written = bool(((report.sections or {}).get(name) or "").strip())
+    return written and entry.get("source") == AGENT_SOURCE and entry.get("reviewed_by") is None
+
+
+def unreviewed_sections(report: Any) -> list[str]:
+    return [name for name in SECTIONS if is_unreviewed(report, name)]
+
+
+def empty_sections(report: Any) -> list[str]:
+    return [name for name in SECTIONS if not ((report.sections or {}).get(name) or "").strip()]
+
+
+def mark_section(
+    report: Any, name: str, *, source: str, reviewed_by: int | None, reviewed_at: str | None
+) -> None:
+    """Record who wrote, or who reviewed, a section. The dict is replaced, so it is saved."""
+    sources = dict(report.section_sources or {})
+    sources[name] = {"source": source, "reviewed_by": reviewed_by, "reviewed_at": reviewed_at}
+    report.section_sources = sources
 
 
 # --- Checker
