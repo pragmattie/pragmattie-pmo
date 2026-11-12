@@ -209,6 +209,10 @@ features:
     title: Status report agent
     rules: [R1, R2, R4, R5, R12]
     notes: Drafts a due report's text with numbers only as figure keys; a person confirms each section and publishes. Runs once per period, has an off switch, and audits every call.
+  - id: P7-executive-view-and-report-flags
+    title: Executive view and report flags
+    rules: [R3, R5, R12]
+    notes: One page from a published report's frozen figures. Overdue or unread reports reach set people at policy limits and leave once published or read; all audited.
   - id: P7-closure
     title: Closure report and lessons
     rules: []
