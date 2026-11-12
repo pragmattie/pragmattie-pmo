@@ -2,7 +2,7 @@
 (the orchestrator's next steps), the summary, the filters and who may read it. No test calls a
 model."""
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -12,9 +12,11 @@ from test_intake import add_value_case
 from test_orchestrator import (
     Calls,
     _complete_plan,
+    _in_delivery,
     _pass,
     _project,
     _proposal,
+    _published,
     _request,
     _risk,
     _risk_agent_ran,
@@ -24,8 +26,9 @@ from test_orchestrator import (
     _world,
 )
 
-from app import board, orchestrator
+from app import board, delivery, orchestrator
 from app import policy as policy_module
+from app import reports as report_rules
 from app.board import Filters
 from app.config import get_settings
 from app.db import engine
@@ -531,3 +534,37 @@ def test_every_step_has_words_and_a_status_report_step_is_on_its_projects_card()
         "publish_status_report", "status_report", 31, "a draft", "project_manager", "person"
     )
     assert board._card_key(step, {("status_report", 31): 5}) == "project-5"
+
+
+def test_a_project_card_shows_its_latest_published_rating_and_its_age(
+    db, rules, web, sign_in, monkeypatch
+):
+    """Item 7.5: the newest period's published report; a draft or withdrawn one isn't shown."""
+    monkeypatch.setattr(delivery, "today", lambda: date(2027, 3, 10))
+    pm = _user(db)
+    project = _in_delivery(db, pm, date(2027, 1, 4))
+    key = f"project-{project.id}"
+    assert _cards(db, rules)[key].report_rating is None
+    first = report_rules.Period(date(2027, 1, 4), date(2027, 1, 10), date(2027, 1, 11))
+    second = report_rules.Period(date(2027, 1, 11), date(2027, 1, 17), date(2027, 1, 18))
+    older = _published(db, project, pm, first)
+    newer = _published(db, project, pm, second, at=datetime(2027, 3, 3, 16, 0))
+    newer.ratings = {**newer.ratings, "overall": {**newer.ratings["overall"], "rating": "red"}}
+    db.commit()
+    card = _cards(db, rules)[key]
+    assert (card.report_rating, card.report_age_days) == ("red", 7)
+    assert card.report_published_at == datetime(2027, 3, 3, 16, 0)
+
+    sign_in(web, db, "sponsor")
+    api = _api_cards(_get(web))[key]
+    assert (api["report_rating"], api["report_age_days"]) == ("red", 7)
+
+    # Withdrawn, the newer one gives way to the one before it.
+    newer.status = "withdrawn"
+    newer.withdrawn_by = pm.id
+    newer.withdrawn_at = datetime(2027, 3, 4)
+    newer.withdrawn_reason = "Wrong figures"
+    db.commit()
+    card = _cards(db, rules)[key]
+    assert card.report_rating == older.ratings["overall"]["rating"]
+    assert card.report_age_days == (date(2027, 3, 10) - date(2027, 1, 11)).days

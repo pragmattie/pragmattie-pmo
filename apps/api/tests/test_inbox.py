@@ -123,8 +123,15 @@ def test_each_role_sees_only_its_own_items(db, web, settings, actions, sign_in):
     # report steps go to that person too.
     assert ("draft_status_report", ids["draft_status_report"]) not in pm_steps
     assert ("publish_status_report", ids["publish_status_report"]) not in pm_steps
+    # Item 7.5: the project long in delivery names its project manager and sponsor, so its
+    # draft step and its three report flags go to them; the 7.4 project's first period ended 15
+    # or more days ago, so its overdue flag goes to its named project manager. (Its sponsor
+    # flag, when raised, names nobody, so the sponsor signed in here sees it.)
+    hidden = {"report_overdue_pm", "report_overdue_sponsor", "report_unread"}
+    assert not {e["step"] for e in by_role["sponsor"]["items"]} & {"report_unread"}
+    assert ("report_overdue_pm", ids["draft_status_report"]) not in pm_steps
     shown = sum(len(page["items"]) for page in by_role.values())
-    assert shown == len(open_items) - 4
+    assert shown == len(open_items) - 4 - len(hidden) - 1 - 1
 
 
 def test_a_draft_request_goes_to_the_project_manager_who_raised_it(
@@ -822,3 +829,11 @@ def test_a_judgement_risk_leaves_the_agents_suggestion_out(db):
     assert recommend("score_risk", facts) == (
         "Score it yourself: it needs a person's judgement, so no agent may score it."
     )
+
+
+def test_report_flags_have_their_own_recommendations():
+    """Item 7.5: each flag says how it leaves the Inbox."""
+    for step in ("report_overdue_pm", "report_overdue_sponsor", "report_unread"):
+        text = inbox.recommend(step, [])
+        assert text != inbox.DEFAULT_RECOMMENDATION
+        assert "leaves" in text
