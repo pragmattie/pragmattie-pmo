@@ -25,7 +25,7 @@ import {
 // Projects (item 4.6). Without an id, the list of projects; with one, the project: its brief,
 // plan (item 5.1), proposal (item 5.2), the go-ahead gate and its latest baseline (item 5.4), its
 // change requests and delivery progress once in delivery (items 5.5 and 7.2), stakeholders and
-// assumptions, a link to its risks and one back to the request it came from.
+// assumptions, links to its status reports (item 7.3) and risks, and one back to its request.
 // The API guards every route; the baseline is read-only.
 const route = useRoute()
 const projectId = computed(() => (route.params.id ? Number(route.params.id) : null))
@@ -150,6 +150,13 @@ watch(projectId, load, { immediate: true })
         >
           Its request
         </v-btn>
+        <v-btn
+          variant="outlined"
+          :to="{ name: 'status-reports', params: { id: project.id } }"
+          data-test="status-reports-link"
+        >
+          Status reports
+        </v-btn>
         <v-btn color="primary" variant="outlined" :to="risksLink(project.id)" data-test="risks-link">
           Risks
         </v-btn>
@@ -217,7 +224,7 @@ watch(projectId, load, { immediate: true })
         @conflict="gateConflict"
       />
 
-      <section v-if="baseline" class="mb-6" data-test="baseline">
+      <section v-if="baseline" id="baseline" class="mb-6" data-test="baseline">
         <h2 class="text-subtitle-1 mb-2">Baseline {{ baseline.number }}</h2>
         <p class="text-caption text-medium-emphasis mb-2" data-test="baseline-made-by">
           The plan as it stood when

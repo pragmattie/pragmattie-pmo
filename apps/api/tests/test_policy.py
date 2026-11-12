@@ -526,3 +526,56 @@ def test_only_the_loader_reads_policy_files():
         if name not in ("app/policy.py", "app/config.py") and "policies_dir" in text:
             offenders.append(f"{name} uses policies_dir")
     assert offenders == []
+
+
+# --- The reporting policy (item 7.3)
+
+REPORTING_FIXTURE = Path(__file__).parent / "fixtures" / "policies" / "reporting"
+
+
+def _reporting(change: Callable[[dict], None] | None = None):
+    from app.policy import parse_reporting
+
+    data = yaml.safe_load((REPORTING_FIXTURE / "reporting.yaml").read_text())
+    if change:
+        change(data)
+    return parse_reporting(data)
+
+
+def test_reporting_fixture_loads():
+    from app.policy import load_reporting
+
+    policy = load_reporting(REPORTING_FIXTURE)
+    assert (policy.schedule.amber, policy.schedule.red) == (Decimal(0), Decimal(10))
+    assert (policy.cost.amber, policy.cost.red) == (Decimal(5), Decimal(15))
+    assert (policy.scope.amber, policy.scope.red) == (Decimal(5), Decimal(10))
+    assert dict(policy.risk_amber_at) == {"Medium": 1, "High": 1}
+    assert dict(policy.risk_red_at) == {"High": 2}
+
+
+def test_reporting_missing_file_names_where_the_draft_is(tmp_path):
+    from app.policy import load_reporting
+
+    with pytest.raises(PolicyError, match="reporting.yaml: policy file not found"):
+        load_reporting(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        (lambda d: d.update(extra=1), "unknown keys: extra"),
+        (lambda d: d.pop("scope"), "missing keys: scope"),
+        (lambda d: d["schedule"].update(red_above_working_days=-1), "whole number"),
+        (lambda d: d["schedule"].update(amber_above_working_days=1.5), "whole number"),
+        (lambda d: d["cost"].update(red_above_points=True), "expected a number"),
+        (lambda d: d["scope"].update(amber_above_pct=101), "expected a number"),
+        (lambda d: d["scope"].update(amber_above_pct=5.001), "2 decimal places"),
+        (lambda d: d["cost"].update(red_above_points=4), "must be at least amber_above_points"),
+        (lambda d: d["risk"].update(red_at={}), "at least one band"),
+        (lambda d: d["risk"]["amber_at"].update(High=0), "at least 1"),
+        (lambda d: d["risk"].update(watch={}), "unknown keys: watch"),
+    ],
+)
+def test_reporting_rejects_bad_values(change, match):
+    with pytest.raises(PolicyError, match=match):
+        _reporting(change)

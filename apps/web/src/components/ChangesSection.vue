@@ -161,7 +161,7 @@ async function decide() {
 </script>
 
 <template>
-  <section class="mb-6" data-test="changes">
+  <section id="changes" class="mb-6" data-test="changes">
     <h2 class="text-subtitle-1 mb-2">Changes</h2>
     <v-alert v-if="loadError" type="info" variant="tonal" class="mb-2" data-test="changes-error">
       {{ loadError }}

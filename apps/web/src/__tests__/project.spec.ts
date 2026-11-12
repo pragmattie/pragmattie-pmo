@@ -228,6 +228,7 @@ describe('the project page', () => {
   it('links to the project risks and back to its request', async () => {
     await mountAt('/projects/5')
     expect(find('risks-link')?.getAttribute('href')).toBe('/risks?project=5')
+    expect(find('status-reports-link')?.getAttribute('href')).toBe('/projects/5/status-reports')
     expect(find('request-link')?.getAttribute('href')).toBe('/intake/1')
   })
 

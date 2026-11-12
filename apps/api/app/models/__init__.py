@@ -19,6 +19,7 @@ from app.models.plan import PlanDeliverable, PlanEstimateLine, PlanMilestone, Pr
 from app.models.planning import ProjectAssumption, ProjectBrief, ProjectStakeholder
 from app.models.portfolio import Client, Project
 from app.models.proposal import ProjectProposal, ProposalEvent, ProposalVersion
+from app.models.report import StatusReport
 from app.models.risk import Risk
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "ReadinessCheck",
     "RevokedToken",
     "Risk",
+    "StatusReport",
     "User",
     "ValueCase",
     "ValueCaseBenefit",
