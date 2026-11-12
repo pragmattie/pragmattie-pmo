@@ -34,9 +34,7 @@ SPEND = table_name("project_spend")
 PROJECTS = table_name("projects")
 USERS = table_name("users")
 KEEP_IDS = {"sqlite_autoincrement": True}
-STATUS_CHECK = (
-    "status IN ('not_started', 'in_progress', 'ready_for_acceptance', 'accepted')"
-)
+STATUS_CHECK = "status IN ('not_started', 'in_progress', 'ready_for_acceptance', 'accepted')"
 
 
 def upgrade() -> None:
@@ -48,9 +46,7 @@ def upgrade() -> None:
         )
     with op.batch_alter_table(DELIVERABLES, table_kwargs=KEEP_IDS) as batch:
         batch.add_column(
-            sa.Column(
-                "status", sa.String(length=32), nullable=False, server_default="not_started"
-            )
+            sa.Column("status", sa.String(length=32), nullable=False, server_default="not_started")
         )
         batch.add_column(
             sa.Column("status_version", sa.Integer(), nullable=False, server_default="1")
@@ -67,11 +63,15 @@ def upgrade() -> None:
         sa.Column("created_by", sa.Integer(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.CheckConstraint("amount >= 0", name="ck_project_spend_amount"),
-        sa.ForeignKeyConstraint(["project_id"], [f"{PROJECTS}.id"], name="fk_project_spend_project"),
+        sa.ForeignKeyConstraint(
+            ["project_id"], [f"{PROJECTS}.id"], name="fk_project_spend_project"
+        ),
         sa.ForeignKeyConstraint(
             ["supersedes_id"], [f"{SPEND}.id"], name="fk_project_spend_supersedes"
         ),
-        sa.ForeignKeyConstraint(["created_by"], [f"{USERS}.id"], name="fk_project_spend_created_by"),
+        sa.ForeignKeyConstraint(
+            ["created_by"], [f"{USERS}.id"], name="fk_project_spend_created_by"
+        ),
         sa.PrimaryKeyConstraint("id"),
         sqlite_autoincrement=True,
     )

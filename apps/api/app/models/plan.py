@@ -141,9 +141,7 @@ class PlanDeliverable(Base):
         ForeignKey(f"{MILESTONES_TABLE}.id", name="fk_plan_deliverables_milestone"), index=True
     )
     source: Mapped[str] = mapped_column(String(16), default=PERSON_SOURCE)
-    status: Mapped[str] = mapped_column(
-        String(32), default=NOT_STARTED, server_default=NOT_STARTED
-    )
+    status: Mapped[str] = mapped_column(String(32), default=NOT_STARTED, server_default=NOT_STARTED)
     status_version: Mapped[int] = mapped_column(default=1, server_default="1")
     version: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
