@@ -240,6 +240,64 @@ def test_api_refuses_roles_without_audit_read(db, client, sign_in, role):
     assert client.get("/api/v1/audit", params={"actor_user_id": 1}).status_code == 403
 
 
+def test_facets_list_only_the_values_in_the_log(db, client, sign_in):
+    sign_in(client, db, "auditor")
+    gone = User(
+        email="gone@pmo.example",
+        display_name="Ari Former",
+        password_hash="not-a-real-hash",
+        role="project_manager",
+        is_active=False,
+    )
+    unused = User(
+        email="unused@pmo.example",
+        display_name="Uma Unused",
+        password_hash="not-a-real-hash",
+        role="sponsor",
+    )
+    db.add_all([gone, unused])
+    db.commit()
+    _seed(db)
+    record_decision(
+        db,
+        **_fields(
+            agent="change_agent",
+            trigger="human",
+            subject_type="change_request",
+            actor_user_id=gone.id,
+        ),
+    )
+    db.commit()
+
+    body = client.get("/api/v1/audit/facets").json()
+    assert body["agents"] == ["builder", "change_agent", "reviewer", "triage"]
+    assert body["subject_types"] == ["change_request", "issue"]
+    assert body["statuses"] == ["error", "ok", "rejected", "skipped"]
+    # A deactivated person who took a decision is listed; a person with no row is not.
+    assert body["people"] == [{"id": gone.id, "display_name": "Ari Former"}]
+
+
+def test_hide_sign_ins_leaves_out_login_rows_but_keeps_other_auth_rows(db, client, sign_in):
+    sign_in(client, db, "auditor")
+    record_decision(db, **_fields(agent="auth", trigger="human", subject_type="login"))
+    record_decision(db, **_fields(agent="auth", trigger="human", subject_type="user"))
+    record_decision(db, **_fields(agent="risk"))
+    db.commit()
+
+    every = client.get("/api/v1/audit").json()
+    assert any(item["subject_type"] == "login" for item in every["items"])
+    hidden = client.get("/api/v1/audit", params={"hide_sign_ins": True}).json()
+    kinds = sorted((item["agent"], item["subject_type"]) for item in hidden["items"])
+    assert kinds == [("auth", "user"), ("risk", "issue")]
+    assert hidden["total"] == 2
+
+
+@pytest.mark.parametrize("role", ["sponsor", "project_manager"])
+def test_facets_refuse_roles_without_audit_read(db, client, sign_in, role):
+    sign_in(client, db, role)
+    assert client.get("/api/v1/audit/facets").status_code == 403
+
+
 # --- Append-only, enforced in the ORM
 
 

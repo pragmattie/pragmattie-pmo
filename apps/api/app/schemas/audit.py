@@ -46,3 +46,19 @@ class AuditDecisionOut(BaseModel):
     # The person's display name; null for an agent (or a user no longer on record).
     actor_name: str | None = None
     created_at: datetime
+
+
+class AuditPersonOut(BaseModel):
+    """A person who appears in the log, active or not."""
+
+    id: int
+    display_name: str
+
+
+class AuditFacetsOut(BaseModel):
+    """The values present in the log, for the audit page's filter lists."""
+
+    agents: list[str]
+    subject_types: list[str]
+    statuses: list[str]
+    people: list[AuditPersonOut]

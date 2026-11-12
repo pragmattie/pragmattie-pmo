@@ -34,6 +34,7 @@ import {
   type Risk,
   riskApi,
   type RiskInput,
+  type RiskScales,
   type RiskTemplate,
   scoreText,
   STATUSES,
@@ -88,6 +89,8 @@ const crumbs = computed(() => [
 // Close). An unknown risk, or one on another project, opens no drawer and shows no error.
 let wantedRisk: number | null = null
 const people = ref<Person[]>([])
+// The policy's labelled probability and impact scales for the form; bare numbers until loaded.
+const scales = ref<RiskScales | null>(null)
 const pageError = ref('')
 
 const filters = reactive<Filters>({ ...NO_FILTERS })
@@ -208,6 +211,12 @@ function refresh() {
 }
 
 onMounted(async () => {
+  riskApi
+    .scales()
+    .then((found) => (scales.value = found))
+    .catch(() => {
+      // The form keeps bare 1 to 5; the register still works.
+    })
   try {
     const [projectPage, peoplePage] = await Promise.all([riskApi.projects(), riskApi.people()])
     projects.value = projectPage.items
@@ -285,6 +294,18 @@ async function loadHistory(riskId: number, more = false) {
   const result = await riskApi.history(projectId.value, riskId, more ? history.value.length : 0)
   history.value = more ? [...history.value, ...result.items] : result.items
   historyTotal.value = result.total
+}
+
+// Closing the drawer takes the risk out of the address, so a reload doesn't open it again.
+function dropRiskFromAddress() {
+  if (route.query.risk === undefined) return
+  const { risk: _risk, ...rest } = route.query
+  router.replace({ query: rest })
+}
+
+function closeDrawer() {
+  drawerOpen.value = false
+  dropRiskFromAddress()
 }
 
 async function openRisk(risk: Risk) {
@@ -778,6 +799,7 @@ async function addFromLibrary() {
       temporary
       :width="display.xs.value ? display.width.value : 440"
       data-test="drawer"
+      @update:model-value="(open: boolean) => open || dropRiskFromAddress()"
     >
       <RiskDrawer
         :risk="selected"
@@ -790,7 +812,7 @@ async function addFromLibrary() {
         :busy="busy"
         :message="message"
         :message-type="messageType"
-        @close="drawerOpen = false"
+        @close="closeDrawer"
         @edit="startEdit"
         @use-suggestion="startEditWithSuggestion"
         @close-risk="confirmClose = true"
@@ -880,6 +902,7 @@ async function addFromLibrary() {
         v-model="formOpen"
         :risk="formRisk"
         :people="people"
+        :scales="scales"
         :busy="busy"
         :error="formError"
         @save="save"

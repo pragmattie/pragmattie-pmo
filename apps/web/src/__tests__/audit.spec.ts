@@ -3,7 +3,15 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
-import { type AuditRow, auditQuery, NO_AUDIT_FILTERS, recorded, whoText } from '../lib/audit'
+import {
+  auditLabel,
+  type AuditRow,
+  auditQuery,
+  facetItems,
+  NO_AUDIT_FILTERS,
+  recorded,
+  whoText,
+} from '../lib/audit'
 import { makeVuetify } from '../plugins/vuetify'
 import { makeRouter } from '../router'
 
@@ -66,6 +74,17 @@ const ROWS = [
   row(11),
 ]
 
+// What the log holds; a deactivated person (Dee Former) still appears.
+const FACETS = {
+  agents: ['auth', 'change', 'risk_agent'],
+  subject_types: ['change_request', 'login', 'risk'],
+  statuses: ['ok', 'rejected'],
+  people: [
+    { id: 14, display_name: 'Dee Former' },
+    { id: 11, display_name: 'Pat Manager' },
+  ],
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -81,8 +100,9 @@ function fakeApi(role: string) {
     if (url.pathname === '/api/v1/auth/me') return json({ ...user, actions: ACTIONS[role] })
     if (url.pathname === '/api/v1/inbox/count') return json({ count: 0 })
     if (url.pathname === '/api/v1/health') return json({ status: 'ok', version: '0.1.0' })
-    if (url.pathname === '/api/v1/users') {
-      return json({ items: [{ id: 11, display_name: 'Pat Manager' }], total: 1, limit: 100, offset: 0 })
+    if (url.pathname === '/api/v1/audit/facets') {
+      if (!ACTIONS[role].includes('audit:read')) return json({ detail: 'forbidden' }, 403)
+      return json(FACETS)
     }
     if (url.pathname === '/api/v1/audit' && method === 'GET') {
       if (!ACTIONS[role].includes('audit:read')) return json({ detail: 'forbidden' }, 403)
@@ -114,6 +134,14 @@ function auditCalls(fetchMock: ReturnType<typeof fakeApi>) {
   return fetchMock.mock.calls
     .map(([input, init]) => ({ url: new URL(String(input), 'http://localhost'), init }))
     .filter(({ url }) => url.pathname === '/api/v1/audit')
+}
+
+function select(wrapper: Wrapper, test: string) {
+  const found = wrapper
+    .findAllComponents({ name: 'VSelect' })
+    .find((c) => c.attributes('data-test') === test)
+  expect(found, test).toBeTruthy()
+  return found!
 }
 
 function setSelect(wrapper: Wrapper, test: string, value: unknown) {
@@ -151,59 +179,78 @@ describe('the Audit page', () => {
   it('lists rows newest first as the API sends them, naming people and agents', async () => {
     const { wrapper, fetchMock } = await mountAt('/audit', 'auditor')
     const [first] = auditCalls(fetchMock)
-    expect(Object.fromEntries(first.url.searchParams)).toEqual({ limit: '25', offset: '0' })
+    // Sign-ins are hidden from the start.
+    expect(Object.fromEntries(first.url.searchParams)).toEqual({
+      hide_sign_ins: 'true',
+      limit: '25',
+      offset: '0',
+    })
     const text = wrapper.get('[data-test="audit-table"]').text()
     expect(text.indexOf('Pat Manager')).toBeLessThan(text.indexOf('risk_agent (agent)'))
-    expect(text).toContain('risk 6')
+    expect(text).toContain('Risk 6')
+  })
+
+  it('fills the agent, subject type and status lists from the facets route, in plain words', async () => {
+    const { wrapper, fetchMock } = await mountAt('/audit', 'auditor')
+    const paths = fetchMock.mock.calls.map(([input]) => new URL(String(input), 'http://localhost').pathname)
+    expect(paths).toContain('/api/v1/audit/facets')
+    expect(paths).not.toContain('/api/v1/users')
+    const items = (test: string) => select(wrapper, test).props('items')
+    expect(items('filter-agent')).toEqual([
+      { title: 'Sign-in and accounts', value: 'auth' },
+      { title: 'Change', value: 'change' },
+      { title: 'Risk agent', value: 'risk_agent' },
+    ])
+    expect(items('filter-subject-type')).toEqual([
+      { title: 'Change request', value: 'change_request' },
+      { title: 'Login', value: 'login' },
+      { title: 'Risk', value: 'risk' },
+    ])
+    expect(items('filter-status')).toEqual([
+      { title: 'OK', value: 'ok' },
+      { title: 'Rejected', value: 'rejected' },
+    ])
+    // Every list starts at Any.
+    for (const test of ['filter-agent', 'filter-subject-type', 'filter-status', 'filter-person']) {
+      expect(select(wrapper, test).props('modelValue')).toBeNull()
+      expect(select(wrapper, test).props('placeholder')).toBe('Any')
+    }
+  })
+
+  it('lists every person in the log for the person filter, deactivated people included', async () => {
+    const { wrapper } = await mountAt('/audit', 'auditor')
+    expect(select(wrapper, 'filter-person').props('items')).toEqual(FACETS.people)
   })
 
   it('filters by agent, subject type, status and person on the server', async () => {
     const { wrapper, fetchMock } = await mountAt('/audit', 'auditor')
-    await wrapper.get('[data-test="filter-agent"] input').setValue('risk')
-    await wrapper.get('[data-test="filter-subject-type"] input').setValue('risk')
-    await new Promise((resolve) => setTimeout(resolve, 350))
+    setSelect(wrapper, 'filter-agent', 'change')
+    setSelect(wrapper, 'filter-subject-type', 'change_request')
     setSelect(wrapper, 'filter-status', 'rejected')
-    setSelect(wrapper, 'filter-person', 11)
+    setSelect(wrapper, 'filter-person', 14)
     await flushPromises()
     const last = Object.fromEntries(auditCalls(fetchMock).at(-1)!.url.searchParams)
     expect(last).toEqual({
-      agent: 'risk',
-      subject_type: 'risk',
+      agent: 'change',
+      subject_type: 'change_request',
       status: 'rejected',
-      actor_user_id: '11',
+      actor_user_id: '14',
+      hide_sign_ins: 'true',
       limit: '25',
       offset: '0',
     })
   })
 
-  it('sends one request for several quick keystrokes in a text filter', async () => {
+  it('shows sign-ins once Hide sign-ins is switched off, and Clear hides them again', async () => {
     const { wrapper, fetchMock } = await mountAt('/audit', 'auditor')
-    const before = auditCalls(fetchMock).length
-    vi.useFakeTimers()
-    try {
-      const agent = wrapper.get('[data-test="filter-agent"] input')
-      for (const text of ['r', 'ri', 'ris', 'risk']) {
-        await agent.setValue(text)
-        vi.advanceTimersByTime(100)
-      }
-      const subject = wrapper.get('[data-test="filter-subject-type"] input')
-      await subject.setValue('ri')
-      vi.advanceTimersByTime(100)
-      await subject.setValue('risk')
-      expect(auditCalls(fetchMock)).toHaveLength(before)
-      vi.advanceTimersByTime(300)
-    } finally {
-      vi.useRealTimers()
-    }
+    const toggle = wrapper.get('[data-test="filter-hide-sign-ins"] input')
+    expect((toggle.element as HTMLInputElement).checked).toBe(true)
+    await toggle.setValue(false)
     await flushPromises()
-    const calls = auditCalls(fetchMock).slice(before)
-    expect(calls).toHaveLength(1)
-    expect(Object.fromEntries(calls[0].url.searchParams)).toEqual({
-      agent: 'risk',
-      subject_type: 'risk',
-      limit: '25',
-      offset: '0',
-    })
+    expect(auditCalls(fetchMock).at(-1)!.url.searchParams.has('hide_sign_ins')).toBe(false)
+    await wrapper.get('[data-test="filter-clear"]').trigger('click')
+    await flushPromises()
+    expect(auditCalls(fetchMock).at(-1)!.url.searchParams.get('hide_sign_ins')).toBe('true')
   })
 
   it('opens a drawer with everything the row recorded', async () => {
@@ -213,6 +260,8 @@ describe('the Audit page', () => {
     const field = (name: string) =>
       document.querySelector(`[data-test="audit-field-${name}"]`)?.textContent
     expect(field('Who')).toBe('risk_agent (agent)')
+    expect(field('Agent')).toBe('Risk agent')
+    expect(field('Status')).toBe('OK')
     expect(field('Inputs')).toContain('"project": 3')
     expect(field('Output')).toContain('"impact": 3')
     expect(field('Action taken')).toContain('suggest')
@@ -239,10 +288,27 @@ describe('the Audit page', () => {
 
 describe('the audit helpers', () => {
   it('builds the query with only the filters set', () => {
-    expect(auditQuery(NO_AUDIT_FILTERS, 2, 25)).toBe('limit=25&offset=25')
+    expect(auditQuery(NO_AUDIT_FILTERS, 2, 25)).toBe('hide_sign_ins=true&limit=25&offset=25')
     expect(
-      auditQuery({ ...NO_AUDIT_FILTERS, agent: '  risk ', subject_type: '', actor_user_id: 4 }, 1, 10),
+      auditQuery(
+        {
+          ...NO_AUDIT_FILTERS,
+          agent: '  risk ',
+          subject_type: '',
+          actor_user_id: 4,
+          hide_sign_ins: false,
+        },
+        1,
+        10,
+      ),
     ).toBe('agent=risk&actor_user_id=4&limit=10&offset=0')
+  })
+
+  it('names agents, subject types and statuses in plain words', () => {
+    expect(auditLabel('change_request')).toBe('Change request')
+    expect(auditLabel('auth')).toBe('Sign-in and accounts')
+    expect(auditLabel('ok')).toBe('OK')
+    expect(facetItems(['risk_agent'])).toEqual([{ title: 'Risk agent', value: 'risk_agent' }])
   })
 
   it('names the person, or the agent', () => {

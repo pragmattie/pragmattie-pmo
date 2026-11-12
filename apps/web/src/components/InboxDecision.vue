@@ -19,6 +19,7 @@ import {
   mayClearEscalation,
   type Risk,
   riskApi,
+  type RiskScales,
 } from '../lib/risks'
 import { useAuthStore } from '../stores/auth'
 import ChangesSection from './ChangesSection.vue'
@@ -92,6 +93,14 @@ const scoring = computed(
 )
 const probability = ref<number | null>(null)
 const impact = ref<number | null>(null)
+// The policy's labelled scales for the score form.
+const scales = ref<RiskScales | null>(null)
+
+// The risk response names its owner, deactivated people included.
+function ownerName(id: number | null): string {
+  if (id === null) return 'No owner'
+  return risk.value?.owner_name ?? `Person ${id}`
+}
 const canClear = computed(
   () =>
     !!risk.value &&
@@ -117,6 +126,11 @@ async function loadRisk() {
   ])
   risk.value = found
   bands.value = heatmap.bands
+  // Not needed to decide: without them the form shows bare 1 to 5.
+  riskApi
+    .scales()
+    .then((result) => (scales.value = result))
+    .catch(() => {})
   cells.value = heatmap.cells
   history.value = past.items
   historyTotal.value = past.total
@@ -244,6 +258,7 @@ onMounted(async () => {
         v-model:probability="probability"
         v-model:impact="impact"
         :cells="cells"
+        :scales="scales"
         :busy="busy"
         @save="saveScore"
       />
@@ -251,7 +266,7 @@ onMounted(async () => {
         :risk="risk"
         :history="history"
         :history-total="historyTotal"
-        :owner-name="(id) => (id === null ? 'No owner' : `Person ${id}`)"
+        :owner-name="ownerName"
         :can-write="auth.can('project:write')"
         :can-accept="canAccept"
         :can-clear-escalation="canClear"

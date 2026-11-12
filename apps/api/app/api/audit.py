@@ -6,11 +6,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.audit import ORDER_BY, decisions_query
+from app.audit import ORDER_BY, decisions_query, facets
 from app.authz import Action, require
 from app.db import get_db
 from app.models import User
-from app.schemas.audit import AuditDecisionOut
+from app.schemas.audit import AuditDecisionOut, AuditFacetsOut
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
 
 router = APIRouter(tags=["audit"], dependencies=[Depends(require(Action.AUDIT_READ))])
@@ -27,6 +27,7 @@ def get_audit(
     status: str | None = None,
     tier: str | None = None,
     actor_user_id: int | None = None,
+    hide_sign_ins: bool = False,
 ) -> Page[AuditDecisionOut]:
     stmt = decisions_query(
         agent=agent,
@@ -35,6 +36,7 @@ def get_audit(
         status=status,
         tier=tier,
         actor_user_id=actor_user_id,
+        hide_sign_ins=hide_sign_ins,
     )
     rows, total = paginate(db, stmt, order_by=ORDER_BY, limit=limit, offset=offset)
     # Each person's display name, so a reader of the log need not read the users list.
@@ -51,3 +53,9 @@ def get_audit(
             item.actor_name = names.get(row.actor_user_id)
         items.append(item)
     return Page[AuditDecisionOut](items=items, total=total, limit=limit, offset=offset)
+
+
+@router.get("/audit/facets", response_model=AuditFacetsOut)
+def get_audit_facets(db: Annotated[Session, Depends(get_db)]) -> AuditFacetsOut:
+    """The agents, subject types, statuses and people present in the log, for filter lists."""
+    return AuditFacetsOut.model_validate(facets(db))

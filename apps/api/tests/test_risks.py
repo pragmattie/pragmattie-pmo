@@ -246,6 +246,25 @@ def test_the_owner_must_be_an_existing_active_user(web, db, pm, project):
     assert response.status_code == 422
 
 
+def test_the_response_names_the_owner_even_once_deactivated(web, db, pm, project):
+    owner = User(
+        email="former@pmo.example",
+        display_name="Former Lead",
+        password_hash="x",
+        role="project_manager",
+    )
+    db.add(owner)
+    db.commit()
+    risk = _create(web, project.id, owner_user_id=owner.id).json()
+    assert risk["owner_name"] == "Former Lead"
+    assert _create(web, project.id).json()["owner_name"] is None
+    owner.is_active = False
+    db.commit()
+    assert web.get(_url(project.id, risk["id"])).json()["owner_name"] == "Former Lead"
+    listed = web.get(_url(project.id)).json()["items"]
+    assert {r["id"]: r["owner_name"] for r in listed}[risk["id"]] == "Former Lead"
+
+
 @pytest.mark.parametrize("value", ["accepted", "proposed", "rejected", None])
 def test_a_patch_may_only_open_or_close(web, db, pm, project, value):
     risk = _create(web, project.id).json()

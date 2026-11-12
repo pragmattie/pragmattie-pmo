@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
+import RiskForm from '../components/RiskForm.vue'
 import {
   AGENT_PROPOSAL,
   bandColor,
@@ -197,6 +198,21 @@ interface FakeOptions {
   missing?: number[]
 }
 
+// The labelled scales as the risk policy route sends them.
+const SCALE_LABELS = ['Very low', 'Low', 'Medium', 'High', 'Very high']
+const SCALES = {
+  probability: SCALE_LABELS.map((label, i) => ({
+    level: i + 1,
+    label,
+    definition: `About probability ${i + 1}.`,
+  })),
+  impact: SCALE_LABELS.map((label, i) => ({
+    level: i + 1,
+    label,
+    definition: `About impact ${i + 1}.`,
+  })),
+}
+
 function fakeApi(role: string, options: FakeOptions = {}) {
   const user = { id: 7, email: `${role}@pmo.example`, display_name: 'Test User', role }
   return vi.fn(async (input: string, init: RequestInit = {}) => {
@@ -210,6 +226,7 @@ function fakeApi(role: string, options: FakeOptions = {}) {
     if (path === '/api/v1/users') {
       return json(page([{ id: 11, display_name: 'Pat Owner' }]))
     }
+    if (path === '/api/v1/risk-policy/scales') return json(SCALES)
     if (path === '/api/v1/projects/3/risks/heatmap') {
       const kind = url.searchParams.get('kind')
       if (kind === 'opportunity') {
@@ -1010,6 +1027,68 @@ describe('opening the register at one risk', () => {
       '/risks?project=3&risk=4',
     )
     expect(wrapper.find('[data-test="risk-drawer"]').exists()).toBe(false)
+  })
+})
+
+// Lets a navigation of the page's own finish.
+async function settle() {
+  await flushPromises()
+  await new Promise((resolve) => setTimeout(resolve))
+  await flushPromises()
+}
+
+describe('closing the drawer', () => {
+  it('takes the risk out of the address, so a reload does not reopen it', async () => {
+    const { wrapper, router } = await mountRisks(
+      'project_manager',
+      {},
+      '/risks?project=3&risk=2&from=inbox&item=item-5',
+    )
+    expect(router.currentRoute.value.query.risk).toBe('2')
+    await wrapper.get('[data-test="drawer-close"]').trigger('click')
+    await settle()
+    expect(router.currentRoute.value.query).toEqual({ project: '3', from: 'inbox', item: 'item-5' })
+  })
+
+  it('also clears it when the drawer is dismissed from outside', async () => {
+    const { wrapper, router } = await mountRisks('project_manager', {}, '/risks?project=3&risk=2')
+    // The register's drawer is the one at the end of the page.
+    const drawer = wrapper
+      .findAllComponents({ name: 'VNavigationDrawer' })
+      .find((c) => c.props('location') === 'end')!
+    drawer.vm.$emit('update:modelValue', false)
+    await settle()
+    expect(router.currentRoute.value.query.risk).toBeUndefined()
+    expect(router.currentRoute.value.query.project).toBe('3')
+  })
+})
+
+describe('the labelled scales in the risk form', () => {
+  it('offers each level as "3 Medium" with its definition, and shows the chosen one as help', async () => {
+    const { wrapper } = await mountRisks('project_manager')
+    await wrapper.get('[data-test="add-risk"]').trigger('click')
+    await flushPromises()
+    const form = wrapper.findComponent(RiskForm)
+    const field = (test: string) =>
+      form.findAllComponents({ name: 'VSelect' }).find((c) => c.attributes('data-test') === test)!
+    expect(field('field-probability').props('items')[2]).toEqual({
+      title: '3 Medium',
+      value: 3,
+      props: { subtitle: 'About probability 3.' },
+    })
+    expect(field('field-impact').props('items')[4]).toEqual({
+      title: '5 Very high',
+      value: 5,
+      props: { subtitle: 'About impact 5.' },
+    })
+    field('field-probability').vm.$emit('update:modelValue', 4)
+    field('field-impact').vm.$emit('update:modelValue', 2)
+    await flushPromises()
+    expect(field('field-probability').props('hint')).toBe('About probability 4.')
+    expect(field('field-impact').props('hint')).toBe('About impact 2.')
+    expect(document.querySelector('[data-test="risk-form"]')?.textContent).toContain(
+      'About probability 4.',
+    )
   })
 })
 

@@ -24,6 +24,8 @@ export interface Risk {
   response: string
   response_plan: string
   owner_user_id: number | null
+  // The owner's name from the API, deactivated people included.
+  owner_name?: string | null
   status: Status
   needs_judgement: boolean
   // Ticked to show the risk (its title and response, never its score) in the client's proposal.
@@ -141,6 +143,36 @@ export const NO_FILTERS: Filters = {
 }
 
 export const LEVELS = [1, 2, 3, 4, 5] as const
+
+// One level of the risk policy's probability or impact scale (`GET /api/v1/risk-policy/scales`).
+export interface ScaleLevel {
+  level: number
+  label: string
+  definition: string
+}
+
+export interface RiskScales {
+  probability: ScaleLevel[]
+  impact: ScaleLevel[]
+}
+
+// A scale's levels as list items, "3 Medium" with its definition beneath; bare 1 to 5 until the
+// scales have loaded.
+export function scaleItems(
+  levels: ScaleLevel[] | undefined,
+): { title: string; value: number; props?: { subtitle: string } }[] {
+  if (!levels?.length) return LEVELS.map((level) => ({ title: String(level), value: level }))
+  return levels.map((l) => ({
+    title: `${l.level} ${l.label}`,
+    value: l.level,
+    props: { subtitle: l.definition },
+  }))
+}
+
+// The chosen level's definition, as help text under the field.
+export function scaleHint(levels: ScaleLevel[] | undefined, value: number | null): string {
+  return levels?.find((l) => l.level === value)?.definition ?? ''
+}
 export const STATUSES: Status[] = ['proposed', 'open', 'accepted', 'closed', 'rejected']
 export const KINDS: Kind[] = ['threat', 'opportunity']
 export const CATEGORIES: Category[] = ['ai', 'project']
@@ -432,6 +464,7 @@ export const riskApi = {
   projects: () => call<Page<Project>>('/api/v1/projects?limit=100'),
   people: () => call<Page<Person>>('/api/v1/users?limit=100'),
   library: () => call<Page<RiskTemplate>>('/api/v1/risk-library?limit=100'),
+  scales: () => call<RiskScales>('/api/v1/risk-policy/scales'),
   list: (projectId: number, query: string) => call<Page<Risk>>(`${base(projectId)}?${query}`),
   heatmap: (projectId: number, kind: Kind | null) =>
     call<Heatmap>(`${base(projectId)}/heatmap${kind ? `?kind=${kind}` : ''}`),
