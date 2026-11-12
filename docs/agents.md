@@ -300,6 +300,67 @@ alone. A failed run (an API error, output that isn't valid JSON or misses a part
 milestones, or an error while saving) is a 502, saves nothing and records the error. A refused
 run is recorded as a person's refused attempt (agent `project`).
 
+## Status report agent
+
+Code: `apps/api/app/agents/status_report_agent.py` (item 7.4). Run by
+`POST /api/v1/projects/{id}/status-reports/{rid}/draft` (`project:write`, a `draft` report only),
+and by the orchestrator's `draft_status_report` step once a report is due.
+
+**What it reads.** One draft report: its period, its figures (key, label, kind, value and what
+each counts) and its ratings with the rule behind each; the project's name, brief (purpose,
+objectives, scope in and out) and plan (scope in and out, milestones and deliverables by name,
+description and status, each milestone with the keys of its figures); the period's decisions from
+the audit log (change requests approved or rejected, risks accepted and risks escalated, with
+their reasons); the text of the newest published report of an earlier period that hasn't been
+withdrawn; and any section a person has already written. It never sees people's names or email
+addresses. All of it goes to the model inside one `<report>` data block that the prompt marks as
+data, not instructions, with `<`, `>` and `&` escaped.
+
+**What it may write.** Only in `AGENT_MODE=enforce`: the report's five text sections (summary, done
+this period, planned for next period, issues, decisions needed from the sponsor). Each is saved as
+`source = agent`, unreviewed, and shows "Agent draft, not reviewed" until a person changes its text
+(it becomes theirs) or confirms it as it is
+(`POST .../status-reports/{rid}/sections/{section}/confirm`, `report:publish`, `draft` only; who
+and when are recorded and audited). A draft replaces only a section that is empty or still an
+unreviewed agent draft; a section a person edited or confirmed is kept, and the answer names what
+was replaced and what was kept. The orchestrator's run fills only empty sections. In `shadow` it
+saves nothing.
+
+**Numbers only as figure keys.** The agent writes `{{key}}` for one of the report's figures
+(`{{spend_to_date}}`, `{{next_period_start}}`) and code puts in the figure's value, in a form the
+checker reads as that figure (`$1,650.00`, `12.50%`, `8 March 2027`). A key the report doesn't
+have, or any digit outside a key, refuses the whole run: nothing is saved and the error is
+recorded. The checker then runs on the filled-in text, and any flag refuses the run too. The
+next period's start, end and due day are figures (from the plan's reporting fields), so the agent
+and a person can name them in "planned for next period".
+
+**Gaps.** Where the records don't explain something (why a milestone is late, what a change was
+for), the agent says that the reason isn't recorded and puts it under issues, or under decisions
+when the sponsor must decide, for the project manager to fill in, rather than guessing.
+
+**What it never does.** Set or change a rating or a figure (its schema has neither, and code reads
+the figures from the records), publish, withdraw, confirm or send anything. Publishing is refused
+(409, naming the sections, audited) while any section is still an unreviewed agent draft.
+
+**Modes.** `off` refuses (409, audited) and calls nothing. `shadow` calls Claude and returns the
+draft without saving it. `enforce` saves it as above. `?dry_run=true` returns the exact request
+and a cost ceiling and calls nothing. A report that isn't a draft is refused (409, audited).
+
+**Model.** `STATUS_REPORT_AGENT_MODEL`, default `claude-sonnet-5-5`. One call per run, with the JSON
+returned through structured outputs (a strict JSON schema); no sampling parameters are sent.
+
+**Caps, enforced in code.** `STATUS_REPORT_AGENT_MAX_TOKENS` output tokens (default 4096). A
+section longer than 4000 characters once its keys are filled in refuses the run. Anything outside
+the schema is dropped and recorded. Cost ceiling for a dry run as for the other agents, at
+`STATUS_REPORT_AGENT_INPUT_USD_PER_MTOK` and `STATUS_REPORT_AGENT_OUTPUT_USD_PER_MTOK`.
+
+**Record.** Every run that calls Claude writes one `pmo_audit` row, agent `status_report_agent`,
+subject the report, success or failure: the data it read, model, prompt version, tokens, cost, the
+draft, the figure keys it used, and which sections it replaced or kept. A failed run (an API error,
+invalid JSON, a stray number, an unknown key, a checker flag) is a 502 from the route, saves
+nothing and records the error. A refused run is recorded as a person's refused attempt (agent
+`status_report`).
+
 ## Orchestrator
 
 Code: `apps/api/app/orchestrator.py`. Run by `python -m app.orchestrator once` (one pass) or
@@ -336,8 +397,18 @@ not `enforce`) gives way once it can: the next pass that finds the step's agent 
 cancels the item ("agent available again", with when) and handles the step as normal. Items opened
 for any other reason (a person step, a hold, a judgement call, retries used up) stay open.
 
+**Status reports (item 7.4).** For a project in delivery, `draft_status_report` applies once
+today is on or after the latest period's due day and that period has no report: the step creates
+the period's draft (no person; its own audit row, agent `status_report`, `trigger = orchestrator`)
+and the status report agent drafts its text. Only the latest due period is drafted, never an
+older one, and each period only once: not when it has a published report, when the agent has
+already drafted one of its reports, or when its only reports were withdrawn. A draft a person
+already made gets only its empty sections drafted. `publish_status_report` gives every other
+draft to the project manager's inbox to review and publish.
+
 **What it never does.** Decide a gate, approve, return or mark sent a proposal, record a client's
-answer, accept a risk or decide a change request, whatever the policy says: those steps, and any
+answer, accept a risk, decide a change request or publish a status report, whatever the policy
+says: those steps, and any
 step no agent may do, always go to a person. It never sends anything outside the product. It
 never deletes an inbox item: items close as `done` or `cancelled` with when and why.
 
