@@ -19,6 +19,9 @@
 # - approve_proposal, send_proposal, accept_risk, pass_gate, decide_change_sponsor and
 #   publish_status_report are always decided by a person. This is enforced in code, not by this
 #   file.
+# - The report flags (report_overdue_pm, report_overdue_sponsor, report_unread) are always
+#   `person`, and their `who` is fixed in code: project_manager for report_overdue_pm, sponsor for
+#   the other two. A flag is cleared only by a person publishing or reading the report.
 # - score_risk never applies to a risk marked needs_judgement: a person scores it, whatever the
 #   mode here says.
 # - `agents.<name>.enabled: false` switches an agent off; its steps then go to `who`.
@@ -96,6 +99,19 @@ steps:
   publish_status_report:
     mode: person
     who: project_manager
+  # Item 7.5: report flags, raised in the Inbox and limited by policies/reporting.yaml (flags).
+  # A period with no published report goes to the project manager, and after a second limit to
+  # the sponsor too; a published report the sponsor hasn't opened goes to the sponsor. Each item
+  # leaves the Inbox by itself once the report is published or read.
+  report_overdue_pm:
+    mode: person
+    who: project_manager
+  report_overdue_sponsor:
+    mode: person
+    who: sponsor
+  report_unread:
+    mode: person
+    who: sponsor
 agents:
   intake_agent:
     enabled: true
