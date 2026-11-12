@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import ChangesSection from '../components/ChangesSection.vue'
+import DeliverySection from '../components/DeliverySection.vue'
 import GateSection from '../components/GateSection.vue'
 import PageTrail from '../components/PageTrail.vue'
 import PlanSection from '../components/PlanSection.vue'
@@ -23,8 +24,8 @@ import {
 
 // Projects (item 4.6). Without an id, the list of projects; with one, the project: its brief,
 // plan (item 5.1), proposal (item 5.2), the go-ahead gate and its latest baseline (item 5.4), its
-// change requests once in delivery (item 5.5), stakeholders and assumptions, a link to its risks
-// and one back to the request it came from.
+// change requests and delivery progress once in delivery (items 5.5 and 7.2), stakeholders and
+// assumptions, a link to its risks and one back to the request it came from.
 // The API guards every route; the baseline is read-only.
 const route = useRoute()
 const projectId = computed(() => (route.params.id ? Number(route.params.id) : null))
@@ -284,6 +285,13 @@ watch(projectId, load, { immediate: true })
         :project-id="project.id"
         :baseline="baseline"
         @decided="gateDecided"
+      />
+
+      <!-- A new baseline moves the targets days late are measured against: read them again. -->
+      <DeliverySection
+        v-if="project.stage === 'delivery'"
+        :key="baseline?.number ?? 0"
+        :project-id="project.id"
       />
 
       <section id="stakeholders" class="mb-6" data-test="stakeholders">
