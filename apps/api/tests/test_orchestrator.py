@@ -2,7 +2,7 @@
 touches the network."""
 
 import dataclasses
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 import pytest
@@ -14,10 +14,15 @@ from test_intake import add_value_case
 from test_intake_agent import FakeClaude
 from test_intake_agent import _reply as intake_reply
 from test_risk_agent import _score_reply as score_reply
+from test_status_report_agent import GOOD as REPORT_TEXT
+from test_status_report_agent import FakeClaude as ReportClaude
+from test_status_report_agent import _reply as report_reply
+from test_status_reports import _project as reporting_project
 
 import app.api.orchestrator as orchestrator_api
-from app import orchestrator
+from app import delivery, orchestrator
 from app import policy as policy_module
+from app import reports as report_rules
 from app.agents import risk_agent
 from app.autonomy import AGENT, PERSON, STEPS, WINDOW, Step
 from app.config import Settings, get_settings
@@ -41,11 +46,14 @@ from app.models import (
     ProjectRequest,
     ProposalEvent,
     Risk,
+    StatusReport,
     User,
     ValueCase,
     utcnow,
 )
+from app.models.baseline import ProjectBaseline
 from app.models.proposal import TEXT_SECTIONS
+from app.models.report import SECTIONS
 from app.orchestrator import NO_AGENT, StepAction, next_steps, run_pass
 from app.risks import drop_stale_suggestion, snapshot
 
@@ -278,6 +286,42 @@ def _change(db: Session, project: Project, user: User, decider: str) -> int:
     return change.id
 
 
+def _in_delivery(db: Session, owner: User, started: date) -> Project:
+    """A project in delivery since `started` (baseline 1's day), with a weekly report due on
+    Mondays."""
+    ids = reporting_project(db, owner)
+    baseline = db.get(ProjectBaseline, ids["baseline"])
+    baseline.created_at = datetime.combine(started, time(9))
+    db.commit()
+    return db.get(Project, ids["pid"])
+
+
+def _due_periods(db: Session, project: Project) -> list[report_rules.Period]:
+    """The project's periods whose report is due today, oldest first."""
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    started = report_rules.first_baseline(db, project.id).created_at.date()
+    today = delivery.today()
+    periods = report_rules.periods(plan.report_period, plan.report_due_day, started, today)
+    return [p for p in periods if p.due_on <= today]
+
+
+def _report(
+    db: Session, project: Project, owner: User, period, sections: dict | None = None
+) -> StatusReport:
+    """A person's draft for `period`, with `sections` written by them."""
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    report = report_rules.new_draft(
+        db, project.id, plan, period, policy_module.get_reporting(), created_by=owner.id
+    )
+    for name, text in (sections or {}).items():
+        report.sections = {**report.sections, name: text}
+        report_rules.mark_section(
+            report, name, source="person", reviewed_by=owner.id, reviewed_at=None
+        )
+    db.commit()
+    return report
+
+
 def _world(db: Session) -> dict[str, int]:
     """A subject in every state that has a next step."""
     pm = _user(db)
@@ -321,6 +365,12 @@ def _world(db: Session) -> dict[str, int]:
         ids[name] = _proposal(db, project, pm, status, filled)
     ids["decide_change_pm"] = _change(db, delivery, pm, "project_manager")
     ids["decide_change_sponsor"] = _change(db, delivery, pm, "sponsor")
+    # Item 7.4: a project whose report is due, and an older period's draft a person wrote.
+    reporting = _in_delivery(db, pm, date.today() - timedelta(days=21))
+    ids["draft_status_report"] = reporting.id
+    older = _due_periods(db, reporting)[-2]
+    written = dict.fromkeys(SECTIONS, "Written by a person.")
+    ids["publish_status_report"] = _report(db, reporting, pm, older, written).id
     return ids
 
 
@@ -400,6 +450,15 @@ def test_every_step_id_comes_from_some_state(db, rules):
     assert _found(steps, "decide_change_pm", ids["decide_change_pm"]).waits_on == "project_manager"
     assert (
         _found(steps, "decide_change_sponsor", ids["decide_change_sponsor"]).waits_on == "sponsor"
+    )
+    due = _found(steps, "draft_status_report", ids["draft_status_report"])
+    assert (due.subject_type, due.mode, due.waits_on) == ("project", AGENT, "status_report_agent")
+    assert due.reason.startswith("the status report for ")
+    publish = _found(steps, "publish_status_report", ids["publish_status_report"])
+    assert (publish.subject_type, publish.mode, publish.waits_on) == (
+        "status_report",
+        PERSON,
+        "project_manager",
     )
     # The same state gives the same steps, in the same order.
     assert next_steps(db, rules) == steps
@@ -679,6 +738,7 @@ def test_enforce_never_performs_a_person_step_whatever_the_policy_says(
     import app.api.gates as gates_api
     import app.api.proposals as proposals_api
     import app.api.risks as risks_api
+    import app.api.status_reports as reports_api
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("a pass performed a person step")
@@ -688,6 +748,7 @@ def test_enforce_never_performs_a_person_step_whatever_the_policy_says(
         (proposals_api, ("approve_proposal", "mark_sent", "record_answer", "_decide")),
         (risks_api, ("accept_risk", "_decide_proposed")),
         (changes_api, ("decide_change",)),
+        (reports_api, ("publish_status_report",)),
     ):
         for name in names:
             # raising=True: a renamed function fails here rather than going unwatched.
@@ -710,6 +771,7 @@ def test_enforce_never_performs_a_person_step_whatever_the_policy_says(
         ("accept_risk", "accept_risk"),
         ("decide_change_pm", "decide_change_pm"),
         ("decide_change_sponsor", "decide_change_sponsor"),
+        ("publish_status_report", "publish_status_report"),
     ):
         assert (step, str(ids[key])) in inbox
     assert not [o for o in report.outcomes if o.step in person_steps and o.outcome == "done"]
@@ -1546,3 +1608,181 @@ def test_shadow_scores_and_opens_nothing(
         after = _fresh(db, risk)
         assert (after.status, after.probability, after.version) == ("proposed", None, 1)
     assert _fresh(db, unscored).suggested_probability is None
+
+
+# --- Status reports (item 7.4), with the real action and a fake Claude
+
+
+def _reports(db: Session, project: Project) -> list[StatusReport]:
+    db.expire_all()
+    stmt = select(StatusReport).where(StatusReport.project_id == project.id)
+    return list(db.scalars(stmt.order_by(StatusReport.id)))
+
+
+def _report_runs(db: Session) -> list[AuditDecision]:
+    db.expire_all()
+    stmt = select(AuditDecision).where(AuditDecision.agent == "status_report_agent")
+    return list(db.scalars(stmt.order_by(AuditDecision.id)))
+
+
+@pytest.fixture
+def due_project(db, monkeypatch):
+    """A project in delivery since Monday 4 January 2027, weekly reports due on Mondays, and
+    today Wednesday 10 March 2027: the period 1 to 7 March was due on 8 March."""
+    monkeypatch.setattr(delivery, "today", lambda: date(2027, 3, 10))
+    owner = _user(db)
+    return _in_delivery(db, owner, date(2027, 1, 4)), owner
+
+
+def test_a_due_report_is_drafted_once_and_never_published(db, settings, due_project):
+    project, _owner = due_project
+    claude = ReportClaude()
+    _pass(db, settings, client=claude)
+    (report,) = _reports(db, project)
+    assert (report.period_start, report.period_end) == (date(2027, 3, 1), date(2027, 3, 7))
+    assert report.status == "draft"
+    assert report.created_by is None
+    assert report.sections["summary"].startswith("Spend to date is")
+    assert report_rules.unreviewed_sections(report) == ["summary", "done", "next", "issues"]
+    (run,) = _report_runs(db)
+    assert (run.status, run.trigger, run.actor_user_id) == ("ok", "orchestrator", None)
+    created = db.scalar(
+        select(AuditDecision).where(
+            AuditDecision.agent == "status_report", AuditDecision.subject_id == str(report.id)
+        )
+    )
+    assert created.action_taken["action"] == "created"
+    assert created.action_taken["by"] == "orchestrator"
+    assert created.trigger == "orchestrator"
+    ran = [r for r in _orchestrator_rows(db) if r.action_taken.get("action") == "run"]
+    assert ran[-1].action_taken["agent_audit_id"] == run.id
+    # The next pass sends the draft to the project manager to review and publish; more passes
+    # call Claude no more and make no second report; nothing is published.
+    _pass(db, settings, client=claude)
+    (item,) = [i for i in _items(db, "open") if i.step == "publish_status_report"]
+    assert (item.subject_type, item.subject_id, item.who) == (
+        "status_report",
+        str(report.id),
+        "project_manager",
+    )
+    _pass(db, settings, client=claude)
+    assert len(claude.requests) == 1
+    assert [r.status for r in _reports(db, project)] == ["draft"]
+    assert len(_report_runs(db)) == 1
+
+
+def test_never_twice_for_one_period_even_after_a_withdrawal(db, settings, due_project):
+    project, owner = due_project
+    claude = ReportClaude()
+    _pass(db, settings, client=claude)
+    (report,) = _reports(db, project)
+    report.status = "withdrawn"
+    report.withdrawn_by = owner.id
+    report.withdrawn_at = utcnow()
+    report.withdrawn_reason = "Wrong text"
+    db.commit()
+    _pass(db, settings, client=claude)
+    assert len(claude.requests) == 1
+    assert len(_reports(db, project)) == 1
+
+
+def test_only_the_latest_due_period_is_drafted_and_the_next_one_in_its_turn(
+    db, settings, due_project, monkeypatch
+):
+    project, _owner = due_project
+    claude = ReportClaude()
+    _pass(db, settings, client=claude)
+    # Earlier periods are never backfilled.
+    assert [r.period_end for r in _reports(db, project)] == [date(2027, 3, 7)]
+    # On Sunday 14 March the next report isn't due yet.
+    monkeypatch.setattr(delivery, "today", lambda: date(2027, 3, 14))
+    _pass(db, settings, client=claude)
+    assert len(claude.requests) == 1
+    # On Monday 15 March it is, and the step runs again for the new period.
+    monkeypatch.setattr(delivery, "today", lambda: date(2027, 3, 15))
+    _pass(db, settings, client=claude)
+    assert [r.period_end for r in _reports(db, project)] == [date(2027, 3, 7), date(2027, 3, 14)]
+    assert len(claude.requests) == 2
+
+
+def test_a_persons_draft_gets_only_its_empty_sections(db, settings, due_project):
+    project, owner = due_project
+    period = _due_periods(db, project)[-1]
+    mine = _report(db, project, owner, period, {"summary": "A person's summary."})
+    claude = ReportClaude(report_reply({**REPORT_TEXT, "decisions": "Nothing for the sponsor."}))
+    _pass(db, settings, client=claude)
+    (report,) = _reports(db, project)
+    assert report.id == mine.id
+    assert report.sections["summary"] == "A person's summary."
+    assert report.section_sources["summary"]["source"] == "person"
+    assert report.sections["decisions"] == "Nothing for the sponsor."
+    assert report_rules.unreviewed_sections(report) == ["done", "next", "issues", "decisions"]
+
+
+def test_a_full_persons_draft_or_a_published_report_needs_no_agent(db, settings, due_project):
+    project, owner = due_project
+    period = _due_periods(db, project)[-1]
+    report = _report(db, project, owner, period, dict.fromkeys(SECTIONS, "Written."))
+    assert orchestrator.report_due(db, project) is None
+    report.status = "published"
+    report.published_at = utcnow()
+    db.commit()
+    assert orchestrator.report_due(db, project) is None
+    claude = ReportClaude()
+    _pass(db, settings, client=claude)
+    assert claude.requests == []
+
+
+def test_a_failed_draft_is_audited_and_retried_on_the_same_report(db, settings, due_project):
+    project, _owner = due_project
+    claude = ReportClaude(report_reply({**REPORT_TEXT, "done": "We held 3 workshops."}))
+    now = utcnow()
+    _pass(db, settings, client=claude, now=now)
+    (report,) = _reports(db, project)
+    assert report.sections == dict.fromkeys(SECTIONS)
+    (run,) = _report_runs(db)
+    assert run.status == "error"
+    (action,) = [a for a in _actions(db) if a.step == "draft_status_report"]
+    assert (action.status, action.attempts) == ("pending", 1)
+    # The retry drafts into the same report, and succeeds.
+    claude.reply = report_reply()
+    _pass(db, settings, client=claude, now=now + orchestrator.RETRY_AFTER)
+    (report,) = _reports(db, project)
+    assert report.sections["summary"].startswith("Spend to date is")
+    assert [r.status for r in _report_runs(db)] == ["error", "ok"]
+
+
+def test_publishing_stays_a_persons_step_whatever_the_policy_says(
+    db, settings, due_project, monkeypatch, rules
+):
+    project, owner = due_project
+    period = _due_periods(db, project)[-1]
+    report = _report(db, project, owner, period, dict.fromkeys(SECTIONS, "Written."))
+    # A policy built in code that gives publishing to an agent, with an action registered.
+    fake = Calls()
+    monkeypatch.setitem(orchestrator.ACTIONS, "publish_status_report", StepAction(fake))
+    greedy = _with(rules, publish_status_report={"mode": AGENT, "agent": "status_report_agent"})
+    steps = next_steps(db, greedy)
+    assert _found(steps, "publish_status_report", report.id).mode == PERSON
+    _pass(db, settings, rules=greedy)
+    assert fake.subjects == []
+    db.expire_all()
+    assert db.get(StatusReport, report.id).status == "draft"
+    assert ("publish_status_report", str(report.id)) in {
+        (i.step, i.subject_id) for i in _items(db, "open")
+    }
+    # And the file can't say so: the loader refuses it.
+    assert "publish_status_report" in orchestrator.PERSON_ONLY
+
+
+def test_a_switched_off_status_report_agent_sends_the_draft_step_to_a_person(
+    db, settings, due_project, rules
+):
+    project, _owner = due_project
+    off = dataclasses.replace(rules, enabled={**rules.enabled, "status_report_agent": False})
+    claude = ReportClaude()
+    _pass(db, settings, rules=off, client=claude)
+    assert claude.requests == []
+    assert _reports(db, project) == []
+    (item,) = [i for i in _items(db, "open") if i.step == "draft_status_report"]
+    assert item.who == "project_manager"

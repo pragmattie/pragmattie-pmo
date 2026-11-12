@@ -6,6 +6,7 @@ import PageTrail from '../components/PageTrail.vue'
 import { type ProjectDetail, projectApi } from '../lib/projects'
 import { ApiError } from '../lib/risks'
 import {
+  changedSections,
   figureText,
   liveReport,
   MAX_REASON,
@@ -22,6 +23,7 @@ import {
   STATUS_TEXT,
   type StatusReport,
   statusReportApi,
+  unreviewedSections,
 } from '../lib/statusReports'
 import { useAuthStore } from '../stores/auth'
 
@@ -29,7 +31,9 @@ import { useAuthStore } from '../stores/auth'
 // set each, its figures each linked to its source record, and its text. A project manager
 // (`report:publish`) starts a draft, writes the text, refreshes the figures, publishes, withdraws
 // and corrects; everyone else reads published reports. The API enforces all of it and hides
-// drafts from other roles.
+// drafts from other roles. A section the status report agent drafted (item 7.4) shows "Agent
+// draft, not reviewed" with Confirm until a person confirms or edits it; publishing waits for
+// every one.
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
@@ -132,8 +136,18 @@ function startDraft(period: Period) {
 
 function save() {
   const current = report.value!
-  write(() => statusReportApi.edit(projectId.value, current, draftText.value), 'Text saved.')
+  const changed = changedSections(current, draftText.value)
+  write(() => statusReportApi.edit(projectId.value, current, changed), 'Text saved.')
 }
+
+function confirmSection(section: SectionName) {
+  write(
+    () => statusReportApi.confirm(projectId.value, report.value!, section),
+    'Section confirmed.',
+  )
+}
+
+const unreviewed = computed(() => (report.value ? unreviewedSections(report.value) : []))
 
 function refresh() {
   write(() => statusReportApi.refresh(projectId.value, report.value!), 'Figures read again.')
@@ -339,6 +353,29 @@ const flagsBySection = computed(() => {
 
       <h3 class="text-subtitle-1 mt-4 mb-2">Text</h3>
       <div v-for="section in SECTIONS" :key="section.name" class="mb-3">
+        <div
+          v-if="report.section_states?.[section.name]?.unreviewed"
+          class="d-flex align-center ga-2 mb-1"
+        >
+          <v-chip
+            size="small"
+            color="warning"
+            variant="tonal"
+            :data-test="`agent-chip-${section.name}`"
+          >
+            Agent draft, not reviewed
+          </v-chip>
+          <v-btn
+            v-if="editable"
+            size="small"
+            variant="text"
+            :disabled="busy"
+            :data-test="`confirm-${section.name}`"
+            @click="confirmSection(section.name)"
+          >
+            Confirm
+          </v-btn>
+        </div>
         <template v-if="editable">
           <v-textarea
             v-model="draftText[section.name]"
@@ -376,13 +413,16 @@ const flagsBySection = computed(() => {
           </v-btn>
           <v-btn
             color="secondary"
-            :disabled="busy || report.flags.length > 0"
+            :disabled="busy || report.flags.length > 0 || unreviewed.length > 0"
             data-test="publish"
             @click="publish"
           >
             Publish
           </v-btn>
         </div>
+        <p v-if="editable && unreviewed.length" class="text-caption mb-3" data-test="unreviewed">
+          Confirm or edit each of the agent's sections before publishing.
+        </p>
         <v-text-field
           v-model="reason"
           :label="isDraft ? 'Reason to withdraw' : 'Reason for a correction or withdrawal'"

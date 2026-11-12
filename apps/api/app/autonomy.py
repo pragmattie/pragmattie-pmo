@@ -3,7 +3,7 @@ alone (`agent`), after an objection window a person may hold (`window`), or a pe
 (`person`), so how much the agents do is a written, reviewable choice (R3, R4).
 
 The steps, the agents, which agent may do which step and the floors are fixed here, never in the
-file. Five steps are always decided by a person (R1): a file that sets one of them lower is
+file. Six steps are always decided by a person (R1): a file that sets one of them lower is
 refused. Each agent has an off switch in the file (R2); a switched-off agent's steps go to a
 person. `score_risk` never applies to a risk marked `needs_judgement` (R9), whatever the file
 says (`effective_mode`).
@@ -25,7 +25,14 @@ MODES = (AGENT, WINDOW, PERSON)
 
 # The agents, named as their audit rows name them. Some are not built yet (the simulated
 # client): the orchestrator sends a step whose agent isn't built to a person.
-AGENTS = ("intake_agent", "risk_agent", "proposal_agent", "planner_agent", "simulated_client")
+AGENTS = (
+    "intake_agent",
+    "risk_agent",
+    "proposal_agent",
+    "planner_agent",
+    "simulated_client",
+    "status_report_agent",
+)
 
 # Every step, and the agents that may do it. A step with no agents can only be `person`.
 STEP_AGENTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
@@ -47,6 +54,9 @@ STEP_AGENTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         # now it can only be `person`.
         "decide_change_pm": (),
         "decide_change_sponsor": (),
+        # Status reports (item 7.4): the agent drafts a due report's text; a person publishes it.
+        "draft_status_report": ("status_report_agent",),
+        "publish_status_report": (),
     }
 )
 STEPS = tuple(STEP_AGENTS)
@@ -60,6 +70,7 @@ DECIDE_PERMISSION: Mapping[str, str] = MappingProxyType(
         "decide_change_sponsor": "gate:decide",
         "approve_proposal": "proposal:approve",
         "accept_risk": "risk:accept",
+        "publish_status_report": "report:publish",
     }
 )
 DEFAULT_PERMISSION = "project:write"
@@ -72,7 +83,14 @@ def who_permission(step: str) -> str:
 
 # Steps a person always decides (R1), whatever the file says.
 FLOOR_STEPS = frozenset(
-    {"approve_proposal", "send_proposal", "accept_risk", "pass_gate", "decide_change_sponsor"}
+    {
+        "approve_proposal",
+        "send_proposal",
+        "accept_risk",
+        "pass_gate",
+        "decide_change_sponsor",
+        "publish_status_report",
+    }
 )
 
 SCORE_RISK = "score_risk"

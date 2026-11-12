@@ -44,10 +44,19 @@ from app.models import (
     ProjectProposal,
     ProjectRequest,
     Risk,
+    StatusReport,
     User,
 )
 from app.models.portfolio import CANCELLED
-from app.orchestrator import CHANGE_REQUEST, PROJECT, PROPOSAL, REQUEST, RISK, NextStep
+from app.orchestrator import (
+    CHANGE_REQUEST,
+    PROJECT,
+    PROPOSAL,
+    REQUEST,
+    RISK,
+    STATUS_REPORT,
+    NextStep,
+)
 from app.plans import compute_total
 from app.policy import PolicyError, RiskPolicy, get_policies
 from app.roles import Role
@@ -107,6 +116,16 @@ STEP_WORDS: dict[str, tuple[str, str, str]] = {
     "pass_gate": ("deciding the gate", "decide the gate", "gate"),
     "decide_change_pm": ("deciding a change", "decide a change", "change request decision"),
     "decide_change_sponsor": ("deciding a change", "decide a change", "change request decision"),
+    "draft_status_report": (
+        "drafting the status report",
+        "draft the status report",
+        "status report to write",
+    ),
+    "publish_status_report": (
+        "publishing the status report",
+        "publish the status report",
+        "status report to publish",
+    ),
 }
 GATE_NAMES = {REQUEST: "approval gate", PROJECT: "go-ahead gate"}
 
@@ -323,9 +342,13 @@ def _request_card(
 
 
 def _owner_projects(db: Session, steps: list[NextStep]) -> dict[tuple[str, int], int]:
-    """The project each risk, proposal and change request step belongs to."""
+    """The project each risk, proposal, status report and change request step belongs to."""
     owners: dict[tuple[str, int], int] = {}
-    for subject_type, model in ((RISK, Risk), (PROPOSAL, ProjectProposal)):
+    for subject_type, model in (
+        (RISK, Risk),
+        (PROPOSAL, ProjectProposal),
+        (STATUS_REPORT, StatusReport),
+    ):
         ids = {s.subject_id for s in steps if s.subject_type == subject_type}
         if ids:
             rows = db.execute(select(model.id, model.project_id).where(model.id.in_(ids)))

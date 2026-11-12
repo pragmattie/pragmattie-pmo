@@ -20,6 +20,7 @@
   Figures with no history to read as of a date (deliverables by status, open risks by band, open
   escalations and change requests waiting) are current values: each says so in its note
   ("as of" the day the figures were read), and the report shows that day (`figures_at`).
+  - The next period's start, end and due day come from the plan's reporting fields.
   - Open escalations count only what is still waiting for a decision above the project manager:
     open risks escalated beyond the project manager, and submitted change requests a sponsor
     decides. Change requests waiting counts every submitted change, so one change can be in both.
@@ -45,10 +46,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import delivery
+from app.audit import next_attempt, record_decision
 from app.models import ChangeRequest, PlanDeliverable, ProjectPlan, ProjectSpend, Risk
+from app.models.base import utcnow
 from app.models.baseline import ProjectBaseline
 from app.models.plan import DELIVERABLE_STATUSES
-from app.models.report import SECTIONS
+from app.models.report import DRAFT, SECTIONS, StatusReport
 from app.plans import CENT, milestones_of
 from app.policy import Limits, ReportingPolicy
 from app.proposals import _MONEY, Flag, _amounts, _dates, _without_dates
@@ -65,6 +68,7 @@ BASELINES = "project_baselines"
 MILESTONES = "plan_milestones"
 DELIVERABLES = "plan_deliverables"
 SPEND = "project_spend"
+PLANS = "project_plans"
 CHANGES = "change_requests"
 RISKS = "risks"
 
@@ -256,6 +260,25 @@ def build_figures(
             [_src(BASELINES, first.id, "total"), _src(BASELINES, current.id, "total")],
         )
     )
+
+    # The next period, worked out from the plan's reporting fields (item 7.4), so a person or the
+    # agent can name its dates in "planned for next period".
+    reporting = [_src(PLANS, plan.id, "report_period"), _src(PLANS, plan.id, "report_due_day")]
+    for key, label, day, note in (
+        ("next_period_start", "Next period starts", next_.start, "The next period's first day"),
+        ("next_period_end", "Next period ends", next_.end, "The next period's last day"),
+        ("next_period_due", "Next report due", next_.due_on, "The day the next report is due"),
+    ):
+        add(
+            _figure(
+                key,
+                label,
+                "date",
+                day.isoformat(),
+                f"{note}, from the plan's reporting period and due day",
+                reporting,
+            )
+        )
 
     # Approved changes in the period.
     approved = [
@@ -667,6 +690,154 @@ def rate(figures: list[dict[str, Any]], policy: ReportingPolicy) -> dict[str, di
         f"{ratings[worst]['rating']})",
     }
     return ratings
+
+
+# --- Making and recording a report
+
+
+AUDIT_AGENT = "status_report"
+SUBJECT = "status_report"
+
+
+def period_of(report: StatusReport) -> Period:
+    return Period(report.period_start, report.period_end, report.due_on)
+
+
+def run_check(report: StatusReport) -> list[dict[str, str]]:
+    """Run the checker on the report's text and keep its flags on the report."""
+    report.flags = [f.as_dict() for f in check(report.sections, report.figures, period_of(report))]
+    return report.flags
+
+
+def fill(
+    db: Session, report: StatusReport, plan: ProjectPlan, period: Period, policy: ReportingPolicy
+) -> None:
+    """Read the figures from the records, rate them and run the checker."""
+    next_ = next_period(plan.report_period, plan.report_due_day, period)
+    report.figures_at = utcnow()
+    report.figures = build_figures(
+        db, report.project_id, plan, period, next_, report.figures_at.date()
+    )
+    report.ratings = rate(report.figures, policy)
+    run_check(report)
+
+
+def new_draft(
+    db: Session,
+    project_id: int,
+    plan: ProjectPlan,
+    period: Period,
+    policy: ReportingPolicy,
+    *,
+    created_by: int | None,
+    replaces_id: int | None = None,
+    replace_reason: str | None = None,
+) -> StatusReport:
+    """A new draft for `period`, with its figures, ratings and empty text, flushed. `created_by`
+    is None when the orchestrator makes it (item 7.4)."""
+    report = StatusReport(
+        project_id=project_id,
+        period_start=period.start,
+        period_end=period.end,
+        due_on=period.due_on,
+        status=DRAFT,
+        sections=dict.fromkeys(SECTIONS),
+        section_sources={},
+        replaces_id=replaces_id,
+        replace_reason=replace_reason,
+        created_by=created_by,
+    )
+    fill(db, report, plan, period, policy)
+    db.add(report)
+    db.flush()
+    return report
+
+
+def snapshot(report: StatusReport) -> dict[str, Any]:
+    return {
+        "status": report.status,
+        "period_start": report.period_start.isoformat(),
+        "period_end": report.period_end.isoformat(),
+        "figures": report.figures,
+        "ratings": {name: r["rating"] for name, r in report.ratings.items()},
+        "sections": report.sections,
+        "section_sources": report.section_sources,
+        "flags": report.flags,
+        "replaces_id": report.replaces_id,
+        "replace_reason": report.replace_reason,
+        "withdrawn_reason": report.withdrawn_reason,
+    }
+
+
+def record(
+    db: Session,
+    report: StatusReport,
+    *,
+    actor_user_id: int | None,
+    before: dict[str, Any] | None,
+    action: str,
+    trigger: str = "human",
+    **extra: Any,
+) -> None:
+    """One audit row for a change already flushed to `report` (so its version is the new one)."""
+    record_decision(
+        db,
+        agent=AUDIT_AGENT,
+        trigger=trigger,
+        subject_type=SUBJECT,
+        subject_id=str(report.id),
+        version=report.version,
+        attempt=next_attempt(
+            db,
+            agent=AUDIT_AGENT,
+            subject_type=SUBJECT,
+            subject_id=str(report.id),
+            version=report.version,
+        ),
+        status="ok",
+        actor_user_id=actor_user_id,
+        signals=before,
+        output=snapshot(report),
+        action_taken={"action": action, "project_id": report.project_id, **extra},
+    )
+
+
+# --- Who wrote each section (item 7.4)
+
+AGENT_SOURCE, PERSON_SOURCE = "agent", "person"
+
+
+def _source(report: StatusReport, name: str) -> dict[str, Any]:
+    return (report.section_sources or {}).get(name) or {}
+
+
+def is_unreviewed(report: StatusReport, name: str) -> bool:
+    """Whether the section is written and is an agent's draft no person has edited or confirmed."""
+    entry = _source(report, name)
+    written = bool(((report.sections or {}).get(name) or "").strip())
+    return written and entry.get("source") == AGENT_SOURCE and entry.get("reviewed_by") is None
+
+
+def unreviewed_sections(report: StatusReport) -> list[str]:
+    return [name for name in SECTIONS if is_unreviewed(report, name)]
+
+
+def empty_sections(report: StatusReport) -> list[str]:
+    return [name for name in SECTIONS if not ((report.sections or {}).get(name) or "").strip()]
+
+
+def mark_section(
+    report: StatusReport,
+    name: str,
+    *,
+    source: str,
+    reviewed_by: int | None,
+    reviewed_at: str | None,
+) -> None:
+    """Record who wrote, or who reviewed, a section. The dict is replaced, so it is saved."""
+    sources = dict(report.section_sources or {})
+    sources[name] = {"source": source, "reviewed_by": reviewed_by, "reviewed_at": reviewed_at}
+    report.section_sources = sources
 
 
 # --- Checker

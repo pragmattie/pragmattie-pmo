@@ -17,7 +17,7 @@ export interface InboxEntry {
   kind: 'item' | 'window'
   id: number
   step: string
-  subject_type: 'request' | 'project' | 'risk' | 'proposal' | 'change_request'
+  subject_type: 'request' | 'project' | 'risk' | 'proposal' | 'change_request' | 'status_report'
   subject_id: number
   subject_title: string
   project_id: number | null
@@ -79,6 +79,8 @@ const STEP_TITLES: Record<string, string> = {
   pass_gate: 'Decide the gate',
   decide_change_pm: 'Decide a change request',
   decide_change_sponsor: 'Decide a change request',
+  draft_status_report: 'Write the status report',
+  publish_status_report: 'Review and publish the status report',
 }
 
 export function stepTitle(step: string): string {
@@ -142,6 +144,14 @@ export function subjectLink(entry: InboxEntry) {
   const query = fromInbox(entry)
   if (entry.subject_type === 'request') {
     return { name: 'request', params: { id: entry.subject_id }, query }
+  }
+  // A status report (item 7.4) opens on its project's Status reports page.
+  if (entry.subject_type === 'status_report' && entry.project_id !== null) {
+    return {
+      name: 'status-reports',
+      params: { id: entry.project_id },
+      query: { ...query, report: String(entry.subject_id) },
+    }
   }
   if (entry.project_id !== null) return { name: 'project', params: { id: entry.project_id }, query }
   return null

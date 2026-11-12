@@ -64,6 +64,16 @@ export interface PeriodsPage {
   offset: number
 }
 
+// Who wrote a section (item 7.4): the status report agent or a person. `unreviewed` is an agent's
+// draft no person has edited or confirmed: it shows "Agent draft, not reviewed", and the API
+// refuses to publish while any section is one.
+export interface SectionState {
+  source: 'agent' | 'person' | null
+  reviewed_by: number | null
+  reviewed_at: string | null
+  unreviewed: boolean
+}
+
 export interface StatusReport {
   id: number
   project_id: number
@@ -74,12 +84,14 @@ export interface StatusReport {
   figures: Figure[]
   ratings: Record<string, RatingResult>
   sections: Partial<Record<SectionName, string | null>>
+  section_states: Partial<Record<SectionName, SectionState>>
   flags: Flag[]
   figures_at: string
   replaces_id: number | null
   replace_reason: string | null
   replaced_by_id: number | null
-  created_by: number
+  // None for a draft the orchestrator made when the report fell due (item 7.4).
+  created_by: number | null
   created_by_name: string | null
   published_by: number | null
   published_by_name: string | null
@@ -171,6 +183,25 @@ export function figureText(figure: Figure): string {
   }
 }
 
+// The sections still waiting for a person to confirm or edit the agent's draft.
+export function unreviewedSections(report: StatusReport): SectionName[] {
+  return SECTIONS.filter((s) => report.section_states?.[s.name]?.unreviewed).map((s) => s.name)
+}
+
+// Only the sections whose text a person changed, so saving never marks an agent's draft as
+// reviewed without its text being touched (Confirm does that).
+export function changedSections(
+  report: StatusReport,
+  text: Partial<Record<SectionName, string>>,
+): Partial<Record<SectionName, string>> {
+  return Object.fromEntries(
+    SECTIONS.filter((s) => (text[s.name] ?? '') !== (report.sections[s.name] ?? '')).map((s) => [
+      s.name,
+      text[s.name] ?? '',
+    ]),
+  ) as Partial<Record<SectionName, string>>
+}
+
 // The period's report a reader should look at first: the live one (a draft or published), else
 // the newest withdrawn one.
 export function liveReport(period: Period): ReportSummary | null {
@@ -204,6 +235,11 @@ export const statusReportApi = {
     }),
   publish: (projectId: number, report: StatusReport) =>
     call<StatusReport>(`${base(projectId)}/${report.id}/publish`, {
+      method: 'POST',
+      body: JSON.stringify({ version: report.version }),
+    }),
+  confirm: (projectId: number, report: StatusReport, section: SectionName) =>
+    call<StatusReport>(`${base(projectId)}/${report.id}/sections/${section}/confirm`, {
       method: 'POST',
       body: JSON.stringify({ version: report.version }),
     }),
