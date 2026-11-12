@@ -82,11 +82,19 @@ async function loadPeriods() {
 
 async function loadReport() {
   if (reportId.value === null) return showReport(null)
+  let found: StatusReport
   try {
-    showReport(await statusReportApi.get(projectId.value, reportId.value))
+    found = await statusReportApi.get(projectId.value, reportId.value)
   } catch (e) {
     showReport(null)
     fail(e)
+    return
+  }
+  showReport(found)
+  // A sponsor reading a published report here opens it as much as on its one-page view (item
+  // 7.5), so tell the API, which keeps only the project sponsor's first opening. Best effort.
+  if (auth.user?.role === 'sponsor' && found.status === 'published') {
+    statusReportApi.opened(projectId.value, found.id).catch(() => undefined)
   }
 }
 

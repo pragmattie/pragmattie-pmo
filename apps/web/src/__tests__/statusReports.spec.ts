@@ -312,6 +312,32 @@ describe('the Status reports page', () => {
     expect(find('section-done')?.textContent).toContain('Nothing written.')
   })
 
+  it('tells the API when a sponsor opens a published report here, and not otherwise', async () => {
+    const published = report({ status: 'published', published_at: '2027-03-10T10:00:00' })
+    const asSponsor = await mountAt('/projects/5/status-reports?report=31', {
+      role: 'sponsor',
+      found: published,
+      listed: [PUBLISHED],
+    })
+    expect(asSponsor.sent.map((s) => `${s.method} ${s.path}`)).toEqual([
+      'POST /api/v1/projects/5/status-reports/31/opened',
+    ])
+    document.body.innerHTML = ''
+
+    const asManager = await mountAt('/projects/5/status-reports?report=31', {
+      found: published,
+      listed: [PUBLISHED],
+    })
+    expect(asManager.sent).toEqual([])
+    document.body.innerHTML = ''
+
+    const withdrawn = await mountAt('/projects/5/status-reports?report=30', {
+      role: 'sponsor',
+      found: report({ id: 30, status: 'withdrawn', withdrawn_reason: 'Spend was misread' }),
+    })
+    expect(withdrawn.sent).toEqual([])
+  })
+
   it.each(['sponsor', 'auditor'])('%s gets no actions and the not-found for a draft', async (role) => {
     await mountAt('/projects/5/status-reports?report=31', { role, found: null })
     expect(find('report')).toBeNull()
