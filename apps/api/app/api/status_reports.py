@@ -25,6 +25,12 @@ come from records and whose ratings come from written rules (`app.reports`).
   calls nothing.
 - `POST .../{rid}/sections/{section}/confirm` (`report:publish`): a person accepts an agent's
   draft section as it is.
+- `GET .../{rid}/executive` (`project:read`, item 7.5): a published report on one page, from the
+  figures it froze (`app.reports.executive`). Anything not published is a 404.
+- `POST .../{rid}/opened` (`project:read`, item 7.5): the page says the report was opened. Only
+  the project's sponsor's first opening of a published report is kept: one append-only row in
+  `status_report_reads` and one audit row (agent `status_report`, the sponsor's id). Anyone else's
+  opening, and a later one, records nothing.
 
 Only roles with `report:publish` see drafts (and drafts withdrawn before they were published).
 Anyone else gets a 404 for one, so a draft's existence isn't shown; they see published reports
@@ -45,6 +51,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import delivery
@@ -58,14 +65,16 @@ from app.authz import Action, can, require_audited
 from app.config import get_settings
 from app.models import Project, ProjectPlan, User
 from app.models.base import utcnow
-from app.models.report import DRAFT, PUBLISHED, SECTIONS, WITHDRAWN, StatusReport
+from app.models.report import DRAFT, PUBLISHED, SECTIONS, WITHDRAWN, StatusReport, StatusReportRead
 from app.policy import PolicyError, ReportingPolicy
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset
 from app.schemas.report import (
+    ExecutiveOut,
     PeriodOut,
     PeriodsPage,
     ReportCreate,
     ReportDraftResult,
+    ReportOpenedOut,
     ReportOut,
     ReportSummaryOut,
     ReportTextIn,
@@ -819,3 +828,72 @@ def confirm_section(
     _record(db, user, report, before=before, action="section_confirmed", section=section)
     _commit(db)
     return _out(db, report)
+
+
+# --- The executive view and read receipts (item 7.5)
+
+
+def _published(db: Session, project_id: int, report_id: int, user: User) -> StatusReport:
+    report = _report(db, project_id, report_id, user)
+    if report.status != PUBLISHED:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, REPORT_NOT_FOUND)
+    return report
+
+
+@router.get("/{project_id}/status-reports/{report_id}/executive", response_model=ExecutiveOut)
+def get_executive_view(project_id: int, report_id: int, user: Reader, db: Db) -> ExecutiveOut:
+    project = _project(db, project_id)
+    report = _published(db, project.id, report_id, user)
+    published_by = _names(db, User, {report.published_by} - {None}, User.display_name)
+    return ExecutiveOut.model_validate(
+        {
+            "id": report.id,
+            "project_id": project.id,
+            "project_name": project.name,
+            "period_start": report.period_start,
+            "period_end": report.period_end,
+            "published_at": report.published_at,
+            "published_by_name": published_by.get(report.published_by),
+            "figures_at": report.figures_at,
+            **rules.executive(report),
+        }
+    )
+
+
+def _first_opening(db: Session, report_id: int, user_id: int) -> StatusReportRead | None:
+    return db.scalar(
+        select(StatusReportRead).where(
+            StatusReportRead.report_id == report_id, StatusReportRead.user_id == user_id
+        )
+    )
+
+
+@router.post("/{project_id}/status-reports/{report_id}/opened", response_model=ReportOpenedOut)
+def report_opened(project_id: int, report_id: int, user: Reader, db: Db) -> ReportOpenedOut:
+    project = _project(db, project_id)
+    report = _report(db, project.id, report_id, user)
+    if user.id != project.sponsor_user_id or report.status != PUBLISHED:
+        return ReportOpenedOut(recorded=False, opened_at=None)
+    earlier = _first_opening(db, report.id, user.id)
+    if earlier is not None:
+        return ReportOpenedOut(recorded=False, opened_at=earlier.opened_at)
+    read = StatusReportRead(report_id=report.id, user_id=user.id, opened_at=utcnow())
+    try:
+        with db.begin_nested():
+            db.add(read)
+            db.flush()
+    except IntegrityError:
+        # Another request recorded the first opening a moment ago.
+        earlier = _first_opening(db, report.id, user.id)
+        return ReportOpenedOut(recorded=False, opened_at=earlier.opened_at if earlier else None)
+    _record(
+        db,
+        user,
+        report,
+        before=None,
+        action="opened",
+        read_id=read.id,
+        opened_at=read.opened_at.isoformat(),
+    )
+    _commit(db)
+    return ReportOpenedOut(recorded=True, opened_at=read.opened_at)

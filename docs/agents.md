@@ -406,9 +406,21 @@ already drafted one of its reports, or when its only reports were withdrawn. A d
 already made gets only its empty sections drafted. `publish_status_report` gives every other
 draft to the project manager's inbox to review and publish.
 
+**Report flags (item 7.5).** Three person steps, limited in working days by `flags` in the
+reporting policy file. `report_overdue_pm` goes to the project manager when a period of a project
+in delivery has no published report `overdue_pm` working days after its due day;
+`report_overdue_sponsor` goes to the sponsor too after `overdue_sponsor` days, also counted from
+the due day, so weekly, fortnightly and monthly plans are treated alike. `report_unread`
+goes to the sponsor when the project's sponsor hasn't opened a published report `unread` working
+days after it was published. A report published and then withdrawn leaves its period not overdue,
+and a withdrawn report is never unread. No agent ever takes or clears a flag (the loader refuses
+any other mode or role): an item leaves the Inbox at once when the report is published or the
+sponsor opens its one-page view, and the next pass closes it, with an audit row for each raise
+and each close.
+
 **What it never does.** Decide a gate, approve, return or mark sent a proposal, record a client's
-answer, accept a risk, decide a change request or publish a status report, whatever the policy
-says: those steps, and any
+answer, accept a risk, decide a change request, publish a status report or clear a report flag,
+whatever the policy says: those steps, and any
 step no agent may do, always go to a person. It never sends anything outside the product. It
 never deletes an inbox item: items close as `done` or `cancelled` with when and why.
 

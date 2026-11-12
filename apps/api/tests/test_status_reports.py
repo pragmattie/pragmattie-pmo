@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from policy_files import APPLIED_POLICIES, DRAFT_POLICIES
+from policy_files import reporting_dir
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -31,6 +31,7 @@ from app.models import (
     ProjectPlan,
     ProjectSpend,
     Risk,
+    StatusReportRead,
     User,
 )
 from app.policy import load_reporting
@@ -789,5 +790,179 @@ def test_every_write_is_one_audit_row(db, pm, ids):
 
 
 def test_the_reporting_policy_draft_is_valid():
-    found = APPLIED_POLICIES if (APPLIED_POLICIES / "reporting.yaml").exists() else DRAFT_POLICIES
-    assert load_reporting(found).schedule.red >= Decimal(0)
+    found = load_reporting(reporting_dir())
+    assert found.schedule.red >= Decimal(0)
+    assert found.flags.overdue_sponsor >= found.flags.overdue_pm >= 1
+
+
+# --- The executive view and read receipts (item 7.5)
+
+
+def _published(db, pm, ids, sponsor_user: User | None = None, **sections) -> dict:
+    """The period's report, published with `sections`; the project's sponsor is `sponsor_user`."""
+    pid = ids["pid"]
+    if sponsor_user is not None:
+        db.execute(update(Project).where(Project.id == pid).values(sponsor_user_id=sponsor_user.id))
+        db.commit()
+    report = _create(pm[0], pid).json()
+    version = report["version"]
+    if sections:
+        edited = _edit(pm[0], pid, report["id"], version, **sections)
+        assert edited.status_code == 200, edited.text
+        version = edited.json()["version"]
+    published = _act(pm[0], pid, report["id"], "publish", version)
+    assert published.status_code == 200, published.text
+    return published.json()
+
+
+def test_the_executive_view_shows_a_published_report_on_one_page(db, pm, sponsor, ids):
+    pid = ids["pid"]
+    _risk(db, pid, "High")
+    report = _published(
+        db, pm, ids, summary="The pilot is late.", decisions="Agree a new pilot date."
+    )
+    seen = sponsor[0].get(_url(pid, f"/{report['id']}/executive"))
+    assert seen.status_code == 200, seen.text
+    view = seen.json()
+    assert view["project_name"] == "Forecast"
+    assert set(view["ratings"]) == {"overall", "schedule", "cost", "scope", "risk"}
+    assert view["ratings"]["overall"]["rating"] == report["ratings"]["overall"]["rating"]
+    assert view["summary"] == "The pilot is late."
+    assert view["decisions"] == "Agree a new pilot date."
+    # Pilot live (target Monday 1 March) isn't reached by Sunday 7 March: 4 working days late.
+    assert [(m["name"], m["days_late"]) for m in view["milestones"]] == [("Pilot live", 4)]
+    assert view["milestones"][0]["target"] == TARGET.isoformat()
+    assert view["milestones_late"] == 1
+    assert view["spend"]["baseline_total"] == "1000.00"
+    assert view["spend"]["spend_to_date"] is None
+    assert view["high_risks"] == 1 and len(view["high_risk_ids"]) == 1
+
+
+def test_the_executive_view_reads_only_the_frozen_figures(db, pm, sponsor, ids):
+    pid = ids["pid"]
+    report = _published(db, pm, ids)
+    # Records change after publishing: the view still shows what was published.
+    db.execute(
+        update(PlanMilestone)
+        .where(PlanMilestone.id == ids["milestone"])
+        .values(reached_on=date(2027, 3, 2), name="Renamed")
+    )
+    db.commit()
+    _risk(db, pid, "High")
+    view = sponsor[0].get(_url(pid, f"/{report['id']}/executive")).json()
+    assert [(m["name"], m["reached_on"]) for m in view["milestones"]] == [("Pilot live", None)]
+    assert view["high_risks"] == 0
+
+
+def test_top_milestones_put_late_first_then_due_next_and_stop_at_three():
+    def ms(mid, name, target, days=None, plan=None):
+        found = [{"key": f"milestone_{mid}_target", "label": f"Target: {name}", "value": target}]
+        if plan:
+            found.append({"key": f"milestone_{mid}_plan_date", "label": name, "value": plan})
+        if days:
+            found.append({"key": f"milestone_{mid}_days_late", "label": name, "value": days})
+        return found
+
+    figures = [
+        *ms(1, "A", "2027-03-01", days=2),
+        *ms(2, "B", "2027-03-02", days=6),
+        *ms(3, "C", "2027-03-20", plan="2027-03-12"),
+        *ms(4, "D", "2027-03-11"),
+        *ms(5, "E", "2027-06-01"),
+        {
+            "key": "milestones_due_next",
+            "label": "Milestones due next period",
+            "value": 2,
+            "sources": [
+                {"table": "plan_milestones", "id": 3, "field": "target_date"},
+                {"table": "plan_milestones", "id": 4, "field": "target_date"},
+            ],
+        },
+    ]
+    top = rules.top_milestones(figures)
+    assert [m["name"] for m in top] == ["B", "A", "D"]
+    assert rules.top_milestones(figures[:2]) == [rules.report_milestones(figures[:2])[0]]
+
+
+def test_only_a_published_report_has_an_executive_view(db, pm, sponsor, ids):
+    pid = ids["pid"]
+    draft = _create(pm[0], pid).json()
+    # Not even the project manager, who sees the draft.
+    assert pm[0].get(_url(pid, f"/{draft['id']}/executive")).status_code == 404
+    assert _act(pm[0], pid, draft["id"], "publish", 1).status_code == 200
+    assert pm[0].get(_url(pid, f"/{draft['id']}/executive")).status_code == 200
+    correction = _create(pm[0], pid, replaces_id=draft["id"], reason="Spend was misread").json()
+    assert _act(pm[0], pid, correction["id"], "publish", 1).status_code == 200
+    # The withdrawn one has no executive view; its correction does.
+    assert sponsor[0].get(_url(pid, f"/{draft['id']}/executive")).status_code == 404
+    assert sponsor[0].get(_url(pid, f"/{correction['id']}/executive")).status_code == 200
+    assert sponsor[0].get(_url(pid, "/999/executive")).status_code == 404
+
+
+def _reads(db) -> list[StatusReportRead]:
+    db.expire_all()
+    return list(db.scalars(select(StatusReportRead).order_by(StatusReportRead.id)))
+
+
+def test_only_the_sponsors_first_opening_counts(db, pm, sponsor, ids):
+    pid = ids["pid"]
+    report = _published(db, pm, ids, sponsor_user=sponsor[1])
+    first = sponsor[0].post(_url(pid, f"/{report['id']}/opened"))
+    assert first.status_code == 200, first.text
+    assert first.json()["recorded"] is True
+    again = sponsor[0].post(_url(pid, f"/{report['id']}/opened"))
+    assert again.json()["recorded"] is False
+    assert again.json()["opened_at"] == first.json()["opened_at"]
+    reads = _reads(db)
+    assert [(r.report_id, r.user_id) for r in reads] == [(report["id"], sponsor[1].id)]
+    rows = [
+        r for r in _rows(db, subject_id=str(report["id"])) if r.action_taken["action"] == "opened"
+    ]
+    assert len(rows) == 1
+    assert rows[0].agent == "status_report"
+    assert rows[0].actor_user_id == sponsor[1].id
+    assert rows[0].trigger == "human"
+    assert rows[0].action_taken["read_id"] == reads[0].id
+
+
+def test_a_project_manager_auditor_or_other_sponsor_opening_records_nothing(
+    db, pm, sponsor, sign_in, ids
+):
+    pid = ids["pid"]
+    report = _published(db, pm, ids, sponsor_user=sponsor[1])
+    auditor, _ = _client(db, sign_in, "auditor")
+    other, _ = _client(db, sign_in, "sponsor", "other.sponsor@pmo.example")
+    before = len(_rows(db))
+    for web in (pm[0], auditor, other):
+        opened = web.post(_url(pid, f"/{report['id']}/opened"))
+        assert opened.status_code == 200, opened.text
+        assert opened.json() == {"recorded": False, "opened_at": None}
+    assert _reads(db) == []
+    assert len(_rows(db)) == before
+
+
+def test_opening_a_draft_or_withdrawn_report_records_nothing(db, pm, sponsor, ids):
+    pid = ids["pid"]
+    db.execute(update(Project).where(Project.id == pid).values(sponsor_user_id=sponsor[1].id))
+    db.commit()
+    draft = _create(pm[0], pid).json()
+    # The sponsor can't see a draft at all.
+    assert sponsor[0].post(_url(pid, f"/{draft['id']}/opened")).status_code == 404
+    assert _act(pm[0], pid, draft["id"], "publish", 1).status_code == 200
+    correction = _create(pm[0], pid, replaces_id=draft["id"], reason="Spend was misread").json()
+    assert _act(pm[0], pid, correction["id"], "publish", 1).status_code == 200
+    opened = sponsor[0].post(_url(pid, f"/{draft['id']}/opened"))
+    assert opened.json()["recorded"] is False
+    assert _reads(db) == []
+
+
+def test_opening_needs_the_csrf_header(db, pm, sponsor, ids):
+    pid = ids["pid"]
+    report = _published(db, pm, ids, sponsor_user=sponsor[1])
+    web = sponsor[0]
+    token = web.headers.pop("X-CSRF-Token")
+    try:
+        assert web.post(_url(pid, f"/{report['id']}/opened")).status_code == 403
+    finally:
+        web.headers["X-CSRF-Token"] = token
+    assert _reads(db) == []

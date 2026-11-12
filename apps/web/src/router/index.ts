@@ -7,6 +7,7 @@ import { safeRedirect } from '../lib/redirect'
 import { useAuthStore } from '../stores/auth'
 import AuditView from '../views/AuditView.vue'
 import BoardView from '../views/BoardView.vue'
+import ExecutiveReportView from '../views/ExecutiveReportView.vue'
 import HomeView from '../views/HomeView.vue'
 import InboxView from '../views/InboxView.vue'
 import IntakeView from '../views/IntakeView.vue'
@@ -67,6 +68,13 @@ export function makeRouter(memory = false) {
         path: '/projects/:id(\\d+)/status-reports',
         name: 'status-reports',
         component: StatusReportsView,
+        meta: { action: 'project:read' },
+      },
+      // One published status report on one page (item 7.5), where a sponsor lands.
+      {
+        path: '/projects/:id(\\d+)/status-reports/:reportId(\\d+)/executive',
+        name: 'status-report-executive',
+        component: ExecutiveReportView,
         meta: { action: 'project:read' },
       },
       // A print view of the approved version of a project's proposal.

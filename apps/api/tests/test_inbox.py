@@ -123,8 +123,18 @@ def test_each_role_sees_only_its_own_items(db, web, settings, actions, sign_in):
     # report steps go to that person too.
     assert ("draft_status_report", ids["draft_status_report"]) not in pm_steps
     assert ("publish_status_report", ids["publish_status_report"]) not in pm_steps
+    # Item 7.5: the project long in delivery names its project manager and sponsor, so its
+    # draft step and its three report flags go to them. The 7.4 project started 21 days ago on a
+    # weekly plan due on Mondays, so its first due day was 14 to 20 days ago: 10 to 14 working
+    # days whatever today is, at or past the drafted project manager limit (10), so its overdue
+    # flag always goes to its named project manager. Its sponsor flag (limit 15) isn't raised,
+    # and would name nobody if it were, so the sponsor signed in here would see it: the count
+    # below is the same either way.
+    hidden = {"report_overdue_pm", "report_overdue_sponsor", "report_unread"}
+    assert not {e["step"] for e in by_role["sponsor"]["items"]} & {"report_unread"}
+    assert ("report_overdue_pm", ids["draft_status_report"]) not in pm_steps
     shown = sum(len(page["items"]) for page in by_role.values())
-    assert shown == len(open_items) - 4
+    assert shown == len(open_items) - 4 - len(hidden) - 1 - 1
 
 
 def test_a_draft_request_goes_to_the_project_manager_who_raised_it(
@@ -822,3 +832,11 @@ def test_a_judgement_risk_leaves_the_agents_suggestion_out(db):
     assert recommend("score_risk", facts) == (
         "Score it yourself: it needs a person's judgement, so no agent may score it."
     )
+
+
+def test_report_flags_have_their_own_recommendations():
+    """Item 7.5: each flag says how it leaves the Inbox."""
+    for step in ("report_overdue_pm", "report_overdue_sponsor", "report_unread"):
+        text = inbox.recommend(step, [])
+        assert text != inbox.DEFAULT_RECOMMENDATION
+        assert "leaves" in text

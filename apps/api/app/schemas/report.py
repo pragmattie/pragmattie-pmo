@@ -188,3 +188,58 @@ class ReportDraftResult(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: CostStr | None = None
+
+
+# --- The executive view (item 7.5)
+
+
+class ExecutiveMilestoneOut(BaseModel):
+    id: int
+    name: str
+    target: date | None
+    plan_date: date | None
+    reached_on: date | None
+    days_late: int
+    due_next: bool
+
+
+class ExecutiveSpendOut(BaseModel):
+    spend_to_date: MoneyStr | None
+    spend_as_of: date | None
+    baseline_total: MoneyStr | None
+    spent_pct: str | None
+    time_elapsed_pct: str | None
+    spend_ahead_points: str | None
+
+
+class ExecutiveOut(BaseModel):
+    """A published report on one page, from the figures it froze when it was published: the
+    overall and four ratings, the summary, the decisions needed, at most three milestones (late
+    first, then due next), spend against the baseline and the open High risks."""
+
+    id: int
+    project_id: int
+    project_name: str
+    period_start: date
+    period_end: date
+    published_at: datetime
+    published_by_name: str | None
+    figures_at: datetime
+    ratings: dict[str, RatingOut]
+    summary: str | None
+    decisions: str | None
+    milestones: list[ExecutiveMilestoneOut]
+    # How many milestones the report counts as late and as due next period, so the page can say
+    # when it holds no more than it shows.
+    milestones_late: int
+    milestones_due_next: int
+    spend: ExecutiveSpendOut
+    high_risks: int
+    high_risk_ids: list[int]
+
+
+class ReportOpenedOut(BaseModel):
+    """`recorded` is true only for the sponsor's first opening of a published report."""
+
+    recorded: bool
+    opened_at: datetime | None

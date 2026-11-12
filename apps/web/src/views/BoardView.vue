@@ -13,6 +13,8 @@ import {
   movedKeys,
   NOTHING_WAITING,
   POLL_MS,
+  RATING_COLORS,
+  reportText,
   risksText,
   states,
   WAITING_CHOICES,
@@ -251,6 +253,15 @@ onUnmounted(() => {
                 {{ risksText(card) }}
               </div>
               <div class="text-body-2" data-test="card-money">{{ moneyText(card) }}</div>
+              <div v-if="reportText(card)" class="mt-1" data-test="card-report">
+                <v-chip
+                  size="x-small"
+                  :color="RATING_COLORS[card.report_rating!]"
+                  variant="tonal"
+                >
+                  {{ reportText(card) }}
+                </v-chip>
+              </div>
               <div class="waiting mt-2" data-test="card-waiting">
                 <div v-if="!card.waiting.length" class="text-medium-emphasis">
                   {{ NOTHING_WAITING }}

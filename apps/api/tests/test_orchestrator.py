@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
+from policy_files import reporting_dir
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,6 +26,7 @@ from app import policy as policy_module
 from app import reports as report_rules
 from app.agents import risk_agent
 from app.autonomy import AGENT, PERSON, STEPS, WINDOW, Step
+from app.changes import working_days
 from app.config import Settings, get_settings
 from app.db import engine
 from app.main import app
@@ -53,8 +55,9 @@ from app.models import (
 )
 from app.models.baseline import ProjectBaseline
 from app.models.proposal import TEXT_SECTIONS
-from app.models.report import SECTIONS
+from app.models.report import SECTIONS, StatusReportRead
 from app.orchestrator import NO_AGENT, StepAction, next_steps, run_pass
+from app.policy import load_reporting
 from app.risks import drop_stale_suggestion, snapshot
 
 REQUEST = {
@@ -322,6 +325,18 @@ def _report(
     return report
 
 
+def _published(
+    db: Session, project: Project, owner: User, period, at: datetime | None = None
+) -> StatusReport:
+    """`period`'s report, published by `owner` at `at` (the period's due day at 10:00)."""
+    report = _report(db, project, owner, period)
+    report.status = "published"
+    report.published_by = owner.id
+    report.published_at = at or datetime.combine(period.due_on, time(10))
+    db.commit()
+    return report
+
+
 def _world(db: Session) -> dict[str, int]:
     """A subject in every state that has a next step."""
     pm = _user(db)
@@ -371,6 +386,13 @@ def _world(db: Session) -> dict[str, int]:
     older = _due_periods(db, reporting)[-2]
     written = dict.fromkeys(SECTIONS, "Written by a person.")
     ids["publish_status_report"] = _report(db, reporting, pm, older, written).id
+    # Item 7.5: a project long in delivery with no report published (overdue to the project
+    # manager and the sponsor), and a published report its sponsor hasn't opened.
+    late = _in_delivery(db, pm, date.today() - timedelta(days=120))
+    late.sponsor_user_id = _user(db, "sponsor", "world-sponsor").id
+    db.commit()
+    ids["report_overdue_pm"] = ids["report_overdue_sponsor"] = late.id
+    ids["report_unread"] = _published(db, late, pm, _due_periods(db, late)[0]).id
     return ids
 
 
@@ -460,6 +482,13 @@ def test_every_step_id_comes_from_some_state(db, rules):
         PERSON,
         "project_manager",
     )
+    for step, subject_type, who in (
+        ("report_overdue_pm", "project", "project_manager"),
+        ("report_overdue_sponsor", "project", "sponsor"),
+        ("report_unread", "status_report", "sponsor"),
+    ):
+        flag = _found(steps, step, ids[step])
+        assert (flag.subject_type, flag.mode, flag.waits_on) == (subject_type, PERSON, who)
     # The same state gives the same steps, in the same order.
     assert next_steps(db, rules) == steps
 
@@ -1786,3 +1815,218 @@ def test_a_switched_off_status_report_agent_sends_the_draft_step_to_a_person(
     assert _reports(db, project) == []
     (item,) = [i for i in _items(db, "open") if i.step == "draft_status_report"]
     assert item.who == "project_manager"
+
+
+# --- Report flags (item 7.5): limits read from the reporting policy draft
+
+
+@pytest.fixture
+def flags(monkeypatch):
+    """The report flags' limits from the reporting policy draft (or the applied file once the
+    draft is gone), which the orchestrator then reads too."""
+    found = load_reporting(reporting_dir())
+    monkeypatch.setattr(policy_module, "get_reporting", lambda: found)
+    return found.flags
+
+
+# Delivery starts Monday 4 January 2027; weekly reports are due on Mondays, so the first period
+# is 4 to 10 January, due on Monday 11 January. Both overdue limits count from the due day.
+FLAG_START = date(2027, 1, 4)
+FIRST_END = date(2027, 1, 10)
+FIRST_DUE = date(2027, 1, 11)
+
+
+def _working_days_after(day: date, n: int) -> date:
+    """The first date that is `n` working days after `day`."""
+    found = day
+    while working_days(day, found) < n:
+        found += timedelta(days=1)
+    return found
+
+
+@pytest.fixture
+def flag_project(db):
+    owner = _user(db)
+    sponsor = _user(db, "sponsor", "sponsor")
+    project = _in_delivery(db, owner, FLAG_START)
+    project.sponsor_user_id = sponsor.id
+    db.commit()
+    return project, owner, sponsor
+
+
+def _on(monkeypatch, day: date) -> None:
+    monkeypatch.setattr(delivery, "today", lambda: day)
+
+
+def _flag_steps(db, rules, step: str) -> list:
+    return [s for s in next_steps(db, rules) if s.step == step]
+
+
+@pytest.mark.parametrize(
+    ("step", "limit", "who"),
+    [
+        ("report_overdue_pm", "overdue_pm", "project_manager"),
+        ("report_overdue_sponsor", "overdue_sponsor", "sponsor"),
+    ],
+)
+def test_an_overdue_report_is_raised_at_its_limit_in_working_days(
+    db, rules, flags, flag_project, monkeypatch, step, limit, who
+):
+    project, _owner, _sponsor = flag_project
+    days = getattr(flags, limit)
+    _on(monkeypatch, _working_days_after(FIRST_DUE, days - 1))
+    assert _flag_steps(db, rules, step) == []
+    _on(monkeypatch, _working_days_after(FIRST_DUE, days))
+    (flag,) = _flag_steps(db, rules, step)
+    assert (flag.subject_type, flag.subject_id) == ("project", project.id)
+    assert (flag.mode, flag.waits_on) == (PERSON, who)
+    assert "the oldest is 2027-01-04 to 2027-01-10" in flag.reason
+    assert f"{days} or more working days" in flag.reason
+
+
+def test_overdue_goes_to_the_project_manager_then_the_sponsor_and_leaves_on_publishing(
+    db, settings, actions, rules, flags, flag_project, monkeypatch
+):
+    actions()
+    project, owner, _sponsor = flag_project
+    _on(monkeypatch, _working_days_after(FIRST_DUE, flags.overdue_pm))
+    _pass(db, settings, rules=rules)
+    open_flags = {i.step: i for i in _items(db, "open") if i.step.startswith("report_")}
+    assert set(open_flags) == {"report_overdue_pm"}
+    assert open_flags["report_overdue_pm"].who == "project_manager"
+    _on(monkeypatch, _working_days_after(FIRST_DUE, flags.overdue_sponsor))
+    _pass(db, settings, rules=rules)
+    open_flags = {i.step: i for i in _items(db, "open") if i.step.startswith("report_")}
+    assert set(open_flags) == {"report_overdue_pm", "report_overdue_sponsor"}
+    assert open_flags["report_overdue_sponsor"].who == "sponsor"
+    raised = [
+        r
+        for r in _orchestrator_rows(db)
+        if r.action_taken.get("action") == "inbox" and r.signals["step"].startswith("report_")
+    ]
+    assert [r.signals["step"] for r in raised] == ["report_overdue_pm", "report_overdue_sponsor"]
+    assert all(r.subject_type == "project" and r.subject_id == str(project.id) for r in raised)
+
+    # Publishing every late period clears both, each with its own audit row.
+    for period in orchestrator.overdue_periods(db, project, flags.overdue_pm):
+        _published(db, project, owner, period)
+    _pass(db, settings, rules=rules)
+    assert not [i for i in _items(db, "open") if i.step.startswith("report_overdue")]
+    closed = [
+        r
+        for r in _orchestrator_rows(db)
+        if r.action_taken.get("action") == "close_inbox"
+        and r.signals["step"].startswith("report_overdue")
+    ]
+    assert sorted(r.signals["step"] for r in closed) == [
+        "report_overdue_pm",
+        "report_overdue_sponsor",
+    ]
+    assert {r.action_taken["reason"] for r in closed} == {orchestrator.NO_LONGER_NEEDED}
+
+
+def test_a_report_published_then_withdrawn_is_not_overdue(
+    db, rules, flags, flag_project, monkeypatch
+):
+    project, owner, _sponsor = flag_project
+    _on(monkeypatch, _working_days_after(FIRST_DUE, flags.overdue_pm))
+    (period,) = orchestrator.overdue_periods(db, project, flags.overdue_pm)
+    report = _published(db, project, owner, period)
+    report.status = "withdrawn"
+    report.withdrawn_by = owner.id
+    report.withdrawn_at = utcnow()
+    report.withdrawn_reason = "Wrong period"
+    db.commit()
+    assert _flag_steps(db, rules, "report_overdue_pm") == []
+    # A draft withdrawn before it was published leaves the period overdue.
+    report.published_at = None
+    db.commit()
+    assert len(_flag_steps(db, rules, "report_overdue_pm")) == 1
+
+
+# Published on Monday 11 January 2027, the first period's due day.
+PUBLISHED_ON = date(2027, 1, 11)
+
+
+def test_an_unread_report_is_raised_at_its_limit_and_leaves_once_the_sponsor_opens_it(
+    db, rules, flags, flag_project, monkeypatch
+):
+    project, owner, sponsor = flag_project
+    report = _published(
+        db, project, owner, report_rules.Period(FLAG_START, FIRST_END, PUBLISHED_ON)
+    )
+    _on(monkeypatch, _working_days_after(PUBLISHED_ON, flags.unread - 1))
+    assert _flag_steps(db, rules, "report_unread") == []
+    _on(monkeypatch, _working_days_after(PUBLISHED_ON, flags.unread))
+    (flag,) = _flag_steps(db, rules, "report_unread")
+    assert (flag.subject_type, flag.subject_id) == ("status_report", report.id)
+    assert (flag.mode, flag.waits_on) == (PERSON, "sponsor")
+    # The project manager's opening doesn't count; the sponsor's does.
+    db.add(StatusReportRead(report_id=report.id, user_id=owner.id, opened_at=utcnow()))
+    db.commit()
+    assert len(_flag_steps(db, rules, "report_unread")) == 1
+    db.add(StatusReportRead(report_id=report.id, user_id=sponsor.id, opened_at=utcnow()))
+    db.commit()
+    assert _flag_steps(db, rules, "report_unread") == []
+
+
+def test_a_withdrawn_report_or_one_with_no_named_sponsor_is_never_unread(
+    db, rules, flags, flag_project, monkeypatch
+):
+    project, owner, _sponsor = flag_project
+    report = _published(
+        db, project, owner, report_rules.Period(FLAG_START, FIRST_END, PUBLISHED_ON)
+    )
+    _on(monkeypatch, _working_days_after(PUBLISHED_ON, flags.unread + 5))
+    assert len(_flag_steps(db, rules, "report_unread")) == 1
+    project.sponsor_user_id = None
+    db.commit()
+    assert _flag_steps(db, rules, "report_unread") == []
+    project.sponsor_user_id = _sponsor.id
+    report.status = "withdrawn"
+    report.withdrawn_by = owner.id
+    report.withdrawn_at = utcnow()
+    report.withdrawn_reason = "Wrong period"
+    db.commit()
+    assert _flag_steps(db, rules, "report_unread") == []
+
+
+def test_the_sponsors_opening_clears_the_unread_item_at_once_and_on_the_next_pass(
+    db, web, settings, actions, rules, flags, monkeypatch, sign_in
+):
+    actions()
+    owner = _user(db)
+    project = _in_delivery(db, owner, FLAG_START)
+    sponsor = sign_in(web, db, "sponsor")
+    project.sponsor_user_id = sponsor.id
+    db.commit()
+    report = _published(
+        db, project, owner, report_rules.Period(FLAG_START, FIRST_END, PUBLISHED_ON)
+    )
+    _on(monkeypatch, _working_days_after(PUBLISHED_ON, flags.unread))
+    _pass(db, settings, rules=rules)
+    (item,) = [i for i in _items(db, "open") if i.step == "report_unread"]
+    assert (item.who, item.subject_id) == ("sponsor", str(report.id))
+    inbox = web.get("/api/v1/inbox").json()["items"]
+    assert [e["step"] for e in inbox if e["step"] == "report_unread"] == ["report_unread"]
+
+    opened = web.post(f"/api/v1/projects/{project.id}/status-reports/{report.id}/opened")
+    assert opened.json()["recorded"] is True
+    # It leaves the Inbox at once, and the next pass closes it with an audit row.
+    inbox = web.get("/api/v1/inbox").json()["items"]
+    assert [e for e in inbox if e["step"] == "report_unread"] == []
+    _pass(db, settings, rules=rules)
+    db.expire_all()
+    assert db.get(InboxItem, item.id).status == "done"
+    (closed,) = [
+        r
+        for r in _orchestrator_rows(db)
+        if r.action_taken.get("action") == "close_inbox" and r.signals["step"] == "report_unread"
+    ]
+    assert closed.subject_id == str(report.id)
+
+
+def test_no_agent_ever_takes_a_report_flag():
+    assert {"report_overdue_pm", "report_overdue_sponsor", "report_unread"} <= (
+        orchestrator.PERSON_ONLY
+    )

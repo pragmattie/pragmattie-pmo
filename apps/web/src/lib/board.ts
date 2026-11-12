@@ -37,6 +37,11 @@ export interface Card {
   // The simulated client takes one of the card's steps, or the card's client is simulated.
   simulated: boolean
   client_simulated: boolean
+  // The latest published status report (item 7.5): its overall rating, when it was published and
+  // how many days ago.
+  report_rating: 'green' | 'amber' | 'red' | null
+  report_published_at: string | null
+  report_age_days: number | null
   waiting: Waiting[]
 }
 
@@ -123,6 +128,20 @@ export function risksText(card: Pick<Card, 'open_risks' | 'top_risk_band'>): str
     ? `${card.open_risks} ${noun}, highest ${card.top_risk_band}`
     : `${card.open_risks} ${noun}`
 }
+
+// "Last report: Amber, 7 days old", for a project with a published status report (item 7.5).
+const RATING_WORDS = { green: 'Green', amber: 'Amber', red: 'Red' } as const
+
+export function reportText(
+  card: Pick<Card, 'report_rating' | 'report_age_days'>,
+): string | null {
+  if (card.report_rating === null || card.report_age_days === null) return null
+  const days = card.report_age_days
+  const age = days === 0 ? 'published today' : `${days} day${days === 1 ? '' : 's'} old`
+  return `Last report: ${RATING_WORDS[card.report_rating]}, ${age}`
+}
+
+export const RATING_COLORS = { green: 'success', amber: 'warning', red: 'error' } as const
 
 // Where a card leads: the request's page, or the project's.
 export function cardLink(card: Pick<Card, 'kind' | 'id'>) {

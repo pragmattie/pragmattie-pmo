@@ -366,8 +366,24 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         report_columns = {c["name"]: c for c in inspector.get_columns("status_reports")}
         assert not report_columns["section_sources"]["nullable"]
         assert report_columns["created_by"]["nullable"]
+        # 0030: read receipts, one row per report and reader.
+        assert {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("status_report_reads")
+        } == {
+            "fk_status_report_reads_report": "status_reports",
+            "fk_status_report_reads_user": "users",
+        }
+        assert {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("status_report_reads")
+        } == {"uq_status_report_reads_report_user": ["report_id", "user_id"]}
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0029")
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert "status_report_reads" not in inspector.get_table_names()
+        assert "status_reports" in inspector.get_table_names()
         command.downgrade(config, "0028")
         inspector = inspect(create_engine(get_settings().database_url))
         report_columns = {c["name"]: c for c in inspector.get_columns("status_reports")}

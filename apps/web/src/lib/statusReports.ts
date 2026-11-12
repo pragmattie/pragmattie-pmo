@@ -208,6 +208,93 @@ export function liveReport(period: Period): ReportSummary | null {
   return period.reports.find((r) => r.status !== 'withdrawn') ?? period.reports[0] ?? null
 }
 
+// The executive view (item 7.5): a published report on one page, from the figures it froze.
+export interface ExecutiveMilestone {
+  id: number
+  name: string
+  target: string | null
+  plan_date: string | null
+  reached_on: string | null
+  days_late: number
+  due_next: boolean
+}
+
+export interface ExecutiveReport {
+  id: number
+  project_id: number
+  project_name: string
+  period_start: string
+  period_end: string
+  published_at: string
+  published_by_name: string | null
+  figures_at: string
+  ratings: Record<string, RatingResult>
+  summary: string | null
+  decisions: string | null
+  milestones: ExecutiveMilestone[]
+  milestones_late: number
+  milestones_due_next: number
+  spend: {
+    spend_to_date: string | null
+    spend_as_of: string | null
+    baseline_total: string | null
+    spent_pct: string | null
+    time_elapsed_pct: string | null
+    spend_ahead_points: string | null
+  }
+  high_risks: number
+  high_risk_ids: number[]
+}
+
+export interface Opened {
+  recorded: boolean
+  opened_at: string | null
+}
+
+export function money(value: string | null): string {
+  if (value === null) return 'None recorded'
+  return Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+// One line for a milestone on the executive view.
+export function milestoneText(m: ExecutiveMilestone): string {
+  if (m.days_late > 0) {
+    const days = `${m.days_late} working day${m.days_late === 1 ? '' : 's'} late`
+    return m.reached_on ? `${days}, reached ${m.reached_on}` : `${days}, target ${m.target}`
+  }
+  return `Due next period, on ${m.plan_date}`
+}
+
+// How many late or due-next milestones the report counts but the page doesn't show (it shows at
+// most three), so the page can say the report holds no more when it shows them all.
+export function milestonesNotShown(view: ExecutiveReport): number {
+  const counted = view.milestones_late + view.milestones_due_next
+  return Math.max(0, counted - view.milestones.length)
+}
+
+// Where a person opening a report lands (item 7.5): a sponsor on a published report's one-page
+// view, everyone else on the detailed report, which is one click from the one-page view.
+export function reportLink(
+  projectId: number,
+  reportId: number,
+  role: string | undefined,
+  status: ReportStatus,
+  query: Record<string, string> = {},
+) {
+  if (role === 'sponsor' && status === 'published') {
+    return {
+      name: 'status-report-executive',
+      params: { id: String(projectId), reportId: String(reportId) },
+      query,
+    }
+  }
+  return {
+    name: 'status-reports',
+    params: { id: String(projectId) },
+    query: { ...query, report: String(reportId) },
+  }
+}
+
 const base = (projectId: number) => `/api/v1/projects/${projectId}/status-reports`
 
 export const statusReportApi = {
@@ -243,6 +330,11 @@ export const statusReportApi = {
       method: 'POST',
       body: JSON.stringify({ version: report.version }),
     }),
+  executive: (projectId: number, reportId: number) =>
+    call<ExecutiveReport>(`${base(projectId)}/${reportId}/executive`),
+  // The page says it was opened; the API keeps only the project sponsor's first opening.
+  opened: (projectId: number, reportId: number) =>
+    call<Opened>(`${base(projectId)}/${reportId}/opened`, { method: 'POST', body: '{}' }),
   withdraw: (projectId: number, report: StatusReport, reason: string) =>
     call<StatusReport>(`${base(projectId)}/${report.id}/withdraw`, {
       method: 'POST',

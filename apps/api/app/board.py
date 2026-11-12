@@ -15,6 +15,8 @@ what it is waiting on, computed fresh on each read from the existing tables. Not
   retries, has an open inbox item and waits on a person. A step the simulated client takes is
   labelled simulated, and so is every card whose client is simulated (item 6.8: its contact email
   is in the demo domain), so the board always says when an answer came from the simulation.
+- **The latest report** (item 7.5): a project card shows its latest published status report's
+  overall rating and how many days ago it was published.
 - **Money** is computed here: a plan total is its estimate lines plus contingency
   (`plans.compute_total`); the summary adds them up. Nothing is taken from the client.
 
@@ -29,7 +31,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import orchestrator
+from app import delivery, orchestrator
 from app.autonomy import PERSON, WINDOW, AutonomyPolicy
 from app.gates import REQUEST_CHECKS
 from app.models import (
@@ -48,6 +50,7 @@ from app.models import (
     User,
 )
 from app.models.portfolio import CANCELLED
+from app.models.report import PUBLISHED
 from app.orchestrator import (
     CHANGE_REQUEST,
     PROJECT,
@@ -126,6 +129,9 @@ STEP_WORDS: dict[str, tuple[str, str, str]] = {
         "publish the status report",
         "status report to publish",
     ),
+    "report_overdue_pm": ("", "", "status report overdue"),
+    "report_overdue_sponsor": ("", "", "status report overdue"),
+    "report_unread": ("", "", "status report to read"),
 }
 GATE_NAMES = {REQUEST: "approval gate", PROJECT: "go-ahead gate"}
 
@@ -165,6 +171,11 @@ class Card:
     top_budget: Decimal | None = None
     stopped: bool = False
     client_simulated: bool = False
+    # The latest published status report (item 7.5): its overall rating, when it was published
+    # and how many days old it is.
+    report_rating: str | None = None
+    report_published_at: datetime | None = None
+    report_age_days: int | None = None
     waiting: list[Waiting] = field(default_factory=list)
 
     @property
@@ -318,7 +329,23 @@ def _project_card(
     card.top_budget = db.scalar(
         select(ProjectBrief.budget_high).where(ProjectBrief.project_id == project.id)
     )
+    _report_fields(db, card)
     return card
+
+
+def _report_fields(db: Session, card: Card) -> None:
+    """The latest published report: the newest period's, the newest of its reports."""
+    report = db.scalar(
+        select(StatusReport)
+        .where(StatusReport.project_id == card.id, StatusReport.status == PUBLISHED)
+        .order_by(StatusReport.period_end.desc(), StatusReport.id.desc())
+        .limit(1)
+    )
+    if report is None or report.published_at is None:
+        return
+    card.report_rating = report.ratings["overall"]["rating"]
+    card.report_published_at = report.published_at
+    card.report_age_days = (delivery.today() - report.published_at.date()).days
 
 
 def _request_card(

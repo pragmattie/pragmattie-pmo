@@ -18,7 +18,26 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-Nothing yet.
+Apply both files together, in one pull request: the loader refuses an autonomy file without the
+three new steps, and the orchestrator, Inbox and board need the reporting file's `flags` once the
+code knows the steps. Until both are applied, the Inbox, the board, orchestrator passes and the
+status report create and refresh routes answer 503 (as each did before its policy file first
+arrived).
+
+- **`policies/reporting.yaml`** (item 7.5): today's file plus a `flags` section, the limits in
+  working days at which the orchestrator raises a status report in the Inbox.
+  `overdue_pm_working_days: 10`: a period with no published report goes to the project manager 10
+  working days after its due day. `overdue_sponsor_working_days: 15`: and to the sponsor too
+  after 15 (must be at least the project manager's). `unread_working_days: 5`: a published report
+  the project's sponsor hasn't opened goes to the sponsor 5 working days after it was published.
+  Each is a whole number from 1 to 260. Both overdue limits count from the period's due day
+  (`due_on`), not its last day, so weekly, fortnightly and monthly plans are treated alike. The
+  numbers are drafts: the person applying the file sets them. Nothing else in the file changes.
+- **`policies/autonomy.yaml`** (item 7.5): today's file plus three person steps for the report
+  flags: `report_overdue_pm` (who `project_manager`), `report_overdue_sponsor` (who `sponsor`)
+  and `report_unread` (who `sponsor`). The code refuses any other mode or `who` for them, so an
+  agent never clears a flag: an item leaves the Inbox by itself once the report is published or
+  the sponsor opens it. Nothing else in the file changes.
 
 ## Applied
 

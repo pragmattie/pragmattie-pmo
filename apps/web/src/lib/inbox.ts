@@ -81,6 +81,9 @@ const STEP_TITLES: Record<string, string> = {
   decide_change_sponsor: 'Decide a change request',
   draft_status_report: 'Write the status report',
   publish_status_report: 'Review and publish the status report',
+  report_overdue_pm: 'Publish the overdue status report',
+  report_overdue_sponsor: 'A status report is overdue',
+  report_unread: 'Read the published status report',
 }
 
 export function stepTitle(step: string): string {
@@ -145,13 +148,26 @@ export function subjectLink(entry: InboxEntry) {
   if (entry.subject_type === 'request') {
     return { name: 'request', params: { id: entry.subject_id }, query }
   }
-  // A status report (item 7.4) opens on its project's Status reports page.
+  // A report the sponsor hasn't opened (item 7.5) opens on its one-page view, where opening it
+  // clears the item.
+  if (entry.step === 'report_unread' && entry.project_id !== null) {
+    return {
+      name: 'status-report-executive',
+      params: { id: String(entry.project_id), reportId: String(entry.subject_id) },
+      query,
+    }
+  }
+  // A status report (item 7.4) opens on its project's Status reports page, and so does an
+  // overdue report (item 7.5), whose subject is the project.
   if (entry.subject_type === 'status_report' && entry.project_id !== null) {
     return {
       name: 'status-reports',
       params: { id: entry.project_id },
       query: { ...query, report: String(entry.subject_id) },
     }
+  }
+  if (entry.step.startsWith('report_overdue') && entry.project_id !== null) {
+    return { name: 'status-reports', params: { id: entry.project_id }, query }
   }
   if (entry.project_id !== null) return { name: 'project', params: { id: entry.project_id }, query }
   return null

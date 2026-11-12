@@ -30,6 +30,7 @@ const PARENTS: Record<string, string> = {
   request: 'intake',
   'proposal-print': 'projects',
   'status-reports': 'projects',
+  'status-report-executive': 'projects',
 }
 
 export function menuItemFor(routeName: string | null | undefined): string | null {

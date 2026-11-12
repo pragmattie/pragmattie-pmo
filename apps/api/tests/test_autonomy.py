@@ -16,6 +16,7 @@ from app import policy
 from app.authz import Action
 from app.autonomy import (
     AGENTS,
+    FLAG_WHO,
     FLOOR_STEPS,
     STEP_AGENTS,
     STEPS,
@@ -109,8 +110,8 @@ def test_only_the_simulated_client_has_an_answer():
     _refused(_with(misplaced), "unknown keys: answer")
 
 
-def test_the_proposed_file_is_todays_file_plus_the_status_report_steps():
-    """Item 7.4: the draft changes nothing in today's file; it adds two steps and one agent."""
+def test_the_proposed_file_is_todays_file_plus_the_report_flags():
+    """Item 7.5: the draft changes nothing in today's file; it adds the three report flags."""
     proposed = Path(__file__).resolve().parents[3] / "ci/proposed/policies/autonomy.yaml"
     if not proposed.exists():
         pytest.skip("the proposed autonomy file has been applied")
@@ -119,14 +120,11 @@ def test_the_proposed_file_is_todays_file_plus_the_status_report_steps():
     assert draft["version"] == today["version"]
     assert draft["steps"] == {
         **today["steps"],
-        "draft_status_report": {
-            "mode": "agent",
-            "agent": "status_report_agent",
-            "who": "project_manager",
-        },
-        "publish_status_report": {"mode": "person", "who": "project_manager"},
+        "report_overdue_pm": {"mode": "person", "who": "project_manager"},
+        "report_overdue_sponsor": {"mode": "person", "who": "sponsor"},
+        "report_unread": {"mode": "person", "who": "sponsor"},
     }
-    assert draft["agents"] == {**today["agents"], "status_report_agent": {"enabled": True}}
+    assert draft["agents"] == today["agents"]
 
 
 def test_floor_steps_are_fixed_in_code():
@@ -138,6 +136,46 @@ def test_floor_steps_are_fixed_in_code():
         "decide_change_sponsor",
         "publish_status_report",
     }
+
+
+def test_report_flags_are_person_steps_with_a_fixed_who():
+    assert FLAG_WHO == {
+        "report_overdue_pm": "project_manager",
+        "report_overdue_sponsor": "sponsor",
+        "report_unread": "sponsor",
+    }
+    assert all(STEP_AGENTS[step] == () for step in FLAG_WHO)
+    loaded = load_autonomy(autonomy_dir())
+    for step, who in FLAG_WHO.items():
+        assert loaded.steps[step].mode == "person"
+        assert loaded.steps[step].who == who
+
+
+@pytest.mark.parametrize("step", sorted(FLAG_WHO))
+@pytest.mark.parametrize("mode", ["agent", "window"])
+def test_a_report_flag_below_person_is_refused(step, mode):
+    def change(data):
+        data["steps"][step] = {
+            "mode": mode,
+            "agent": "status_report_agent",
+            "who": FLAG_WHO[step],
+            **({"window_minutes": 15} if mode == "window" else {}),
+        }
+
+    _refused(_with(change), f"{step} must be decided by a person (mode person), not {mode}")
+
+
+@pytest.mark.parametrize(
+    ("step", "role"),
+    [
+        ("report_overdue_sponsor", "project_manager"),
+        ("report_unread", "project_manager"),
+        ("report_unread", "ethics_reviewer"),
+    ],
+)
+def test_a_report_flag_for_another_role_is_refused(step, role):
+    data = _with(lambda d: _set(d, role, "steps", step, "who"))
+    _refused(data, f"{role} can't take {step}: it always goes to the {FLAG_WHO[step]}")
 
 
 def test_publishing_a_status_report_is_a_persons_step_with_report_publish():
@@ -234,6 +272,9 @@ def test_each_step_names_the_permission_its_who_needs():
         "approve_proposal": "proposal:approve",
         "accept_risk": "risk:accept",
         "publish_status_report": "report:publish",
+        "report_overdue_pm": "report:publish",
+        "report_overdue_sponsor": "project:read",
+        "report_unread": "project:read",
     }
     for step in STEPS:
         assert who_permission(step) == special.get(step, "project:write")

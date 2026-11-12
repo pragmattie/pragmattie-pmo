@@ -972,6 +972,9 @@ SAMPLES = {
     ("POST", f"{REPORT}/sections/{{section}}/confirm"): _report_sample(
         "/sections/summary/confirm", {"version": 1}, status="draft", agent_summary=True
     ),
+    # Item 7.5: the executive view and the opening, of a published report.
+    ("GET", f"{REPORT}/executive"): _report_sample("/executive", status="published"),
+    ("POST", f"{REPORT}/opened"): _report_sample("/opened", status="published"),
     ("POST", HOLD): _hold_sample,
     # ORCHESTRATOR_MODE is off in tests, so an allowed caller gets an empty pass, never a call.
     ("POST", "/api/v1/orchestrator/run"): lambda _target: {"url": "/api/v1/orchestrator/run"},
@@ -1190,6 +1193,10 @@ def test_matrix_covers_the_existing_routes():
         assert by_method[(method, path)] == Action.REPORT_PUBLISH
     # Item 7.4: running the status report agent needs project:write, as for the other agents.
     assert by_method[("POST", f"{REPORT}/draft")] == Action.PROJECT_WRITE
+    # Item 7.5: every reader may open a published report's one-page view; only the project's
+    # sponsor's first opening is recorded, which the route decides.
+    assert by_method[("GET", f"{REPORT}/executive")] == Action.PROJECT_READ
+    assert by_method[("POST", f"{REPORT}/opened")] == Action.PROJECT_READ
     project = "/api/v1/projects/{project_id}"
     for path in (project, f"{project}/brief", f"{project}/stakeholders", f"{project}/assumptions"):
         assert by_method[("GET", path)] == Action.PROJECT_READ
