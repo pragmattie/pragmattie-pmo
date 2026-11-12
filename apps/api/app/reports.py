@@ -19,8 +19,8 @@
     open risks escalated beyond the project manager, and submitted change requests a sponsor
     decides. Change requests waiting counts every submitted change, so one change can be in both.
 - **Ratings** (`rate`): green, amber or red for schedule, cost, scope and risk, from the figures
-  and `policies/reporting.yaml`, each with the rule that set it and the measure it used. The
-  overall rating is the worst of the four.
+  and the reporting policy file (`app.policy.get_reporting`), each with the rule that set it
+  and the measure it used. The overall rating is the worst of the four.
 - **Checker** (`check`): flags each money figure, date or plain number in the text that isn't
   one of the report's figures. Money and dates are read as the proposal checker reads them
   (`app.proposals`); a plain number is any other number, a percentage included, and matches when
