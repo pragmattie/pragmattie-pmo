@@ -1,5 +1,6 @@
-# How a status report rates a project in delivery (item 7.3). Drafted by an agent; a person
-# applies it as policies/reporting.yaml.
+# How a status report rates a project in delivery (item 7.3). Read and validated by
+# apps/api/app/policy.py. Schedule turns red past the 5 working days a project manager may move a
+# milestone alone (policies/changes.yaml); scope's limits match the change and cost thresholds.
 #
 # Each rating is green, amber or red, worked out by code from the report's figures. A rating is
 # amber when its measure is above the amber limit and red when it is above the red limit (each
@@ -19,7 +20,7 @@
 version: 1
 schedule:
   amber_above_working_days: 0
-  red_above_working_days: 10
+  red_above_working_days: 5
 cost:
   amber_above_points: 5
   red_above_points: 15
@@ -28,7 +29,7 @@ scope:
   red_above_pct: 10
 risk:
   amber_at:
-    Medium: 1
+    Medium: 3
     High: 1
   red_at:
     High: 2
