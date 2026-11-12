@@ -348,8 +348,26 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         assert {c["name"]: c for c in inspector.get_columns("project_proposals")}["created_by"][
             "nullable"
         ]
+        # 0028: status reports.
+        assert {
+            fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("status_reports")
+        } == {
+            "fk_status_reports_project": "projects",
+            "fk_status_reports_replaces": "status_reports",
+            "fk_status_reports_created_by": "users",
+            "fk_status_reports_published_by": "users",
+            "fk_status_reports_withdrawn_by": "users",
+        }
+        assert {ck["name"] for ck in inspector.get_check_constraints("status_reports")} == {
+            "ck_status_reports_status",
+            "ck_status_reports_period",
+        }
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0027")
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert "status_reports" not in inspector.get_table_names()
+        assert "project_spend" in inspector.get_table_names()
         command.downgrade(config, "0023")
         inspector = inspect(create_engine(get_settings().database_url))
         assert "simulated" not in {c["name"] for c in inspector.get_columns("clients")}

@@ -859,3 +859,86 @@ def get_autonomy() -> AutonomyPolicy:
     """The autonomy policy in the configured directory, loaded on first use. A failure is not
     cached, so the next call tries again once the file is fixed."""
     return load_autonomy(get_settings().policies_dir)
+
+
+# Status report ratings (item 7.3).
+
+
+@dataclass(frozen=True)
+class Limits:
+    """A rating is amber above `amber` and red above `red` (`red` is at least `amber`)."""
+
+    amber: Decimal
+    red: Decimal
+
+
+@dataclass(frozen=True)
+class ReportingPolicy:
+    """The limits that rate a status report: schedule in working days late, cost in percentage
+    points of spend ahead of time, scope in percent of baseline 1's total, and risk as the count
+    of open risks in a band at which each rating applies."""
+
+    schedule: Limits
+    cost: Limits
+    scope: Limits
+    risk_amber_at: Mapping[str, int]
+    risk_red_at: Mapping[str, int]
+
+
+REPORTING_FILE = "reporting.yaml"
+# Each measured rating's keys: (amber, red), and whether its limits are whole numbers.
+REPORTING_LIMITS = {
+    "schedule": ("amber_above_working_days", "red_above_working_days", True),
+    "cost": ("amber_above_points", "red_above_points", False),
+    "scope": ("amber_above_pct", "red_above_pct", False),
+}
+
+
+def _limits(data: Any, where: str, amber_key: str, red_key: str, whole: bool) -> Limits:
+    data = _mapping(data, where)
+    _keys(data, where, (amber_key, red_key))
+    read = (lambda v, at: Decimal(_int(v, at))) if whole else _percent
+    amber = read(data[amber_key], f"{where}.{amber_key}")
+    red = read(data[red_key], f"{where}.{red_key}")
+    if red < amber:
+        raise PolicyError(f"{where}: {red_key} must be at least {amber_key}")
+    return Limits(amber=amber, red=red)
+
+
+def _band_counts(data: Any, where: str) -> Mapping[str, int]:
+    data = _mapping(data, where)
+    if not data:
+        raise PolicyError(f"{where}: expected at least one band")
+    counts = {}
+    for band, count in data.items():
+        counts[_text(band, f"{where} band")] = _int(count, f"{where}.{band}", minimum=1)
+    return MappingProxyType(counts)
+
+
+def parse_reporting(data: dict, where: str = REPORTING_FILE) -> ReportingPolicy:
+    _keys(data, where, ("version", *REPORTING_LIMITS, "risk"))
+    limits = {
+        name: _limits(data[name], f"{where} {name}", amber, red, whole)
+        for name, (amber, red, whole) in REPORTING_LIMITS.items()
+    }
+    risk = _mapping(data["risk"], f"{where} risk")
+    _keys(risk, f"{where} risk", ("amber_at", "red_at"))
+    return ReportingPolicy(
+        **limits,
+        risk_amber_at=_band_counts(risk["amber_at"], f"{where} risk.amber_at"),
+        risk_red_at=_band_counts(risk["red_at"], f"{where} risk.red_at"),
+    )
+
+
+def load_reporting(directory: Path | str) -> ReportingPolicy:
+    """Read and validate `reporting.yaml` in `directory`; raise `PolicyError` on any problem.
+
+    Loaded apart from `load_policies`, so a missing file only affects the status report routes."""
+    return parse_reporting(_read(Path(directory), REPORTING_FILE))
+
+
+@lru_cache
+def get_reporting() -> ReportingPolicy:
+    """The reporting policy in the configured directory, loaded on first use. A failure is not
+    cached, so the next call tries again once the file is fixed."""
+    return load_reporting(get_settings().policies_dir)
