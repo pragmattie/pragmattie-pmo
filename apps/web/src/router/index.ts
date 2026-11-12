@@ -15,6 +15,7 @@ import ProjectView from '../views/ProjectView.vue'
 import ProposalPrintView from '../views/ProposalPrintView.vue'
 import RequestView from '../views/RequestView.vue'
 import RisksView from '../views/RisksView.vue'
+import StatusReportsView from '../views/StatusReportsView.vue'
 
 // Menu pages that have a real view. The rest are hidden from the menu and their address leads
 // home.
@@ -59,6 +60,13 @@ export function makeRouter(memory = false) {
         path: '/projects/:id(\\d+)',
         name: 'project',
         component: ProjectView,
+        meta: { action: 'project:read' },
+      },
+      // A project's status reports: its periods and one report (`?report=<id>`).
+      {
+        path: '/projects/:id(\\d+)/status-reports',
+        name: 'status-reports',
+        component: StatusReportsView,
         meta: { action: 'project:read' },
       },
       // A print view of the approved version of a project's proposal.
