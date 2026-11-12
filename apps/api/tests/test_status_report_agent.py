@@ -482,3 +482,19 @@ def test_the_figure_values_read_back_as_the_same_figures():
     text = " and ".join(values[k] for k in "abcdefghi")
     period = rules.Period(date(2027, 3, 1), date(2027, 3, 7), date(2027, 3, 8))
     assert rules.check({"summary": text}, figures, period) == []
+
+
+def test_saving_unchanged_text_doesnt_review_an_agents_draft(db, web, pm, fake, mode, report):
+    """The page sends every section when a person saves: only the ones they changed become
+    theirs."""
+    _draft(web, report)
+    saved = _get(web, report)
+    sections = {name: saved["sections"][name] or "" for name in SECTIONS}
+    sections["done"] = "Rewritten by the project manager."
+    edited = web.patch(
+        _url(report["pid"], f"/{report['id']}"),
+        json={"version": saved["version"], "sections": sections},
+    ).json()
+    states = edited["section_states"]
+    assert states["done"]["source"] == "person"
+    assert [n for n in SECTIONS if states[n]["unreviewed"]] == ["summary", "next", "issues"]

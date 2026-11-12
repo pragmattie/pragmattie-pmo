@@ -52,9 +52,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    left = op.get_bind().scalar(
-        sa.text(f"SELECT COUNT(*) FROM {REPORTS} WHERE created_by IS NULL")
-    )
+    left = op.get_bind().scalar(sa.text(f"SELECT COUNT(*) FROM {REPORTS} WHERE created_by IS NULL"))
     if left:
         raise RuntimeError(
             f"{left} status report(s) were made by the orchestrator and have no person; a person "

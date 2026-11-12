@@ -7,8 +7,8 @@ come from records and whose ratings come from written rules (`app.reports`).
   `period_end`, with its figures, ratings and empty text. A period has at most one draft and one
   published report. A correction of a published report names it (`replaces_id`) with a reason.
 - `GET .../{rid}` (`project:read`): one report.
-- `PATCH .../{rid}` (`report:publish`): edit a draft's text sections; each section sent becomes
-  the person's.
+- `PATCH .../{rid}` (`report:publish`): edit a draft's text sections; each section whose text
+  changes becomes the person's.
 - `POST .../{rid}/refresh` (`report:publish`): read a draft's figures from the records again and
   rate them again.
 - `POST .../{rid}/publish` (`report:publish`): publish a draft. Refused (409, with the flags)
@@ -553,10 +553,12 @@ def edit_status_report(
     _require_draft(db, user, project, report, action)
     before = _snapshot(report)
     changed = {k: (v or None) for k, v in body.sections.model_dump(exclude_unset=True).items()}
+    # A section whose text the person changed is now theirs (item 7.4), so the agent never
+    # replaces it. One sent unchanged keeps its writer: an agent's draft is reviewed by Confirm.
+    edited = [n for n, text in changed.items() if (report.sections.get(n) or None) != text]
     report.sections = {**report.sections, **changed}
-    # Each section the person sent is now theirs (item 7.4), so the agent never replaces it.
     now = utcnow().isoformat()
-    for name in changed:
+    for name in edited:
         rules.mark_section(
             report, name, source=rules.PERSON_SOURCE, reviewed_by=user.id, reviewed_at=now
         )

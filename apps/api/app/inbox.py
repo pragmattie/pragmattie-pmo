@@ -36,6 +36,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app import orchestrator
+from app import reports as report_rules
 from app.authz import Action, allowed_actions
 from app.autonomy import AutonomyPolicy
 from app.gates import CHECKS_BY_SUBJECT
@@ -49,11 +50,12 @@ from app.models import (
     ProjectRequest,
     ReadinessCheck,
     Risk,
+    StatusReport,
     User,
     ValueCase,
 )
 from app.models.proposal import TEXT_SECTIONS
-from app.orchestrator import CHANGE_REQUEST, PROJECT, PROPOSAL, REQUEST, RISK
+from app.orchestrator import CHANGE_REQUEST, PROJECT, PROPOSAL, REQUEST, RISK, STATUS_REPORT
 from app.plans import missing
 from app.policy import PolicyError, RiskPolicy, get_policies
 from app.proposals import check, latest_version, plan_facts, unreviewed_sections, values_of
@@ -143,13 +145,20 @@ def _scope(db: Session, subject_type: str, subject_id: int, who: str) -> Scope |
     if subject_type == PROJECT:
         project = db.get(Project, subject_id)
         return None if project is None else Scope(project.name, project, _named(project, who))
-    model = {RISK: Risk, PROPOSAL: ProjectProposal, CHANGE_REQUEST: ChangeRequest}.get(subject_type)
+    model = {
+        RISK: Risk,
+        PROPOSAL: ProjectProposal,
+        CHANGE_REQUEST: ChangeRequest,
+        STATUS_REPORT: StatusReport,
+    }.get(subject_type)
     row = db.get(model, subject_id) if model is not None else None
     if row is None:
         return None
     project = db.get(Project, row.project_id)
     if isinstance(row, ProjectProposal):
         title = f"Proposal for {project.name}" if project is not None else "Proposal"
+    elif isinstance(row, StatusReport):
+        title = f"Status report, {row.period_start.isoformat()} to {row.period_end.isoformat()}"
     else:
         title = row.title
     return Scope(title, project, _named(project, who))
@@ -330,6 +339,24 @@ def _change_facts(change: ChangeRequest) -> list[Fact]:
     ]
 
 
+def _report_facts(report: StatusReport) -> list[Fact]:
+    unreviewed = report_rules.unreviewed_sections(report)
+    empty = report_rules.empty_sections(report)
+    return [
+        Fact("period", "Period", f"{report.period_start} to {report.period_end}"),
+        Fact("due_on", "Due on", report.due_on.isoformat()),
+        Fact("overall", "Overall rating", report.ratings["overall"]["rating"]),
+        Fact("empty_sections", "Empty sections", ", ".join(empty) or "none", not empty),
+        Fact(
+            "unreviewed_sections",
+            "Agent drafts not reviewed",
+            ", ".join(unreviewed) or "none",
+            not unreviewed,
+        ),
+        Fact("flags", "Checker flags", str(len(report.flags or [])), not report.flags),
+    ]
+
+
 def _request_facts(db: Session, request: ProjectRequest) -> list[Fact]:
     has_value_case = db.scalar(select(ValueCase.id).where(ValueCase.request_id == request.id))
     has_readiness = db.scalar(
@@ -366,6 +393,10 @@ def facts_for(db: Session, step: str, subject_type: str, subject_id: int) -> lis
             return _gate_facts(db, PROJECT, project)
         if step == "draft_plan":
             return _plan_facts(db, project)
+        if step == "draft_status_report":
+            due = orchestrator.report_due(db, project)
+            reason = due[0] if due is not None else "no report is due"
+            return [Fact("report_due", "Report due", reason)]
         open_risks = db.scalars(
             select(Risk.id).where(Risk.project_id == project.id, Risk.status != "rejected")
         ).all()
@@ -379,6 +410,9 @@ def facts_for(db: Session, step: str, subject_type: str, subject_id: int) -> lis
     if subject_type == CHANGE_REQUEST:
         change = db.get(ChangeRequest, subject_id)
         return [] if change is None else _change_facts(change)
+    if subject_type == STATUS_REPORT:
+        report = db.get(StatusReport, subject_id)
+        return [] if report is None else _report_facts(report)
     return []
 
 
@@ -510,6 +544,23 @@ def _propose_risks(facts: list[Fact]) -> str:
     )
 
 
+def _draft_status_report(_facts: list[Fact]) -> str:
+    return "Create the period's report and write its text."
+
+
+def _publish_status_report(facts: list[Fact]) -> str:
+    unreviewed = _value(facts, "unreviewed_sections", "none")
+    empty = _value(facts, "empty_sections", "none")
+    flags = _flags(facts)
+    if unreviewed != "none":
+        return f"Confirm or edit the agent's sections ({unreviewed}), then publish it."
+    if empty != "none":
+        return f"Write the empty sections ({empty}), then publish it."
+    if flags:
+        return f"Clear the {flags} checker flag(s), then publish it."
+    return "Publish it: every section is written and reviewed, with no flags open."
+
+
 RECOMMENDERS: dict[str, Callable[[list[Fact]], str]] = {
     "pass_gate": _gate,
     "accept_risk": _accept_risk,
@@ -526,6 +577,8 @@ RECOMMENDERS: dict[str, Callable[[list[Fact]], str]] = {
     "draft_readiness": _draft_readiness,
     "draft_plan": _draft_plan,
     "propose_risks": _propose_risks,
+    "draft_status_report": _draft_status_report,
+    "publish_status_report": _publish_status_report,
 }
 
 

@@ -119,8 +119,12 @@ def test_each_role_sees_only_its_own_items(db, web, settings, actions, sign_in):
     pm_steps = {(e["step"], e["subject_id"]) for e in by_role["project_manager"]["items"]}
     assert ("draft_value_case", ids["draft_value_case"]) not in pm_steps
     assert ("decide_change_pm", ids["decide_change_pm"]) in pm_steps
+    # The project whose status report is due names its project manager (item 7.4), so its two
+    # report steps go to that person too.
+    assert ("draft_status_report", ids["draft_status_report"]) not in pm_steps
+    assert ("publish_status_report", ids["publish_status_report"]) not in pm_steps
     shown = sum(len(page["items"]) for page in by_role.values())
-    assert shown == len(open_items) - 2
+    assert shown == len(open_items) - 4
 
 
 def test_a_draft_request_goes_to_the_project_manager_who_raised_it(
@@ -559,6 +563,31 @@ def _facts(**values) -> list[Fact]:
             "propose_risks",
             _facts(risks=3),
             "Look for the project's risks and add them to the risk register (it holds 3).",
+        ),
+        (
+            "draft_status_report",
+            [],
+            "Create the period's report and write its text.",
+        ),
+        (
+            "publish_status_report",
+            _facts(unreviewed_sections="summary, next", empty_sections="none", flags=0),
+            "Confirm or edit the agent's sections (summary, next), then publish it.",
+        ),
+        (
+            "publish_status_report",
+            _facts(unreviewed_sections="none", empty_sections="issues", flags=0),
+            "Write the empty sections (issues), then publish it.",
+        ),
+        (
+            "publish_status_report",
+            _facts(unreviewed_sections="none", empty_sections="none", flags=2),
+            "Clear the 2 checker flag(s), then publish it.",
+        ),
+        (
+            "publish_status_report",
+            _facts(unreviewed_sections="none", empty_sections="none", flags=0),
+            "Publish it: every section is written and reviewed, with no flags open.",
         ),
     ],
 )
