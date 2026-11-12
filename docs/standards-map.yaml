@@ -203,8 +203,8 @@ features:
     notes: People mark milestones reached, move deliverables short of accepted and add append-only spend; lateness is in working days against the baseline; every write and refusal audited.
   - id: P7-status-reports
     title: Status reports
-    rules: [R1, R5]
-    notes: Agent drafts are proposals; a person edits and releases each report.
+    rules: [R1, R3, R5, R12]
+    notes: Figures come from records with sources; ratings follow limits in a policy file; a person writes and publishes, and the checker blocks stray numbers; every write and refusal audited.
   - id: P7-closure
     title: Closure report and lessons
     rules: []

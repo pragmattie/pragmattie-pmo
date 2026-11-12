@@ -18,7 +18,14 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-None.
+- **`policies/reporting.yaml`** (item 7.3), drafted at `ci/proposed/policies/reporting.yaml`: the
+  limits that rate a status report green, amber or red. Schedule: amber when a milestone is more
+  than 0 working days late against its baseline target, red above 10. Cost: spending ahead of
+  time (spent % of the baseline less the share of delivery time passed), amber above 5 points,
+  red above 15. Scope: the baseline's move from baseline 1, either way, amber above 5%, red
+  above 10%. Risk: amber at 1 open Medium or High risk, red at 2 open High risks. Until it is
+  applied, creating or refreshing a status report answers 503 (reading still works). Tests use
+  a fixture copy in `apps/api/tests/fixtures/policies/reporting/`, so applying it changes no test.
 
 ## Applied
 
