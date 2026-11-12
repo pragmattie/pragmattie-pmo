@@ -10,6 +10,7 @@ import {
   HIGHLIGHT_MS,
   moneyText,
   movedKeys,
+  reportText,
   POLL_MS,
   risksText,
   states,
@@ -69,6 +70,9 @@ function card(changes: Partial<Card> = {}): Card {
     held_by: 'person',
     simulated: false,
     client_simulated: false,
+    report_rating: 'amber',
+    report_published_at: '2027-03-03T16:00:00',
+    report_age_days: 7,
     waiting: [
       {
         step: 'pass_gate',
@@ -100,6 +104,9 @@ const REQUEST = card({
   open_risks: 0,
   plan_total: null,
   top_budget: '2500.00',
+  report_rating: null,
+  report_published_at: null,
+  report_age_days: null,
   held_by: 'agent',
   waiting: [
     {
@@ -231,6 +238,8 @@ describe('the board page', () => {
     expect(project.find('[data-test="card-proposal"]').text()).toBe('Proposal: accepted')
     expect(project.find('[data-test="card-risks"]').text()).toContain('3 open risks, highest High')
     expect(project.find('[data-test="card-money"]').text()).toBe('Plan 110.00 of top budget 150.50')
+    // Item 7.5: the latest published report's overall rating and its age.
+    expect(project.find('[data-test="card-report"]').text()).toBe('Last report: Amber, 7 days old')
     expect(project.find('[data-test="waiting-person"]').text()).toContain(
       'Waiting on the sponsor: go-ahead gate',
     )
@@ -240,6 +249,7 @@ describe('the board page', () => {
     expect(request.classes()).toContain('held-agent')
     expect(request.find('[data-test="waiting-agent"]').text()).toContain('Agent drafting the value case')
     expect(request.find('[data-test="card-health"]').exists()).toBe(false)
+    expect(request.find('[data-test="card-report"]').exists()).toBe(false)
     // Anything simulated says so.
     const simulated = wrapper.find('[data-test="card-project-3"]')
     expect(simulated.find('[data-test="card-simulated"]').text()).toBe('Simulated client')
@@ -358,6 +368,17 @@ describe('the board helpers', () => {
     const none = { client_id: null, project_manager: null, waiting: null, show_stopped: false }
     expect(boardQuery(none)).toBe('')
     expect(boardQuery({ ...none, waiting: 'agent' })).toBe('?waiting=agent')
+  })
+
+  it('words the latest report and its age', () => {
+    expect(reportText(card())).toBe('Last report: Amber, 7 days old')
+    expect(reportText(card({ report_rating: 'red', report_age_days: 1 }))).toBe(
+      'Last report: Red, 1 day old',
+    )
+    expect(reportText(card({ report_rating: 'green', report_age_days: 0 }))).toBe(
+      'Last report: Green, published today',
+    )
+    expect(reportText(card({ report_rating: null, report_age_days: null }))).toBeNull()
   })
 
   it('words money and risks', () => {

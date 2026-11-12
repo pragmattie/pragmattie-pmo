@@ -5,9 +5,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from '../App.vue'
 import {
   changedSections,
+  type ExecutiveReport,
   figureText,
   liveReport,
+  milestonesNotShown,
+  milestoneText,
   type Period,
+  reportLink,
   type StatusReport,
   sourceLink,
   sourceText,
@@ -463,5 +467,165 @@ describe('the Status reports page', () => {
     await mountAt('/projects/5/status-reports')
     const trail = document.body.textContent ?? ''
     expect(trail).toContain('Warehouse demand forecast')
+  })
+})
+
+// --- The executive view (item 7.5)
+
+const EXECUTIVE: ExecutiveReport = {
+  id: 31,
+  project_id: 5,
+  project_name: 'Warehouse demand forecast',
+  period_start: '2027-03-01',
+  period_end: '2027-03-07',
+  published_at: '2027-03-10T10:00:00',
+  published_by_name: 'Pat Manager',
+  figures_at: '2027-03-10T09:00:00',
+  ratings: report().ratings,
+  summary: 'Pilot live is 4 working days late.',
+  decisions: 'Agree a new pilot date.',
+  milestones: [
+    { id: 11, name: 'Pilot live', target: '2027-03-01', plan_date: '2027-03-01', reached_on: null, days_late: 4, due_next: false },
+    { id: 12, name: 'Handover', target: '2027-03-12', plan_date: '2027-03-12', reached_on: null, days_late: 0, due_next: true },
+  ],
+  milestones_late: 1,
+  milestones_due_next: 1,
+  spend: {
+    spend_to_date: '400.00',
+    spend_as_of: '2027-03-05',
+    baseline_total: '1000.00',
+    spent_pct: '40.00',
+    time_elapsed_pct: '35.00',
+    spend_ahead_points: '5.00',
+  },
+  high_risks: 1,
+  high_risk_ids: [8],
+}
+
+function executiveAnswer(view: ExecutiveReport | null) {
+  return (method: string, path: string) => {
+    if (path === '/api/v1/projects/5/status-reports/31/executive') {
+      return view ? json(view) : json({ detail: 'status report not found' }, 404)
+    }
+    if (method === 'POST' && path === '/api/v1/projects/5/status-reports/31/opened') {
+      return json({ recorded: true, opened_at: '2027-03-10T11:00:00' })
+    }
+    return null
+  }
+}
+
+const EXECUTIVE_PATH = '/projects/5/status-reports/31/executive'
+
+describe('the executive view', () => {
+  it('shows every section of a published report on one page, with a print stylesheet', async () => {
+    await mountAt(EXECUTIVE_PATH, { role: 'sponsor', answer: executiveAnswer(EXECUTIVE) })
+    expect(find('executive')!.classList.contains('print-one-page')).toBe(true)
+    for (const section of [
+      'executive-ratings',
+      'executive-summary',
+      'executive-decisions',
+      'executive-milestones',
+      'executive-spend',
+      'executive-risks',
+    ]) {
+      expect(find(section), section).not.toBeNull()
+    }
+    for (const name of ['overall', 'schedule', 'cost', 'scope', 'risk']) {
+      expect(find(`executive-rating-${name}`), name).not.toBeNull()
+    }
+    expect(find('executive-rating-overall')?.textContent).toContain('Overall: Amber')
+    expect(find('executive-rating-cost')?.textContent).toContain('Cost: Green')
+    expect(find('executive-summary')?.textContent).toContain('Pilot live is 4 working days late.')
+    expect(find('executive-decisions')?.textContent).toContain('Agree a new pilot date.')
+    const milestones = findAll('executive-milestone').map((m) => m.textContent)
+    expect(milestones).toHaveLength(2)
+    expect(milestones[0]).toContain('Pilot live: 4 working days late, target 2027-03-01')
+    expect(milestones[1]).toContain('Handover: Due next period, on 2027-03-12')
+    expect(find('executive-milestones-all')?.textContent).toContain('holds no more')
+    expect(find('executive-spend')?.textContent).toContain('400.00 spent of a 1,000.00 baseline')
+    expect(find('executive-risks')?.textContent).toContain('1 open High risk')
+    expect(find('executive-risk')?.getAttribute('href')).toBe('/risks?project=5&risk=8')
+    // The detailed report is one click away, and Print is the browser's.
+    expect(find('executive-detailed')?.getAttribute('href')).toBe(
+      '/projects/5/status-reports?report=31',
+    )
+    expect(find('executive-print')).not.toBeNull()
+  })
+
+  it('tells the API it was opened, once per visit', async () => {
+    const { sent } = await mountAt(EXECUTIVE_PATH, {
+      role: 'sponsor',
+      answer: executiveAnswer(EXECUTIVE),
+    })
+    expect(sent.map((s) => `${s.method} ${s.path}`)).toEqual([
+      'POST /api/v1/projects/5/status-reports/31/opened',
+    ])
+  })
+
+  it('says when there are more milestones than it shows, and when there are none', async () => {
+    const more = { ...EXECUTIVE, milestones_late: 4, milestones_due_next: 1 }
+    await mountAt(EXECUTIVE_PATH, { role: 'sponsor', answer: executiveAnswer(more) })
+    expect(find('executive-milestones-more')?.textContent).toContain('3 more')
+    document.body.innerHTML = ''
+    const none = { ...EXECUTIVE, milestones: [], milestones_late: 0, milestones_due_next: 0, high_risks: 0, high_risk_ids: [] }
+    await mountAt(EXECUTIVE_PATH, { role: 'sponsor', answer: executiveAnswer(none) })
+    expect(find('executive-milestones')?.textContent).toContain('No milestone was late')
+    expect(find('executive-risks')?.textContent).toContain('No open High risks')
+  })
+
+  it('shows only a published report: anything else is an error and nothing is recorded', async () => {
+    const { sent } = await mountAt(EXECUTIVE_PATH, { role: 'sponsor', answer: executiveAnswer(null) })
+    expect(find('load-error')?.textContent).toContain('status report not found')
+    expect(find('executive-summary')).toBeNull()
+    expect(sent).toEqual([])
+  })
+
+  it('lands a sponsor on the one-page view and a project manager on the detailed report', async () => {
+    expect(reportLink(5, 31, 'sponsor', 'published')).toEqual({
+      name: 'status-report-executive',
+      params: { id: '5', reportId: '31' },
+      query: {},
+    })
+    expect(reportLink(5, 31, 'project_manager', 'published')).toEqual({
+      name: 'status-reports',
+      params: { id: '5' },
+      query: { report: '31' },
+    })
+    expect(reportLink(5, 31, 'sponsor', 'withdrawn').name).toBe('status-reports')
+
+    const asSponsor = await mountAt('/projects/5/status-reports', {
+      role: 'sponsor',
+      listed: [PUBLISHED],
+      answer: executiveAnswer(EXECUTIVE),
+    })
+    await click('period-report')
+    expect(asSponsor.router.currentRoute.value.name).toBe('status-report-executive')
+    document.body.innerHTML = ''
+
+    const asManager = await mountAt('/projects/5/status-reports', { listed: [PUBLISHED] })
+    await click('period-report')
+    expect(asManager.router.currentRoute.value.name).toBe('status-reports')
+    expect(asManager.router.currentRoute.value.query.report).toBe('31')
+  })
+
+  it('links a published report to its one-page view, and not a draft', async () => {
+    await mountAt('/projects/5/status-reports?report=31', {
+      found: report({ status: 'published', published_at: '2027-03-10T10:00:00' }),
+    })
+    expect(find('executive-link')?.getAttribute('href')).toBe(EXECUTIVE_PATH)
+    document.body.innerHTML = ''
+    await mountAt('/projects/5/status-reports?report=31')
+    expect(find('executive-link')).toBeNull()
+  })
+
+  it('words a milestone and counts the ones not shown', () => {
+    const [late, next] = EXECUTIVE.milestones
+    expect(milestoneText(late)).toBe('4 working days late, target 2027-03-01')
+    expect(milestoneText({ ...late, days_late: 1, reached_on: '2027-03-02' })).toBe(
+      '1 working day late, reached 2027-03-02',
+    )
+    expect(milestoneText(next)).toBe('Due next period, on 2027-03-12')
+    expect(milestonesNotShown(EXECUTIVE)).toBe(0)
+    expect(milestonesNotShown({ ...EXECUTIVE, milestones_late: 3, milestones_due_next: 2 })).toBe(3)
   })
 })

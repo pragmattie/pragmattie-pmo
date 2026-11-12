@@ -13,6 +13,7 @@ import {
   NOT_YOURS_TO_DECIDE,
   POLL_MS,
   receivesItems,
+  stepTitle,
   subjectLink,
   waitsOnText,
 } from '../lib/inbox'
@@ -417,5 +418,26 @@ describe('the inbox helpers', () => {
       params: { id: 5 },
       query: { from: 'inbox', item: `${item.kind}-${item.id}`, report: '31' },
     })
+  })
+
+  it('links a report flag to where it is cleared (item 7.5)', () => {
+    const unread = entry({
+      step: 'report_unread',
+      subject_type: 'status_report',
+      subject_id: 31,
+      project_id: 5,
+    })
+    expect(subjectLink(unread)).toEqual({
+      name: 'status-report-executive',
+      params: { id: '5', reportId: '31' },
+      query: { from: 'inbox', item: `${unread.kind}-${unread.id}` },
+    })
+    const overdue = entry({ step: 'report_overdue_sponsor', subject_type: 'project', subject_id: 5, project_id: 5 })
+    expect(subjectLink(overdue)).toEqual({
+      name: 'status-reports',
+      params: { id: 5 },
+      query: { from: 'inbox', item: `${overdue.kind}-${overdue.id}` },
+    })
+    expect(stepTitle('report_unread')).toBe('Read the published status report')
   })
 })

@@ -14,6 +14,8 @@ import {
   type Period,
   type PeriodsPage,
   RATED,
+  reportLink,
+  type ReportSummary,
   RATING_COLOR,
   RATING_TEXT,
   SECTIONS,
@@ -107,6 +109,15 @@ watch(reportId, () => {
 
 function open(id: number) {
   router.push({ query: { report: String(id) } })
+}
+
+// A sponsor lands on a published report's one-page view (item 7.5); everyone else on this page.
+function openReport(item: ReportSummary) {
+  if (auth.user?.role === 'sponsor' && item.status === 'published') {
+    router.push(reportLink(projectId.value, item.id, auth.user.role, item.status))
+  } else {
+    open(item.id)
+  }
 }
 
 // Run one write; on success show the report it returns and read the periods again.
@@ -251,7 +262,7 @@ const flagsBySection = computed(() => {
                 :color="item.status === 'withdrawn' ? undefined : RATING_COLOR[item.overall]"
                 :variant="item.id === reportId ? 'flat' : 'tonal'"
                 data-test="period-report"
-                @click="open(item.id)"
+                @click="openReport(item)"
               >
                 {{ STATUS_TEXT[item.status] }}, {{ RATING_TEXT[item.overall] }}
               </v-chip>
@@ -279,6 +290,18 @@ const flagsBySection = computed(() => {
           {{ report.period_start }} to {{ report.period_end }}
         </h2>
         <v-chip size="small" data-test="report-status">{{ STATUS_TEXT[report.status] }}</v-chip>
+        <v-btn
+          v-if="report.status === 'published'"
+          size="small"
+          variant="text"
+          :to="{
+            name: 'status-report-executive',
+            params: { id: String(projectId), reportId: String(report.id) },
+          }"
+          data-test="executive-link"
+        >
+          One-page view
+        </v-btn>
       </div>
       <p class="text-caption text-medium-emphasis mb-2" data-test="report-meta">
         Due {{ report.due_on }}. Figures read {{ new Date(report.figures_at).toLocaleString() }}.
