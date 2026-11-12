@@ -3,6 +3,7 @@
 The fake-client tests never send a schema to the API, so this walks each schema in code and
 fails on any construct the API rejects. No network and no key."""
 
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -11,11 +12,25 @@ import pytest
 from sqlalchemy.orm import Session
 
 from app import risks
-from app.agents import intake_agent, planner_agent, proposal_agent, risk_agent
+from app.agents import (
+    intake_agent,
+    planner_agent,
+    proposal_agent,
+    risk_agent,
+    status_report_agent,
+)
 from app.agents.risk_agent import AgentError
 from app.config import get_settings
 from app.db import engine
-from app.models import Base, Project, ProjectProposal, ProjectRequest, Risk, User
+from app.models import (
+    Base,
+    Project,
+    ProjectProposal,
+    ProjectRequest,
+    Risk,
+    StatusReport,
+    User,
+)
 from app.policy import load_policies
 from app.proposals import PlanFacts
 
@@ -28,6 +43,7 @@ SCHEMAS = {
     "proposal_agent.OUTPUT_SCHEMA": proposal_agent.OUTPUT_SCHEMA,
     "risk_agent.OUTPUT_SCHEMA": risk_agent.OUTPUT_SCHEMA,
     "risk_agent.SCORE_SCHEMA": risk_agent.SCORE_SCHEMA,
+    "status_report_agent.OUTPUT_SCHEMA": status_report_agent.OUTPUT_SCHEMA,
 }
 
 # The keywords the API accepts in a strict schema. Anything else (numeric and string limits,
@@ -169,7 +185,21 @@ def _sent_schemas(db: Session) -> dict[str, dict]:
         status="proposed",
         source="agent",
     )
-    db.add_all([request, proposal, risk])
+    report = StatusReport(
+        project_id=project.id,
+        period_start=date(2027, 3, 1),
+        period_end=date(2027, 3, 7),
+        due_on=date(2027, 3, 8),
+        status="draft",
+        figures=[],
+        ratings={"overall": {"rating": "green", "measure": None, "rule": "r", "text": "t"}},
+        sections={},
+        section_sources={},
+        flags=[],
+        figures_at=datetime(2027, 3, 8),
+        created_by=user.id,
+    )
+    db.add_all([request, proposal, risk, report])
     db.flush()
     facts = PlanFacts(
         version=1,
@@ -193,6 +223,9 @@ def _sent_schemas(db: Session) -> dict[str, dict]:
         "risk_agent.score": lambda c: risk_agent.score(
             db, c, risk, policy=policy, save=False, **common
         ),
+        "status_report_agent.run": lambda c: status_report_agent.run(
+            db, c, report, save_it=False, **common
+        ),
     }
     sent = {}
     for task, call in tasks.items():
@@ -212,6 +245,7 @@ def test_every_agent_request_sends_a_schema_the_api_accepts(db):
         "proposal_agent.run",
         "risk_agent.run",
         "risk_agent.score",
+        "status_report_agent.run",
     }
     found = {task: problems(schema) for task, schema in sent.items()}
     assert found == {task: [] for task in sent}
