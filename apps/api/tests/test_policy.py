@@ -551,6 +551,21 @@ def test_reporting_fixture_loads():
     assert (policy.scope.amber, policy.scope.red) == (Decimal(5), Decimal(10))
     assert dict(policy.risk_amber_at) == {"Medium": 1, "High": 1}
     assert dict(policy.risk_red_at) == {"High": 2}
+    assert (policy.flags.overdue_pm, policy.flags.overdue_sponsor) == (10, 15)
+    assert policy.flags.unread == 5
+
+
+def test_the_report_flags_draft_loads_and_the_sponsor_limit_may_equal_the_pms():
+    from policy_files import reporting_dir
+
+    from app.policy import load_reporting
+
+    flags = load_reporting(reporting_dir()).flags
+    assert 1 <= flags.overdue_pm <= flags.overdue_sponsor
+    same = _reporting(
+        lambda d: d["flags"].update(overdue_pm_working_days=5, overdue_sponsor_working_days=5)
+    )
+    assert same.flags.overdue_pm == same.flags.overdue_sponsor == 5
 
 
 def test_reporting_missing_file_names_where_the_draft_is(tmp_path):
@@ -574,6 +589,19 @@ def test_reporting_missing_file_names_where_the_draft_is(tmp_path):
         (lambda d: d["risk"].update(red_at={}), "at least one band"),
         (lambda d: d["risk"]["amber_at"].update(High=0), "at least 1"),
         (lambda d: d["risk"].update(watch={}), "unknown keys: watch"),
+        # The report flags (item 7.5).
+        (lambda d: d.pop("flags"), "missing keys: flags"),
+        (lambda d: d["flags"].pop("unread_working_days"), "missing keys: unread_working_days"),
+        (lambda d: d["flags"].update(remind=1), "unknown keys: remind"),
+        (lambda d: d["flags"].update(overdue_pm_working_days=0), "from 1 to 260"),
+        (lambda d: d["flags"].update(unread_working_days=261), "from 1 to 260"),
+        (lambda d: d["flags"].update(unread_working_days=2.5), "from 1 to 260"),
+        (lambda d: d["flags"].update(unread_working_days=True), "from 1 to 260"),
+        (lambda d: d["flags"].update(overdue_pm_working_days="3"), "from 1 to 260"),
+        (
+            lambda d: d["flags"].update(overdue_pm_working_days=6, overdue_sponsor_working_days=5),
+            "must be at least overdue_pm_working_days",
+        ),
     ],
 )
 def test_reporting_rejects_bad_values(change, match):

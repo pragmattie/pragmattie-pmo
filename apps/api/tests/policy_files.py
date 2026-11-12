@@ -40,3 +40,10 @@ def autonomy_dir() -> Path:
     if (DRAFT_POLICIES / "autonomy.yaml").exists():
         return DRAFT_POLICIES
     return APPLIED_POLICIES
+
+
+def reporting_dir() -> Path:
+    """Where the reporting policy is: the draft while it is pending, else policies/."""
+    if (DRAFT_POLICIES / "reporting.yaml").exists():
+        return DRAFT_POLICIES
+    return APPLIED_POLICIES
