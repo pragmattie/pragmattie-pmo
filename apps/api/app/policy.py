@@ -764,11 +764,14 @@ def _parse_autonomy_step(step_id: str, entry: Any, where: str) -> Step:
     entry = _mapping(entry, at)
     _keys(entry, at, ("mode", "who"), ("agent", "window_minutes"))
     mode = _choice(entry["mode"], f"{at}.mode", autonomy.MODES, "mode")
-    if step_id in autonomy.FLOOR_STEPS and mode != autonomy.PERSON:
+    if step_id in autonomy.PERSON_STEPS and mode != autonomy.PERSON:
         raise PolicyError(
             f"{at}.mode: {step_id} must be decided by a person (mode person), not {mode}"
         )
     who = _choice(entry["who"], f"{at}.who", tuple(role.value for role in Role), "role")
+    fixed = autonomy.FLAG_WHO.get(step_id)
+    if fixed is not None and who != fixed:
+        raise PolicyError(f"{at}.who: {step_id} always goes to the {fixed}, not {who}")
     # Imported here: app.authz imports this module, so a module-level import would be circular.
     from app.authz import Action, can
 
@@ -873,6 +876,18 @@ class Limits:
 
 
 @dataclass(frozen=True)
+class ReportFlags:
+    """When the orchestrator raises a report in the Inbox (item 7.5), in working days: a period
+    with no published report goes to the project manager `overdue_pm` working days after its last
+    day and to the sponsor `overdue_sponsor` days after it (at least `overdue_pm`); a published
+    report the sponsor hasn't opened goes to the sponsor `unread` days after it was published."""
+
+    overdue_pm: int
+    overdue_sponsor: int
+    unread: int
+
+
+@dataclass(frozen=True)
 class ReportingPolicy:
     """The limits that rate a status report: schedule in working days late, cost in percentage
     points of spend ahead of time, scope in percent of baseline 1's total, and risk as the count
@@ -883,6 +898,7 @@ class ReportingPolicy:
     scope: Limits
     risk_amber_at: Mapping[str, int]
     risk_red_at: Mapping[str, int]
+    flags: ReportFlags
 
 
 REPORTING_FILE = "reporting.yaml"
@@ -915,8 +931,30 @@ def _band_counts(data: Any, where: str) -> Mapping[str, int]:
     return MappingProxyType(counts)
 
 
+FLAG_KEYS = ("overdue_pm_working_days", "overdue_sponsor_working_days", "unread_working_days")
+MAX_FLAG_DAYS = 260  # a working year
+
+
+def _flag_days(value: Any, where: str) -> int:
+    # bool is a subclass of int; `true` is not a number of days.
+    if type(value) is not int or not 1 <= value <= MAX_FLAG_DAYS:
+        raise PolicyError(f"{where}: expected a whole number of working days from 1 to 260")
+    return value
+
+
+def _report_flags(data: Any, where: str) -> ReportFlags:
+    data = _mapping(data, where)
+    _keys(data, where, FLAG_KEYS)
+    pm, sponsor, unread = (_flag_days(data[key], f"{where}.{key}") for key in FLAG_KEYS)
+    if sponsor < pm:
+        raise PolicyError(
+            f"{where}: overdue_sponsor_working_days must be at least overdue_pm_working_days"
+        )
+    return ReportFlags(overdue_pm=pm, overdue_sponsor=sponsor, unread=unread)
+
+
 def parse_reporting(data: dict, where: str = REPORTING_FILE) -> ReportingPolicy:
-    _keys(data, where, ("version", *REPORTING_LIMITS, "risk"))
+    _keys(data, where, ("version", *REPORTING_LIMITS, "risk", "flags"))
     limits = {
         name: _limits(data[name], f"{where} {name}", amber, red, whole)
         for name, (amber, red, whole) in REPORTING_LIMITS.items()
@@ -927,6 +965,7 @@ def parse_reporting(data: dict, where: str = REPORTING_FILE) -> ReportingPolicy:
         **limits,
         risk_amber_at=_band_counts(risk["amber_at"], f"{where} risk.amber_at"),
         risk_red_at=_band_counts(risk["red_at"], f"{where} risk.red_at"),
+        flags=_report_flags(data["flags"], f"{where} flags"),
     )
 
 

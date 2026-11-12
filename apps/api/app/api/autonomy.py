@@ -41,7 +41,7 @@ def read_autonomy() -> AutonomyOut:
                 agent=step.agent,
                 who=step.who,
                 window_minutes=step.window_minutes,
-                person_only=step.id in autonomy.FLOOR_STEPS,
+                person_only=step.id in autonomy.PERSON_STEPS,
             )
             for step in rules.steps.values()
         ],

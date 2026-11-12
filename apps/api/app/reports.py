@@ -914,3 +914,83 @@ def check(
             if Decimal(match.group(0)) not in numbers:
                 flags.append(Flag("stray_number", section, match.group(0)))
     return flags
+
+
+# --- The executive view (item 7.5): the essentials on one page, from the frozen figures only
+
+EXECUTIVE_MILESTONES = 3
+HIGH_BAND = "High"
+SPEND_KEYS = (
+    "spend_to_date",
+    "spend_as_of",
+    "baseline_total",
+    "spent_pct",
+    "time_elapsed_pct",
+    "spend_ahead_points",
+)
+_MILESTONE_KEY = re.compile(r"^milestone_(\d+)_(target|plan_date|reached|days_late)$")
+
+
+def report_milestones(figures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every milestone the figures name, by id, as the report froze it: its name, target in the
+    baseline, plan date (the target when the report has none apart), reached day and working
+    days late, and whether it was due in the next period. Nothing is read from the records."""
+    found: dict[int, dict[str, Any]] = {}
+    for figure in figures:
+        match = _MILESTONE_KEY.match(figure["key"])
+        if match is None:
+            continue
+        milestone_id, what = int(match.group(1)), match.group(2)
+        entry = found.setdefault(
+            milestone_id,
+            {
+                "id": milestone_id,
+                "name": figure["label"].split(": ", 1)[-1],
+                "target": None,
+                "plan_date": None,
+                "reached_on": None,
+                "days_late": 0,
+                "due_next": False,
+            },
+        )
+        key = {"reached": "reached_on"}.get(what, what)
+        entry[key] = figure["value"]
+    due_next = next((f for f in figures if f["key"] == "milestones_due_next"), None)
+    for source in due_next["sources"] if due_next else []:
+        if source["table"] == MILESTONES and source["id"] in found:
+            found[source["id"]]["due_next"] = True
+    for entry in found.values():
+        entry["plan_date"] = entry["plan_date"] or entry["target"]
+    return [found[k] for k in sorted(found)]
+
+
+def top_milestones(figures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The milestones that matter most, at most three: the late ones, most days late first, then
+    the ones due in the next period, by plan date."""
+    every = report_milestones(figures)
+    late = sorted(
+        (m for m in every if m["days_late"] > 0), key=lambda m: (-m["days_late"], m["id"])
+    )
+    due = sorted(
+        (m for m in every if m["due_next"] and m["days_late"] <= 0),
+        key=lambda m: (m["plan_date"] or "", m["id"]),
+    )
+    return (late + due)[:EXECUTIVE_MILESTONES]
+
+
+def executive(report: StatusReport) -> dict[str, Any]:
+    """A published report's one-page view, from what it froze when published."""
+    figures = report.figures
+    milestones = top_milestones(figures)
+    high = next((f for f in figures if f["key"] == f"open_risks_{HIGH_BAND.lower()}"), None)
+    return {
+        "ratings": report.ratings,
+        "summary": (report.sections or {}).get("summary"),
+        "decisions": (report.sections or {}).get("decisions"),
+        "milestones": milestones,
+        "milestones_late": figure_value(figures, "milestones_late") or 0,
+        "milestones_due_next": figure_value(figures, "milestones_due_next") or 0,
+        "spend": {key: figure_value(figures, key) for key in SPEND_KEYS},
+        "high_risks": high["value"] if high else 0,
+        "high_risk_ids": [s["id"] for s in high["sources"]] if high else [],
+    }

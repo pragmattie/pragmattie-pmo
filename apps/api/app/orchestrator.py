@@ -32,6 +32,14 @@ agent steps the autonomy policy allows, and hands every other step to a person.
   reports were withdrawn. A draft a person already made gets only its empty sections drafted.
   `publish_status_report` puts every other draft in the project manager's inbox: only a person
   publishes (a floor step).
+- Report flags (item 7.5), person steps raised in the Inbox, with limits in working days from the
+  reporting policy file (`flags`): `report_overdue_pm` when a period of a project in delivery has
+  no published report `overdue_pm` working days after its last day, and `report_overdue_sponsor`
+  too after `overdue_sponsor` days; `report_unread` when the project's sponsor hasn't opened a
+  published report `unread` working days after it was published. A period whose report was
+  published and then withdrawn isn't overdue, and a withdrawn report is never unread. Each flag
+  leaves by itself once the report is published or read: its step is no longer given, so the
+  Inbox drops it at once and the next pass closes it, with an audit row as for any step.
 
 Run it with `python -m app.orchestrator once` (one pass) or `run` (a pass every
 `ORCHESTRATOR_INTERVAL_SECONDS` until Ctrl+C).
@@ -74,6 +82,7 @@ from app.autonomy import (
     AutonomyPolicy,
     effective_mode,
 )
+from app.changes import working_days
 from app.config import Settings, get_settings
 from app.gates import PROJECT_CHECKS
 from app.models import (
@@ -94,9 +103,9 @@ from app.models import (
 )
 from app.models.orchestrator import REASON_MAX, open_key
 from app.models.portfolio import CANCELLED, LIVE_STAGES, is_live
-from app.models.report import DRAFT, PUBLISHED
+from app.models.report import DRAFT, PUBLISHED, StatusReportRead
 from app.plans import missing
-from app.policy import RiskPolicy, score_risk
+from app.policy import ReportFlags, ReportingPolicy, RiskPolicy, score_risk
 from app.proposals import empty_sections, plan_facts, submit_refusal, unreviewed_sections
 from app.risks import (
     apply_score,
@@ -565,16 +574,112 @@ def report_due(db: Session, project: Project) -> tuple[str, StatusReport | None]
     return reason, draft
 
 
-def _delivery_steps(db: Session, project: Project, make: Callable) -> list[NextStep]:
-    due = report_due(db, project)
-    if due is None:
+# --- Report flags (item 7.5)
+
+REPORT_OVERDUE = (
+    "{n} period(s) have no published status report {limit} or more working days after they "
+    "ended; the oldest is {start} to {end}"
+)
+REPORT_UNREAD = (
+    "the sponsor hasn't opened the status report for {start} to {end}, published {limit} or more "
+    "working days ago"
+)
+OVERDUE_STEPS = (("report_overdue_pm", "overdue_pm"), ("report_overdue_sponsor", "overdue_sponsor"))
+
+
+def overdue_periods(db: Session, project: Project, limit: int) -> list[report_rules.Period]:
+    """The project's periods, oldest first, with no report published (a report published and
+    then withdrawn counts as published) `limit` or more working days after their last day; none
+    unless the project is live and in delivery, with a reporting period and baseline 1."""
+    if delivery.refusal(project) is not None:
         return []
-    return [make("draft_status_report", PROJECT, project.id, due[0])]
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    if plan is None or plan.report_period is None or plan.report_due_day is None:
+        return []
+    first = report_rules.first_baseline(db, project.id)
+    if first is None:
+        return []
+    today = delivery.today()
+    published = set(
+        db.scalars(
+            select(StatusReport.period_end).where(
+                StatusReport.project_id == project.id, StatusReport.published_at.is_not(None)
+            )
+        )
+    )
+    return [
+        p
+        for p in report_rules.periods(
+            plan.report_period, plan.report_due_day, first.created_at.date(), today
+        )
+        if p.end not in published and working_days(p.end, today) >= limit
+    ]
 
 
-def _report_steps(db: Session, report: StatusReport, make: Callable) -> list[NextStep]:
+def _overdue_steps(
+    db: Session, project: Project, make: Callable, flags: ReportFlags
+) -> list[NextStep]:
+    steps = []
+    for step, field_name in OVERDUE_STEPS:
+        limit = getattr(flags, field_name)
+        late = overdue_periods(db, project, limit)
+        if late:
+            reason = REPORT_OVERDUE.format(
+                n=len(late),
+                limit=limit,
+                start=late[0].start.isoformat(),
+                end=late[0].end.isoformat(),
+            )
+            steps.append(make(step, PROJECT, project.id, reason))
+    return steps
+
+
+def sponsor_opened(db: Session, report: StatusReport, sponsor_id: int) -> bool:
+    stmt = select(StatusReportRead.id).where(
+        StatusReportRead.report_id == report.id, StatusReportRead.user_id == sponsor_id
+    )
+    return db.scalar(stmt.limit(1)) is not None
+
+
+def is_unread(db: Session, report: StatusReport, flags: ReportFlags) -> bool:
+    """Whether a published report's project sponsor hasn't opened it `unread` or more working
+    days after it was published. A report whose project names no sponsor, or that was
+    withdrawn, is never unread."""
+    if report.status != PUBLISHED or report.published_at is None:
+        return False
+    project = db.get(Project, report.project_id)
+    if project is None or project.sponsor_user_id is None:
+        return False
+    if working_days(report.published_at.date(), delivery.today()) < flags.unread:
+        return False
+    return not sponsor_opened(db, report, project.sponsor_user_id)
+
+
+def _delivery_steps(
+    db: Session, project: Project, make: Callable, flags: Callable[[], ReportFlags]
+) -> list[NextStep]:
+    steps = []
+    due = report_due(db, project)
+    if due is not None:
+        steps.append(make("draft_status_report", PROJECT, project.id, due[0]))
+    steps.extend(_overdue_steps(db, project, make, flags()))
+    return steps
+
+
+def _report_steps(
+    db: Session, report: StatusReport, make: Callable, flags: Callable[[], ReportFlags]
+) -> list[NextStep]:
     """A draft goes to the project manager to review and publish, unless the agent is about to
-    draft it."""
+    draft it; a published report the sponsor hasn't opened in time goes to the sponsor."""
+    if report.status == PUBLISHED:
+        if not is_unread(db, report, flags()):
+            return []
+        reason = REPORT_UNREAD.format(
+            start=report.period_start.isoformat(),
+            end=report.period_end.isoformat(),
+            limit=flags().unread,
+        )
+        return [make("report_unread", STATUS_REPORT, report.id, reason)]
     if report.status != DRAFT:
         return []
     due = report_due(db, db.get(Project, report.project_id))
@@ -599,14 +704,17 @@ def next_steps(
     *,
     agent_mode: str = "enforce",
     risk_rules: RiskPolicy | None = None,
+    reporting: ReportingPolicy | None = None,
     now: datetime | None = None,
 ) -> list[NextStep]:
     """Every open subject's next steps, in a stable order: requests, then each live project with
-    its risks, proposal and change requests. `agent_mode` is `AGENT_MODE`: unless it is
-    `enforce`, no agent may act, so agent and window steps go to a person. `now` (the pass's
-    time) decides whether the simulated client's delay is over."""
+    its risks, proposal, change requests and status reports. `agent_mode` is `AGENT_MODE`:
+    unless it is `enforce`, no agent may act, so agent and window steps go to a person. `now`
+    (the pass's time) decides whether the simulated client's delay is over. The reporting
+    policy (for the report flags) is read only when a project in delivery needs it."""
     rules = risk_rules or risk_policy()
     now = now or utcnow()
+    flags = _flags_reader(reporting)
 
     def make(*args: Any, **kwargs: Any) -> NextStep:
         return _make(policy, agent_mode, *args, **kwargs)
@@ -620,7 +728,7 @@ def next_steps(
         if project.stage == "planning":
             steps.extend(_planning_steps(db, project, make))
         else:
-            steps.extend(_delivery_steps(db, project, make))
+            steps.extend(_delivery_steps(db, project, make, flags))
         risks = select(Risk).where(
             Risk.project_id == project.id, Risk.status.in_(("proposed", "open"))
         )
@@ -632,12 +740,24 @@ def next_steps(
         changes = select(ChangeRequest).where(ChangeRequest.project_id == project.id)
         for change in db.scalars(changes.order_by(ChangeRequest.id)):
             steps.extend(_change_steps(change, make))
-        drafts = select(StatusReport).where(
-            StatusReport.project_id == project.id, StatusReport.status == DRAFT
+        reports = select(StatusReport).where(
+            StatusReport.project_id == project.id, StatusReport.status.in_((DRAFT, PUBLISHED))
         )
-        for report in db.scalars(drafts.order_by(StatusReport.id)):
-            steps.extend(_report_steps(db, report, make))
+        for report in db.scalars(reports.order_by(StatusReport.id)):
+            steps.extend(_report_steps(db, report, make, flags))
     return steps
+
+
+def _flags_reader(reporting: ReportingPolicy | None) -> Callable[[], ReportFlags]:
+    """The report flags' limits, read from the reporting policy file on first use only."""
+    found: list[ReportFlags] = []
+
+    def flags() -> ReportFlags:
+        if not found:
+            found.append((reporting or policies.get_reporting()).flags)
+        return found[0]
+
+    return flags
 
 
 def subject_steps(
@@ -648,12 +768,14 @@ def subject_steps(
     *,
     agent_mode: str = "enforce",
     risk_rules: RiskPolicy | None = None,
+    reporting: ReportingPolicy | None = None,
     now: datetime | None = None,
 ) -> list[NextStep]:
     """One subject's next steps, exactly as `next_steps` gives them, without reading the rest.
     The inbox uses it to drop an item a person has just decided, before the next pass."""
     rules = risk_rules or risk_policy()
     now = now or utcnow()
+    flags = _flags_reader(reporting)
 
     def make(*args: Any, **kwargs: Any) -> NextStep:
         return _make(policy, agent_mode, *args, **kwargs)
@@ -667,7 +789,7 @@ def subject_steps(
             return []
         if project.stage == "planning":
             return _planning_steps(db, project, make)
-        return _delivery_steps(db, project, make)
+        return _delivery_steps(db, project, make, flags)
     model = {
         RISK: Risk,
         PROPOSAL: ProjectProposal,
@@ -682,7 +804,7 @@ def subject_steps(
     if isinstance(row, ProjectProposal):
         return _proposal_steps(db, row, make, now)
     if isinstance(row, StatusReport):
-        return _report_steps(db, row, make)
+        return _report_steps(db, row, make, flags)
     return _change_steps(row, make)
 
 

@@ -25,7 +25,17 @@ out from the plan's `report_period` and `report_due_day` (`app.reports`). Its st
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import JSON, CheckConstraint, Date, DateTime, ForeignKey, Index, String, column
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    column,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.migrations_filter import table_name
@@ -92,3 +102,26 @@ class StatusReport(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     __mapper_args__ = {"version_id_col": version}
+
+
+STATUS_REPORT_READS_TABLE = table_name("status_report_reads")
+
+
+class StatusReportRead(Base):
+    """The first time the project's sponsor opened a published report (item 7.5). Append-only:
+    a row is never updated or deleted, and a later opening adds nothing."""
+
+    __tablename__ = STATUS_REPORT_READS_TABLE
+    __table_args__ = (
+        UniqueConstraint("report_id", "user_id", name="uq_status_report_reads_report_user"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{STATUS_REPORTS_TABLE}.id", name="fk_status_report_reads_report")
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey(f"{USERS_TABLE}.id", name="fk_status_report_reads_user"), index=True
+    )
+    opened_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

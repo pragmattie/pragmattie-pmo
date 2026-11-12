@@ -1,0 +1,50 @@
+# How a status report rates a project in delivery (item 7.3). Read and validated by
+# apps/api/app/policy.py. Schedule turns red past the 5 working days a project manager may move a
+# milestone alone (policies/changes.yaml); scope's limits match the change and cost thresholds.
+#
+# Each rating is green, amber or red, worked out by code from the report's figures. A rating is
+# amber when its measure is above the amber limit and red when it is above the red limit (each
+# red limit must be at least its amber limit). The overall rating is the worst of the four.
+#
+# - schedule: the most working days (Monday to Friday) any milestone is late against its target
+#   in the current baseline, as of the period's last day. A milestone not yet reached counts to
+#   that day.
+# - cost: how far spending runs ahead of time, in percentage points: the spend to date as a
+#   percentage of the current baseline total, less the share of the delivery time that has passed
+#   by the period's last day (from baseline 1 to the latest milestone target in the current
+#   baseline). Spending behind time is never above a limit.
+# - scope: how far the current baseline total has moved from baseline 1's total through approved
+#   change requests, as a percentage of baseline 1's total, either way.
+# - risk: open risks by band. A rating applies when the count of open risks in any band it lists
+#   reaches that number. Band names are the risk policy's.
+version: 1
+schedule:
+  amber_above_working_days: 0
+  red_above_working_days: 5
+cost:
+  amber_above_points: 5
+  red_above_points: 15
+scope:
+  amber_above_pct: 5
+  red_above_pct: 10
+risk:
+  amber_at:
+    Medium: 3
+    High: 1
+  red_at:
+    High: 2
+# Report flags (item 7.5): when the orchestrator raises a status report in the Inbox, in working
+# days (Monday to Friday). Each is a whole number from 1 to 260.
+# - overdue_pm_working_days: a period with no published report goes to the project manager's
+#   Inbox this many working days after the period's last day.
+# - overdue_sponsor_working_days: and to the sponsor's after this many (at least the project
+#   manager's limit). Count from the period's last day, not its due day: a monthly report due on
+#   the 10th is already about 7 working days past its period's end.
+# - unread_working_days: a published report the project's sponsor hasn't opened goes to the
+#   sponsor's Inbox this many working days after it was published.
+# A withdrawn report raises neither flag. An item leaves the Inbox by itself once the report is
+# published or read.
+flags:
+  overdue_pm_working_days: 10
+  overdue_sponsor_working_days: 15
+  unread_working_days: 5

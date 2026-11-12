@@ -42,6 +42,10 @@ class CardOut(BaseModel):
     # The simulated client takes one of its steps, or the card's client is simulated (item 6.8).
     simulated: bool
     client_simulated: bool
+    # The latest published status report (item 7.5): overall rating, when, and its age in days.
+    report_rating: Literal["green", "amber", "red"] | None
+    report_published_at: datetime | None
+    report_age_days: int | None
     waiting: list[WaitingOut]
 
 

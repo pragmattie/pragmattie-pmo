@@ -4,7 +4,8 @@ alone (`agent`), after an objection window a person may hold (`window`), or a pe
 
 The steps, the agents, which agent may do which step and the floors are fixed here, never in the
 file. Six steps are always decided by a person (R1): a file that sets one of them lower is
-refused. Each agent has an off switch in the file (R2); a switched-off agent's steps go to a
+refused, and so is one that gives a report flag (item 7.5) to an agent or to another role. Each
+agent has an off switch in the file (R2); a switched-off agent's steps go to a
 person. `score_risk` never applies to a risk marked `needs_judgement` (R9), whatever the file
 says (`effective_mode`).
 
@@ -57,6 +58,11 @@ STEP_AGENTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         # Status reports (item 7.4): the agent drafts a due report's text; a person publishes it.
         "draft_status_report": ("status_report_agent",),
         "publish_status_report": (),
+        # Report flags (item 7.5): the orchestrator raises them; only a person clears one, by
+        # publishing or reading the report.
+        "report_overdue_pm": (),
+        "report_overdue_sponsor": (),
+        "report_unread": (),
     }
 )
 STEPS = tuple(STEP_AGENTS)
@@ -71,6 +77,9 @@ DECIDE_PERMISSION: Mapping[str, str] = MappingProxyType(
         "approve_proposal": "proposal:approve",
         "accept_risk": "risk:accept",
         "publish_status_report": "report:publish",
+        "report_overdue_pm": "report:publish",
+        "report_overdue_sponsor": "project:read",
+        "report_unread": "project:read",
     }
 )
 DEFAULT_PERMISSION = "project:write"
@@ -92,6 +101,20 @@ FLOOR_STEPS = frozenset(
         "publish_status_report",
     }
 )
+
+# The report flags (item 7.5): always a person's (no agent ever clears a flag), and always the
+# role named here, since a flag is about that person's own work: the loader refuses any other
+# mode or `who`.
+FLAG_WHO: Mapping[str, str] = MappingProxyType(
+    {
+        "report_overdue_pm": "project_manager",
+        "report_overdue_sponsor": "sponsor",
+        "report_unread": "sponsor",
+    }
+)
+FLAG_STEPS = frozenset(FLAG_WHO)
+# Every step the file must set to `person`.
+PERSON_STEPS = FLOOR_STEPS | FLAG_STEPS
 
 SCORE_RISK = "score_risk"
 SIMULATED_CLIENT = "simulated_client"

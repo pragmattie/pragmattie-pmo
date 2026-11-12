@@ -36,6 +36,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app import orchestrator
+from app import policy as policies
 from app import reports as report_rules
 from app.authz import Action, allowed_actions
 from app.autonomy import AutonomyPolicy
@@ -357,6 +358,36 @@ def _report_facts(report: StatusReport) -> list[Fact]:
     ]
 
 
+# Report flags (item 7.5): each overdue step and the reporting policy limit it uses.
+OVERDUE_LIMITS = {"report_overdue_pm": "overdue_pm", "report_overdue_sponsor": "overdue_sponsor"}
+
+
+def _overdue_facts(db: Session, project: Project, step: str) -> list[Fact]:
+    try:
+        limit = getattr(policies.get_reporting().flags, OVERDUE_LIMITS[step])
+    except PolicyError:
+        return []
+    late = orchestrator.overdue_periods(db, project, limit)
+    return [
+        Fact("limit", "Limit", f"{limit} working days after the period ends"),
+        Fact(
+            "overdue_periods",
+            "Periods with no published report",
+            ", ".join(f"{p.start} to {p.end}" for p in late) or "none",
+            not late,
+        ),
+    ]
+
+
+def _unread_facts(report: StatusReport) -> list[Fact]:
+    published = report.published_at.date().isoformat() if report.published_at else "not published"
+    return [
+        Fact("period", "Period", f"{report.period_start} to {report.period_end}"),
+        Fact("published_on", "Published on", published),
+        Fact("overall", "Overall rating", report.ratings["overall"]["rating"]),
+    ]
+
+
 def _request_facts(db: Session, request: ProjectRequest) -> list[Fact]:
     has_value_case = db.scalar(select(ValueCase.id).where(ValueCase.request_id == request.id))
     has_readiness = db.scalar(
@@ -397,6 +428,8 @@ def facts_for(db: Session, step: str, subject_type: str, subject_id: int) -> lis
             due = orchestrator.report_due(db, project)
             reason = due[0] if due is not None else "no report is due"
             return [Fact("report_due", "Report due", reason)]
+        if step in OVERDUE_LIMITS:
+            return _overdue_facts(db, project, step)
         open_risks = db.scalars(
             select(Risk.id).where(Risk.project_id == project.id, Risk.status != "rejected")
         ).all()
@@ -412,7 +445,11 @@ def facts_for(db: Session, step: str, subject_type: str, subject_id: int) -> lis
         return [] if change is None else _change_facts(change)
     if subject_type == STATUS_REPORT:
         report = db.get(StatusReport, subject_id)
-        return [] if report is None else _report_facts(report)
+        if report is None:
+            return []
+        if step == "report_unread":
+            return _unread_facts(report)
+        return _report_facts(report)
     return []
 
 
@@ -561,6 +598,21 @@ def _publish_status_report(facts: list[Fact]) -> str:
     return "Publish it: every section is written and reviewed, with no flags open."
 
 
+def _report_overdue_pm(_facts: list[Fact]) -> str:
+    return "Publish the report for each period listed; the item leaves once each one is published."
+
+
+def _report_overdue_sponsor(_facts: list[Fact]) -> str:
+    return (
+        "Ask the project manager to publish the report for each period listed; the item leaves "
+        "once each one is published."
+    )
+
+
+def _report_unread(_facts: list[Fact]) -> str:
+    return "Open the report's one-page view; the item leaves once you have opened it."
+
+
 RECOMMENDERS: dict[str, Callable[[list[Fact]], str]] = {
     "pass_gate": _gate,
     "accept_risk": _accept_risk,
@@ -579,6 +631,9 @@ RECOMMENDERS: dict[str, Callable[[list[Fact]], str]] = {
     "propose_risks": _propose_risks,
     "draft_status_report": _draft_status_report,
     "publish_status_report": _publish_status_report,
+    "report_overdue_pm": _report_overdue_pm,
+    "report_overdue_sponsor": _report_overdue_sponsor,
+    "report_unread": _report_unread,
 }
 
 
