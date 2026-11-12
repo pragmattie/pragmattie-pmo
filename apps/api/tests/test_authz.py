@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from test_intake import add_readiness, add_value_case
 
 import app.api.users as users_api
+from app import delivery, reports
 from app.authz import (
     OPEN_PATHS,
     PERMISSIONS,
@@ -48,6 +49,7 @@ from app.models import (
     ProjectStakeholder,
     ProposalVersion,
     Risk,
+    StatusReport,
     User,
 )
 from app.proposals import plan_facts, refresh_from_plan, values_of
@@ -632,6 +634,55 @@ def _delivery_sample(suffix: str = "", body: dict | None = None):
     return sample
 
 
+REPORTS = "/api/v1/projects/{project_id}/status-reports"
+REPORT = f"{REPORTS}/{{report_id}}"
+
+
+def _report_sample(suffix: str = "", body: dict | None = None, *, status: str | None = None):
+    """A project in delivery with baseline 1 (from `_change_sample`) and a weekly reporting
+    period, its current period's end in `{period_end}`. With `status`, it has a report for that
+    period in that status (a published one, so every reader may see it, or a draft to write)."""
+
+    def sample(target: int) -> dict:
+        url = _change_sample()(target)["url"].removesuffix("/changes") + "/status-reports"
+        with Session(engine) as session:
+            project = session.scalar(select(Project).order_by(Project.id.desc()).limit(1))
+            plan = session.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+            plan.report_period, plan.report_due_day = "weekly", 1
+            start = reports.first_baseline(session, project.id).created_at.date()
+            period = reports.periods("weekly", 1, start, delivery.today())[-1]
+            if status is not None:
+                report = StatusReport(
+                    project_id=project.id,
+                    period_start=period.start,
+                    period_end=period.end,
+                    due_on=period.due_on,
+                    status=status,
+                    figures=[],
+                    ratings={
+                        "overall": {"rating": "green", "measure": None, "rule": "r", "text": "t"}
+                    },
+                    sections={},
+                    flags=[],
+                    figures_at=datetime(2026, 1, 1),
+                    created_by=target,
+                    published_at=datetime(2026, 1, 1) if status == "published" else None,
+                )
+                session.add(report)
+                session.flush()
+                url += f"/{report.id}{suffix}"
+            session.commit()
+        if body is None:
+            return {"url": url}
+        filled = {
+            k: (v.format(period_end=period.end.isoformat()) if isinstance(v, str) else v)
+            for k, v in body.items()
+        }
+        return {"url": url, "json": filled}
+
+    return sample
+
+
 HOLD = "/api/v1/orchestrator/actions/{action_id}/hold"
 
 
@@ -895,6 +946,17 @@ SAMPLES = {
     ("POST", f"{DELIVERY}/spend"): _delivery_sample(
         "/spend", {"amount": "10.00", "as_of": "2027-01-01", "note": "Finance report"}
     ),
+    ("GET", REPORTS): _report_sample(),
+    ("POST", REPORTS): _report_sample("", {"period_end": "{period_end}"}),
+    ("GET", REPORT): _report_sample(status="published"),
+    ("PATCH", REPORT): _report_sample(
+        "", {"version": 1, "sections": {"summary": "On track"}}, status="draft"
+    ),
+    ("POST", f"{REPORT}/refresh"): _report_sample("/refresh", {"version": 1}, status="draft"),
+    ("POST", f"{REPORT}/publish"): _report_sample("/publish", {"version": 1}, status="draft"),
+    ("POST", f"{REPORT}/withdraw"): _report_sample(
+        "/withdraw", {"version": 1, "reason": "Wrong period"}, status="published"
+    ),
     ("POST", HOLD): _hold_sample,
     # ORCHESTRATOR_MODE is off in tests, so an allowed caller gets an empty pass, never a call.
     ("POST", "/api/v1/orchestrator/run"): lambda _target: {"url": "/api/v1/orchestrator/run"},
@@ -929,6 +991,7 @@ CREATED = {
     ("POST", PROPOSAL),
     ("POST", CHANGES),
     ("POST", f"{DELIVERY}/spend"),
+    ("POST", REPORTS),
 }
 
 # Allowed deletes answer 204.
@@ -1099,6 +1162,15 @@ def test_matrix_covers_the_existing_routes():
         ("POST", f"{request}/draft"),
     ):
         assert by_method[(method, path)] == Action.PROJECT_WRITE
+    assert by_method[("GET", REPORTS)] == by_method[("GET", REPORT)] == Action.PROJECT_READ
+    for method, path in (
+        ("POST", REPORTS),
+        ("PATCH", REPORT),
+        ("POST", f"{REPORT}/refresh"),
+        ("POST", f"{REPORT}/publish"),
+        ("POST", f"{REPORT}/withdraw"),
+    ):
+        assert by_method[(method, path)] == Action.REPORT_PUBLISH
     project = "/api/v1/projects/{project_id}"
     for path in (project, f"{project}/brief", f"{project}/stakeholders", f"{project}/assumptions"):
         assert by_method[("GET", path)] == Action.PROJECT_READ
