@@ -10,13 +10,15 @@
 #   the agent is switched off.
 # - `who` must hold the permission the step needs: gate:decide for pass_gate and
 #   decide_change_sponsor, proposal:approve for approve_proposal, risk:accept for accept_risk,
-#   project:write for every other step. Read-only roles (auditor, admin) can never be `who`.
+#   report:publish for publish_status_report, project:write for every other step. Read-only
+#   roles (auditor, admin) can never be `who`.
 # - `agent` names the agent for `agent` and `window` steps only, and must be one the code allows
 #   for that step.
 # - `window_minutes` (a whole number from 1 to 1440) is required on `window` steps and allowed
 #   nowhere else.
-# - approve_proposal, send_proposal, accept_risk, pass_gate and decide_change_sponsor are always
-#   decided by a person. This is enforced in code, not by this file.
+# - approve_proposal, send_proposal, accept_risk, pass_gate, decide_change_sponsor and
+#   publish_status_report are always decided by a person. This is enforced in code, not by this
+#   file.
 # - score_risk never applies to a risk marked needs_judgement: a person scores it, whatever the
 #   mode here says.
 # - `agents.<name>.enabled: false` switches an agent off; its steps then go to `who`.
@@ -83,6 +85,17 @@ steps:
   decide_change_sponsor:
     mode: person
     who: sponsor
+  # Item 7.4: once a report is due and its period has no report, the orchestrator creates the
+  # period's draft and the status report agent drafts its text, once per period. A draft a person
+  # already made gets only its empty sections drafted.
+  draft_status_report:
+    mode: agent
+    agent: status_report_agent
+    who: project_manager
+  # The reviewed draft goes to the project manager's inbox; only a person publishes it.
+  publish_status_report:
+    mode: person
+    who: project_manager
 agents:
   intake_agent:
     enabled: true
@@ -95,3 +108,5 @@ agents:
   simulated_client:
     enabled: true
     answer: accepted
+  status_report_agent:
+    enabled: true

@@ -20,20 +20,16 @@ Nothing in this folder runs automatically.
 
 Nothing yet.
 
-- **`policies/autonomy.yaml`** (item 7.4), drafted at `ci/proposed/policies/autonomy.yaml`: the
-  applied file plus two steps and one agent switch. `draft_status_report` is `agent`
-  (`status_report_agent`, who `project_manager`): once a report is due and its period has no
-  report, the orchestrator creates the period's draft and the agent drafts its text, once per
-  period. `publish_status_report` is `person` (`project_manager`, who must hold
-  `report:publish`): the reviewed draft goes to the project manager's inbox. Publishing is now a
-  floor step, enforced in code. `agents.status_report_agent.enabled: true`. The loader requires
-  every step exactly once, so **after this item merges the live file is refused until this one
-  is applied**: the orchestrator stops and `GET /api/v1/autonomy` answers 503. Apply it in the
-  same sitting as the merge, as with earlier policy files, so the gap is minutes and nothing
-  hosted runs in between. Tests read this draft while it is pending.
-
 ## Applied
 
+- **`policies/autonomy.yaml`** (item 7.4): two steps and one agent switch added.
+  `draft_status_report` is `agent` (`status_report_agent`, who `project_manager`): once a report
+  is due and its period has no report, the orchestrator creates the period's draft and the agent
+  drafts its text, once per period, filling only empty sections. `publish_status_report` is
+  `person` (`project_manager`, who holds `report:publish`) and a floor step enforced in code: the
+  reviewed draft goes to the project manager's inbox and only a person publishes it.
+  `agents.status_report_agent.enabled: true`. Applied unchanged, minutes after 7.4 merged; the
+  live loader and the orchestrator answer again, and tests now read the applied file.
 - **`policies/reporting.yaml`** (item 7.3): the limits that rate a status report green, amber or
   red. Schedule: amber when a milestone is more than 0 working days late against its baseline
   target, red above 5 (drafted as 10; 5 is as far as a project manager may move a milestone
