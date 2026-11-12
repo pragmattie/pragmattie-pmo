@@ -11,8 +11,8 @@ import {
 } from '../lib/risks'
 
 // Scores a risk in place (a `score_risk` item in the Inbox): probability and impact on the
-// labelled 1 to 5 scales of the risk policy, each level with its definition, the score and band they give, and Save. The page saves through the
-// existing risk update route, where the API checks every rule again and works out the real score.
+// labelled 1 to 5 scales of the risk policy, each level with its definition, the score and band
+// they give, and Save. The page saves through the existing risk update route, where the API checks every rule again and works out the real score.
 const props = defineProps<{
   cells: HeatCell[]
   busy: boolean

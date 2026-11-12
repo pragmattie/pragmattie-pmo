@@ -137,9 +137,6 @@ function fakeApi(stored: Risk, patchStatus = 200) {
     if (path === '/api/v1/projects/3/risks/6') return json(stored)
     if (path === '/api/v1/projects/3/risks/heatmap') return json(HEATMAP)
     if (path === '/api/v1/risk-policy/scales') return json(SCALES)
-    if (path === '/api/v1/users') {
-      return json({ items: [{ id: 21, display_name: 'Rosa Owner' }], total: 1, limit: 100, offset: 0 })
-    }
     if (path === '/api/v1/projects/3/risks/6/history') {
       return json({ items: [], total: 0, limit: 50, offset: 0 })
     }
@@ -262,8 +259,13 @@ describe('scoring a risk in the Inbox', () => {
     expect(form.text()).toContain('Impact definition 4.')
   })
 
-  it("names the risk's owner rather than showing an id", async () => {
-    const { wrapper } = await mountItem({ ...JUDGEMENT, owner_user_id: 21 })
+  it("names the risk's owner from the risk, even once deactivated", async () => {
+    // The users list holds active people only; the risk response names a deactivated owner.
+    const { wrapper } = await mountItem({
+      ...JUDGEMENT,
+      owner_user_id: 21,
+      owner_name: 'Rosa Owner',
+    })
     expect(wrapper.get('[data-test="field-Owner"]').text()).toBe('Rosa Owner')
   })
 

@@ -24,6 +24,8 @@ export interface Risk {
   response: string
   response_plan: string
   owner_user_id: number | null
+  // The owner's name from the API, deactivated people included.
+  owner_name?: string | null
   status: Status
   needs_judgement: boolean
   // Ticked to show the risk (its title and response, never its score) in the client's proposal.

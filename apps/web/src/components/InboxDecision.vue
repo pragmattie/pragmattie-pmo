@@ -17,7 +17,6 @@ import {
   type HistoryEntry,
   MIN_ACCEPT_REASON,
   mayClearEscalation,
-  type Person,
   type Risk,
   riskApi,
   type RiskScales,
@@ -94,13 +93,13 @@ const scoring = computed(
 )
 const probability = ref<number | null>(null)
 const impact = ref<number | null>(null)
-// The policy's labelled scales for the score form, and the people the owner is named from.
+// The policy's labelled scales for the score form.
 const scales = ref<RiskScales | null>(null)
-const people = ref<Person[]>([])
 
+// The risk response names its owner, deactivated people included.
 function ownerName(id: number | null): string {
   if (id === null) return 'No owner'
-  return people.value.find((p) => p.id === id)?.display_name ?? `Person ${id}`
+  return risk.value?.owner_name ?? `Person ${id}`
 }
 const canClear = computed(
   () =>
@@ -127,14 +126,10 @@ async function loadRisk() {
   ])
   risk.value = found
   bands.value = heatmap.bands
-  // Neither is needed to decide: without them the form shows bare 1 to 5 and the owner's id.
+  // Not needed to decide: without them the form shows bare 1 to 5.
   riskApi
     .scales()
     .then((result) => (scales.value = result))
-    .catch(() => {})
-  riskApi
-    .people()
-    .then((result) => (people.value = result.items))
     .catch(() => {})
   cells.value = heatmap.cells
   history.value = past.items
