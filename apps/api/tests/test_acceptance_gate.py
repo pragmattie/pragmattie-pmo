@@ -228,7 +228,7 @@ def test_a_draft_change_does_not_wait_and_a_submitted_one_does(db, pm):
     assert not orchestrator.PROJECT_CHECKS["no_waiting_changes"](db, project).met
 
 
-def test_a_baseline_deliverable_no_longer_in_the_plan_is_not_accepted(db, pm):
+def test_a_deliverable_added_after_the_baseline_does_not_count(db, pm):
     _, user = pm
     pid = _ready(db, user)
     db.add(
@@ -242,6 +242,18 @@ def test_a_baseline_deliverable_no_longer_in_the_plan_is_not_accepted(db, pm):
     # Only the latest baseline's deliverables count: one added since isn't in it.
     project = db.get(Project, pid)
     assert orchestrator.PROJECT_CHECKS["deliverables_accepted"](db, project).met
+
+
+def test_a_baseline_deliverable_no_longer_in_the_plan_is_not_accepted(db, pm):
+    _, user = pm
+    pid = _ready(db, user)
+    plan_id = db.scalar(select(ProjectPlan.id).where(ProjectPlan.project_id == pid))
+    db.delete(db.scalar(select(PlanDeliverable).where(PlanDeliverable.plan_id == plan_id)))
+    db.commit()
+    project = db.get(Project, pid)
+    check = orchestrator.PROJECT_CHECKS["deliverables_accepted"](db, project)
+    assert not check.met
+    assert check.detail == "not accepted yet: 'Model' (no longer in the plan)"
 
 
 # --- Deciding
