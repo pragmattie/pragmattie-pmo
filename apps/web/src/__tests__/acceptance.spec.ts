@@ -254,6 +254,9 @@ describe('the acceptance controls', () => {
     await mountDelivery('project_manager', waiting, sent)
     expect(find('deliverable-offer')).toBeNull()
     expect(find('acceptance-waiting')).not.toBeNull()
+    // While the offer waits, the answer moves the deliverable, not a status button.
+    expect(find('deliverable-set-in_progress')).toBeNull()
+    expect(find('deliverable-set-not_started')).toBeNull()
     await click('deliverable-answer')
     ;(find('answer-not_accepted')?.querySelector('input') as HTMLInputElement).click()
     await flushPromises()

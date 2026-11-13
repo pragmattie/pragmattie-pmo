@@ -404,7 +404,9 @@ async function spend() {
               >
                 Record the answer
               </v-btn>
-              <template v-if="mayWrite && deliverable.status !== 'accepted'">
+              <template
+                v-if="mayWrite && deliverable.status !== 'accepted' && !deliverable.awaiting_answer"
+              >
                 <v-btn
                   v-for="status in SETTABLE_STATUSES.filter((s) => s !== deliverable.status)"
                   :key="status"
