@@ -1,6 +1,7 @@
-"""The automatic checks a gate criterion can name (items 4.4 and 5.4).
+"""The automatic checks a gate criterion can name (items 4.4, 5.4 and 7.6).
 
-Each check reads the subject (a project request, or a project for the go-ahead gate) as it is now
+Each check reads the subject (a project request, or a project for the go-ahead and acceptance
+gates) as it is now
 and returns whether it is met and a short, plain detail for the person deciding. The names here
 must be exactly `app.policy.KNOWN_CHECKS`, which the policy loader uses to refuse a gates file
 naming a check the code doesn't know, and each one works for the subjects
@@ -11,7 +12,11 @@ met on their own, and the detail says so. A project's `readiness_not_red` reads 
 came from by the same rule.
 
 A missing input is unmet, never met: no plan, no top budget in the brief, or no proposal for a
-client project each fail their check.
+client project each fail their check, and so do no baseline, or a baseline or plan with no
+deliverables or milestones, at the acceptance gate.
+
+`GATE_CHECKS` lists the checks each gate's code names, which the orchestrator runs to ask for a
+gate, and the inbox shows while the gates file isn't applied.
 """
 
 from collections.abc import Callable
@@ -21,7 +26,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.intake import readiness_gaps, readiness_of, value_case_gaps, value_case_of
+from app.baselines import latest_baseline
+from app.changes import waiting_changes
 from app.models import (
+    PlanDeliverable,
     PlanEstimateLine,
     Project,
     ProjectBrief,
@@ -31,7 +39,8 @@ from app.models import (
     Risk,
     User,
 )
-from app.plans import compute_total, missing
+from app.models.plan import ACCEPTED
+from app.plans import compute_total, milestones_of, missing
 
 
 @dataclass(frozen=True)
@@ -178,7 +187,8 @@ def no_unreviewed_risks(db: Session, project: Project) -> CheckResult:
 
 def escalations_settled(db: Session, project: Project) -> CheckResult:
     """An open risk escalated beyond the project manager (`escalated_to` set to any other role:
-    today the sponsor, for Medium and High) is waiting, and blocks the go-ahead. It stops waiting
+    today the sponsor, for Medium and High) is waiting, and blocks the go-ahead and acceptance
+    gates. It stops waiting
     only when it leaves `open`: the sponsor accepts it, or the team closes or rejects it. An open
     risk escalated to the project manager (Low) does not wait."""
     stmt = (
@@ -206,6 +216,66 @@ def project_readiness_not_red(db: Session, project: Project) -> CheckResult:
     return readiness_not_red(db, request)
 
 
+# --- The acceptance gate's checks (item 7.6): the subject is a project in delivery.
+
+
+def _names(items: list[str]) -> str:
+    return "; ".join(items)
+
+
+def deliverables_accepted(db: Session, project: Project) -> CheckResult:
+    """Every deliverable in the latest baseline, matched by id, is `accepted` in the plan."""
+    baseline = latest_baseline(db, project.id)
+    if baseline is None:
+        return CheckResult(False, "this project has no baseline")
+    agreed = baseline.plan.get("deliverables") or []
+    if not agreed:
+        return CheckResult(False, f"baseline {baseline.number} has no deliverables to accept")
+    plan = _plan_of(db, project)
+    rows = (
+        {
+            d.id: d
+            for d in db.scalars(select(PlanDeliverable).where(PlanDeliverable.plan_id == plan.id))
+        }
+        if plan is not None
+        else {}
+    )
+    waiting = []
+    for item in agreed:
+        row = rows.get(item["id"])
+        if row is None:
+            waiting.append(f"'{item['name']}' (no longer in the plan)")
+        elif row.status != ACCEPTED:
+            waiting.append(f"'{item['name']}' ({row.status.replace('_', ' ')})")
+    if waiting:
+        return CheckResult(False, "not accepted yet: " + _names(waiting))
+    return CheckResult(
+        True, f"all {len(agreed)} deliverable(s) in baseline {baseline.number} are accepted"
+    )
+
+
+def milestones_reached(db: Session, project: Project) -> CheckResult:
+    plan = _plan_of(db, project)
+    if plan is None:
+        return CheckResult(False, NO_PLAN)
+    milestones = milestones_of(db, plan.id)
+    if not milestones:
+        return CheckResult(False, "the plan has no milestones")
+    open_ = [f"'{m.name}'" for m in milestones if m.reached_on is None]
+    if open_:
+        return CheckResult(False, "not reached yet: " + _names(open_))
+    return CheckResult(True, f"all {len(milestones)} milestone(s) are reached")
+
+
+def no_waiting_changes(db: Session, project: Project) -> CheckResult:
+    """No change request is waiting: submitted and not yet decided (`app.changes`)."""
+    waiting = waiting_changes(db, project.id)
+    if waiting:
+        named = _names([f"change request {c.id} '{c.title}'" for c in waiting])
+        return CheckResult(False, "waiting for a decision: " + named)
+    return CheckResult(True, "no change request is waiting for a decision")
+
+
 PROJECT_CHECKS: dict[str, ProjectCheck] = {
     "plan_complete": plan_complete,
     "estimate_within_budget": estimate_within_budget,
@@ -213,6 +283,30 @@ PROJECT_CHECKS: dict[str, ProjectCheck] = {
     "no_unreviewed_risks": no_unreviewed_risks,
     "escalations_settled": escalations_settled,
     "readiness_not_red": project_readiness_not_red,
+    "deliverables_accepted": deliverables_accepted,
+    "milestones_reached": milestones_reached,
+    "no_waiting_changes": no_waiting_changes,
+}
+
+# The checks each gate's code criteria name, as the gates file drafts them.
+GO_AHEAD_CHECKS = (
+    "plan_complete",
+    "estimate_within_budget",
+    "proposal_accepted",
+    "no_unreviewed_risks",
+    "escalations_settled",
+    "readiness_not_red",
+)
+ACCEPTANCE_CHECKS = (
+    "deliverables_accepted",
+    "milestones_reached",
+    "no_waiting_changes",
+    "escalations_settled",
+)
+GATE_CHECKS: dict[str, tuple[str, ...]] = {
+    "approval": tuple(REQUEST_CHECKS),
+    "go_ahead": GO_AHEAD_CHECKS,
+    "acceptance": ACCEPTANCE_CHECKS,
 }
 
 CHECKS_BY_SUBJECT: dict[str, dict[str, Callable[[Session, object], CheckResult]]] = {

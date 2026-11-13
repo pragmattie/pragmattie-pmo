@@ -84,7 +84,7 @@ from app.autonomy import (
 )
 from app.changes import working_days
 from app.config import Settings, get_settings
-from app.gates import PROJECT_CHECKS
+from app.gates import GO_AHEAD_CHECKS, PROJECT_CHECKS
 from app.models import (
     AuditDecision,
     ChangeRequest,
@@ -316,8 +316,8 @@ def _planning_steps(db: Session, project: Project, make: Callable) -> list[NextS
     if not _agent_ran(db, risk_agent.AGENT, risk_agent.AUDIT_SUBJECT, project.id):
         reason = "the risk agent hasn't looked at this project yet"
         steps.append(make("propose_risks", PROJECT, project.id, reason))
-    if all(check(db, project).met for check in PROJECT_CHECKS.values()):
-        reason = f"the {len(PROJECT_CHECKS)} go-ahead checks are met"
+    if all(PROJECT_CHECKS[name](db, project).met for name in GO_AHEAD_CHECKS):
+        reason = f"the {len(GO_AHEAD_CHECKS)} go-ahead checks are met"
         steps.append(make("pass_gate", PROJECT, project.id, reason))
     return steps
 

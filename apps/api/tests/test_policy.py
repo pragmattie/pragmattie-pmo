@@ -353,7 +353,7 @@ def test_proposed_gates_file_loads(tmp_path):
 
 def test_proposed_gates_file_adds_the_go_ahead_gate(tmp_path):
     gates = load_policies(gates_policy_dir(tmp_path)).gates
-    assert list(gates.gates) == ["approval", "go_ahead"]
+    assert list(gates.gates)[:2] == ["approval", "go_ahead"]
     go_ahead = gates.gates["go_ahead"]
     assert (go_ahead.from_stage, go_ahead.to_stage) == ("planning", "delivery")
     assert go_ahead.applies_to == "project"
@@ -370,6 +370,46 @@ def test_proposed_gates_file_adds_the_go_ahead_gate(tmp_path):
         "The team and dates in the plan are realistic",
         "The project's risks are acceptable to start",
     ]
+
+
+def test_proposed_gates_file_adds_the_acceptance_gate(tmp_path):
+    """Item 7.6: from delivery to closure, for a project, decided by the sponsor; its code
+    criteria are exactly the ones the orchestrator runs to ask for it."""
+    from app.gates import ACCEPTANCE_CHECKS
+
+    gates = load_policies(gates_policy_dir(tmp_path)).gates
+    assert list(gates.gates) == ["approval", "go_ahead", "acceptance"]
+    acceptance = gates.gates["acceptance"]
+    assert (acceptance.from_stage, acceptance.to_stage) == ("delivery", "closure")
+    assert acceptance.applies_to == "project"
+    assert acceptance.deciders == ("sponsor",)
+    checks = [c.check for c in acceptance.criteria if not c.person]
+    assert checks == [
+        "deliverables_accepted",
+        "milestones_reached",
+        "no_waiting_changes",
+        "escalations_settled",
+    ]
+    assert tuple(checks) == ACCEPTANCE_CHECKS
+    assert [c.text for c in acceptance.criteria if c.person] == [
+        "The work meets the scope in the baseline",
+        "The client relationship is in good standing",
+    ]
+
+
+def test_the_go_ahead_checks_are_the_ones_the_orchestrator_runs(tmp_path):
+    from app.gates import GO_AHEAD_CHECKS
+
+    go_ahead = load_policies(gates_policy_dir(tmp_path)).gates.gates["go_ahead"]
+    assert tuple(c.check for c in go_ahead.criteria if not c.person) == GO_AHEAD_CHECKS
+
+
+def test_the_proposed_gates_file_keeps_the_applied_gates(tmp_path):
+    """The proposed file keeps every gate the live file has exactly as it is."""
+    applied = load_policies(REPO_ROOT / "policies").gates.gates
+    proposed = load_policies(gates_policy_dir(tmp_path)).gates.gates
+    for gate_id, gate in applied.items():
+        assert proposed[gate_id] == gate
 
 
 def test_the_approval_gate_is_unchanged_from_the_applied_file(tmp_path):

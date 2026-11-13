@@ -1,5 +1,5 @@
 """Stage gates: a person's decision on a request (the approval gate, item 4.4) or on a project (the
-go-ahead gate, item 5.4).
+go-ahead gate, item 5.4, and the acceptance gate, item 7.6).
 
 A gate, its criteria and who may decide it come from the gates policy file (`app.policy`). Until a
 person applies a gates file that defines the gate, both of its routes answer 503.
@@ -35,6 +35,14 @@ decision. `pass` moves the project to `delivery` and freezes its plan as the nex
 (`app.baselines`; baseline 1 the first time), whose id the decision's audit row records. `return`
 keeps the project in planning, with the reason shown on its latest decision. `decline` sets the
 project's status to `cancelled` and leaves its stage at planning.
+
+The acceptance gate (item 7.6), on its own routes so `/projects/{id}/gate` keeps showing the
+go-ahead gate for every project: `GET` and `POST /projects/{id}/acceptance-gate`. Only a project
+in delivery is decided, by the same shared rules (nobody decides the gate of a project they
+manage). `pass` moves the project to `closure`; `return` keeps it in delivery; `decline` sets its
+status to `cancelled` and leaves its stage at delivery. Its code criteria (`app.gates`): every
+deliverable in the latest baseline accepted, every milestone reached, no change request waiting,
+and no open risk escalated beyond the project manager waiting.
 """
 
 import logging
@@ -58,6 +66,7 @@ from app.audit import next_attempt, record_decision, record_refusal
 from app.authz import FORBIDDEN, Action, can, not_own_submission, require, require_audited
 from app.baselines import freeze, latest_baseline
 from app.db import get_db
+from app.delivery import DELIVERY
 from app.gates import CHECKS_BY_SUBJECT
 from app.models import GateDecision, Project, ProjectPlan, ProjectRequest, User
 from app.models.intake import FINAL_STATUSES
@@ -228,6 +237,43 @@ class ProjectSubject:
             raise RuntimeError("a project passed the go-ahead gate without a plan")
         baseline = freeze(db, plan, decision.id)
         return {"baseline_id": baseline.id, "baseline_number": baseline.number}
+
+
+ACCEPTANCE_GATE = "acceptance"
+ACCEPTANCE_UNAVAILABLE = (
+    "the acceptance gate isn't available yet: a person needs to apply the gates policy file"
+)
+NOT_IN_DELIVERY = "the acceptance gate is decided while the project is in delivery"
+ACCEPTANCE_UNMET = "this project can't pass the acceptance gate until every criterion is met"
+CLOSURE = "closure"
+
+
+class AcceptanceSubject(ProjectSubject):
+    """A project at the acceptance gate: from delivery to closure."""
+
+    gate_id = ACCEPTANCE_GATE
+    unavailable = ACCEPTANCE_UNAVAILABLE
+    unmet = ACCEPTANCE_UNMET
+
+    @staticmethod
+    def load(db: Session, subject_id: int, *, for_update: bool = False) -> "AcceptanceSubject":
+        return AcceptanceSubject(ProjectSubject.load(db, subject_id, for_update=for_update).row)
+
+    def refusals(self, version: int) -> list[tuple[str, bool, str]]:
+        return [
+            ("stale_version", version != self.row.version, PROJECT_STALE),
+            ("cancelled", self.row.status == CANCELLED, PROJECT_CANCELLED),
+            ("not_in_delivery", self.row.stage != DELIVERY, NOT_IN_DELIVERY),
+        ]
+
+    def apply(self, db: Session, user: User, outcome: str) -> None:
+        if outcome == "pass":
+            self.row.stage = CLOSURE
+        elif outcome == "decline":
+            self.row.status = CANCELLED
+
+    def after_decision(self, db: Session, decision: GateDecision) -> dict[str, Any]:
+        return {}
 
 
 Subject = RequestSubject | ProjectSubject
@@ -675,5 +721,37 @@ def decide_project_gate(
 ) -> ProjectGateOut:
     gate, digest = _gate(ProjectSubject)
     subject = _locked(ProjectSubject, db, project_id)
+    criteria = _decide(db, subject, gate, digest, body, user)
+    return _project_out(db, gate, digest, subject, criteria)
+
+
+# --- The acceptance gate: a project in delivery (item 7.6)
+
+
+@project_router.get("/{project_id}/acceptance-gate", response_model=ProjectGateOut)
+def get_acceptance_gate(
+    project_id: int,
+    _user: Annotated[User, Depends(require(Action.PROJECT_READ))],
+    db: Annotated[Session, Depends(get_db)],
+) -> ProjectGateOut:
+    gate, digest = _gate(AcceptanceSubject)
+    subject = AcceptanceSubject.load(db, project_id)
+    return _project_out(db, gate, digest, subject, _evaluate(db, gate, subject, {}))
+
+
+@project_router.post("/{project_id}/acceptance-gate", response_model=ProjectGateOut)
+def decide_acceptance_gate(
+    project_id: int,
+    body: ProjectGateDecisionIn,
+    user: Annotated[
+        User,
+        Depends(
+            require_audited(Action.GATE_DECIDE, _refusal_recorder(AcceptanceSubject, "project_id"))
+        ),
+    ],
+    db: Annotated[Session, Depends(get_db)],
+) -> ProjectGateOut:
+    gate, digest = _gate(AcceptanceSubject)
+    subject = _locked(AcceptanceSubject, db, project_id)
     criteria = _decide(db, subject, gate, digest, body, user)
     return _project_out(db, gate, digest, subject, criteria)
