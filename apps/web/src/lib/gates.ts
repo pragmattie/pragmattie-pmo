@@ -1,13 +1,14 @@
-// Stage gates: the approval gate on a submitted project request (item 4.4), and the go-ahead gate
-// on a project in planning (item 5.4). The gate, its criteria and who decides it come from the API
+// Stage gates: the approval gate on a submitted project request (item 4.4), the go-ahead gate on a
+// project in planning (item 5.4), and the acceptance gate on a project in delivery (item 7.6). The gate, its criteria and who decides it come from the API
 // (the gates policy); the web only shows them and hides the decision buttons from roles that
 // can't use them. The API checks everything again.
 
 import { call, type Page, type Person } from './risks'
 
 export type GateOutcome = 'pass' | 'return' | 'decline'
-// What a gate decides: a project request, or a project.
-export type GateSubject = 'request' | 'project'
+// What a gate decides: a project request, a project at the go-ahead gate, or a project at the
+// acceptance gate.
+export type GateSubject = 'request' | 'project' | 'acceptance'
 
 export interface GateCriterion {
   id: string
@@ -84,7 +85,7 @@ export interface Baseline {
   created_at: string
 }
 
-// A project at the go-ahead gate, with its latest baseline once there is one.
+// A project at the go-ahead or acceptance gate, with its latest baseline once there is one.
 export interface ProjectGate extends GateBase {
   project_id: number
   project_version: number
@@ -184,6 +185,31 @@ const CHOICES: Record<GateSubject, OutcomeChoice[]> = {
         "A declined project is cancelled: its plan, proposal and gate can't change after this.",
     },
   ],
+  acceptance: [
+    {
+      value: 'pass',
+      title: 'Pass',
+      color: 'primary',
+      done: 'Project passed the acceptance gate: it is in closure.',
+      explain:
+        'Passing moves the project to closure: the client has accepted what was agreed in the ' +
+        'baseline.',
+    },
+    {
+      value: 'return',
+      title: 'Return',
+      color: 'secondary',
+      done: 'Project returned: it stays in delivery.',
+      explain: 'The project stays in delivery so its project manager can finish the work.',
+    },
+    {
+      value: 'decline',
+      title: 'Decline',
+      color: 'error',
+      done: 'Project declined and cancelled.',
+      explain: "A declined project is cancelled: it can't be passed to closure after this.",
+    },
+  ],
 }
 
 export function outcomeChoices(subject: GateSubject): OutcomeChoice[] {
@@ -196,6 +222,14 @@ export const OUTCOMES = CHOICES.request
 const OUTCOME_TEXT: Record<GateSubject, Record<GateOutcome, string>> = {
   request: { pass: 'Passed', return: 'Returned to draft', decline: 'Declined' },
   project: { pass: 'Passed', return: 'Returned', decline: 'Declined' },
+  acceptance: { pass: 'Passed', return: 'Returned', decline: 'Declined' },
+}
+
+// The gate's name before it loads.
+export const GATE_NAMES: Record<GateSubject, string> = {
+  request: 'Approval gate',
+  project: 'Go-ahead gate',
+  acceptance: 'Acceptance gate',
 }
 
 export function outcomeText(outcome: GateOutcome, subject: GateSubject = 'request'): string {
@@ -203,8 +237,9 @@ export function outcomeText(outcome: GateOutcome, subject: GateSubject = 'reques
 }
 
 // The decision buttons: a role holding gate:decide that the gate lists, on a subject that can be
-// decided now and isn't the person's own: a submitted request they didn't raise, or a project in
-// planning, not cancelled, that they don't manage.
+// decided now and isn't the person's own: a submitted request they didn't raise, or a project at
+// the gate's from stage (planning for the go-ahead gate, delivery for the acceptance gate), not
+// cancelled, that they don't manage.
 export function canDecideGate(
   gate: AnyGate,
   user: { id: number; role: string } | null,
@@ -213,7 +248,7 @@ export function canDecideGate(
   if (!user || !holdsDecide || !gate.gate.deciders.includes(user.role)) return false
   if (isProjectGate(gate)) {
     return (
-      gate.project_stage === 'planning' &&
+      gate.project_stage === gate.gate.from_stage &&
       gate.project_status !== 'cancelled' &&
       gate.pm_user_id !== user.id
     )
@@ -231,6 +266,7 @@ export function readyToPass(gate: Pick<AnyGate, 'criteria'>, ticks: PersonTick[]
 }
 
 function gateUrl(subject: GateSubject, id: number): string {
+  if (subject === 'acceptance') return `/api/v1/projects/${id}/acceptance-gate`
   return `/api/v1/${subject === 'project' ? 'projects' : 'requests'}/${id}/gate`
 }
 

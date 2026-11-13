@@ -2,15 +2,23 @@
 import { computed, ref, watch } from 'vue'
 
 import {
+  type AcceptanceAnswer,
+  answererText,
+  canAnswer,
+  canOffer,
   daysLateText,
   type DeliverableProgress,
   type DeliverableStatus,
   type Delivery,
   deliveryApi,
   isOpen,
+  MAX_ACCEPTANCE_TEXT,
+  MAX_MEANS,
+  MAX_OFFERED_TO,
   MAX_REACHED_NOTE,
   MAX_SPEND_NOTE,
   type MilestoneProgress,
+  roundText,
   SETTABLE_STATUSES,
   STATUS_TEXT,
 } from '../lib/delivery'
@@ -23,7 +31,13 @@ import { useAuthStore } from '../stores/auth'
 // milestones reached, moves deliverables short of accepted and adds spend entries; a correction is
 // a new entry naming the newest one. The buttons show only for whoever may use them; the API
 // checks every rule again. Nothing here changes the plan: that is a change request.
+//
+// Acceptance (item 7.6): Offer for acceptance on a deliverable ready for it (to whom, when, by what
+// means; nothing is sent from here), Record the answer on an offer waiting for one, and each
+// deliverable's history, every round. A simulated client's answers say "Simulated client". With no
+// client, the sponsor records the answer. `changed` tells the page the acceptance gate may move.
 const props = defineProps<{ projectId: number }>()
+const emit = defineEmits<{ changed: [] }>()
 
 const auth = useAuthStore()
 const delivery = ref<Delivery | null>(null)
@@ -37,10 +51,43 @@ const spending = ref<'new' | 'correct' | null>(null)
 const amount = ref('')
 const asOf = ref('')
 const spendNote = ref('')
+const offering = ref<DeliverableProgress | null>(null)
+const offeredTo = ref('')
+const offeredOn = ref('')
+const means = ref('')
+const offerNote = ref('')
+const answering = ref<DeliverableProgress | null>(null)
+const answerValue = ref<AcceptanceAnswer>('accepted')
+const answeredOn = ref('')
+const missingText = ref('')
+const answerNote = ref('')
 
 const mayWrite = computed(
   () => !!delivery.value && isOpen(delivery.value) && auth.can('project:write'),
 )
+const offerReady = computed(
+  () => !!offeredTo.value.trim() && !!offeredOn.value && !!means.value.trim(),
+)
+const answerReady = computed(
+  () =>
+    !!answeredOn.value && (answerValue.value === 'accepted' || !!missingText.value.trim()),
+)
+const answerChoices = [
+  { title: 'Accepted', value: 'accepted' },
+  { title: 'Not accepted', value: 'not_accepted' },
+]
+
+function mayOffer(deliverable: DeliverableProgress): boolean {
+  return !!delivery.value && canOffer(delivery.value, deliverable, auth.can('project:write'))
+}
+
+function mayAnswer(deliverable: DeliverableProgress): boolean {
+  return (
+    !!delivery.value &&
+    canAnswer(delivery.value, deliverable, auth.user, (action) => auth.can(action))
+  )
+}
+
 const spendReady = computed(
   () => /^\d+(\.\d{1,2})?$/.test(amount.value.trim()) && !!asOf.value && !!spendNote.value.trim(),
 )
@@ -63,6 +110,7 @@ async function act(work: () => Promise<Delivery>, done: string) {
   try {
     delivery.value = await work()
     message.value = done
+    emit('changed')
     return true
   } catch (error) {
     message.value = (error as Error).message
@@ -105,6 +153,67 @@ function setStatus(deliverable: DeliverableProgress, status: DeliverableStatus) 
     () => deliveryApi.setStatus(props.projectId, deliverable, status),
     `${deliverable.name}: ${STATUS_TEXT[status]}.`,
   )
+}
+
+function startOffer(deliverable: DeliverableProgress) {
+  answering.value = null
+  offering.value = deliverable
+  offeredTo.value = ''
+  offeredOn.value = delivery.value?.today ?? ''
+  means.value = ''
+  offerNote.value = ''
+}
+
+async function offer() {
+  const deliverable = offering.value
+  if (!deliverable || !offerReady.value) return
+  const note = offerNote.value.trim()
+  if (
+    await act(
+      () =>
+        deliveryApi.offer(props.projectId, deliverable, {
+          offered_to: offeredTo.value.trim(),
+          offered_on: offeredOn.value,
+          means: means.value.trim(),
+          ...(note ? { note } : {}),
+        }),
+      `${deliverable.name} offered for acceptance. Nothing was sent from here.`,
+    )
+  ) {
+    offering.value = null
+  }
+}
+
+function startAnswer(deliverable: DeliverableProgress) {
+  offering.value = null
+  answering.value = deliverable
+  answerValue.value = 'accepted'
+  answeredOn.value = delivery.value?.today ?? ''
+  missingText.value = ''
+  answerNote.value = ''
+}
+
+async function answer() {
+  const deliverable = answering.value
+  if (!deliverable || !answerReady.value) return
+  const note = answerNote.value.trim()
+  const accepted = answerValue.value === 'accepted'
+  if (
+    await act(
+      () =>
+        deliveryApi.answer(props.projectId, deliverable, {
+          answer: answerValue.value,
+          answered_on: answeredOn.value,
+          ...(accepted ? {} : { missing: missingText.value.trim() }),
+          ...(note ? { note } : {}),
+        }),
+      accepted
+        ? `${deliverable.name} accepted.`
+        : `${deliverable.name} not accepted: it is back in progress.`,
+    )
+  ) {
+    answering.value = null
+  }
 }
 
 function startSpend(kind: 'new' | 'correct') {
@@ -229,21 +338,73 @@ async function spend() {
       </v-card>
 
       <h3 class="text-subtitle-2 mb-1">Deliverables</h3>
+      <p class="text-caption text-medium-emphasis mb-1" data-test="acceptance-answerer">
+        {{ answererText(delivery) }} A deliverable is accepted only through a recorded answer.
+      </p>
       <p v-if="!delivery.deliverables.length" class="text-body-2">No deliverables.</p>
       <v-table v-else density="compact" class="mb-4" data-test="delivery-deliverables">
         <thead>
           <tr>
             <th>Deliverable</th>
             <th>Status</th>
-            <th v-if="mayWrite"><span class="d-sr-only">Actions</span></th>
+            <th>Acceptance</th>
+            <th><span class="d-sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="deliverable in delivery.deliverables" :key="deliverable.id" data-test="delivery-deliverable">
             <td>{{ deliverable.name }}</td>
             <td data-test="deliverable-status">{{ STATUS_TEXT[deliverable.status] }}</td>
-            <td v-if="mayWrite">
-              <template v-if="deliverable.status !== 'accepted'">
+            <td data-test="deliverable-acceptance">
+              <span v-if="!deliverable.acceptance.length" class="text-caption">Not offered yet</span>
+              <ul v-else class="pl-4 text-caption" data-test="acceptance-history">
+                <li
+                  v-for="round in deliverable.acceptance"
+                  :key="round.id"
+                  data-test="acceptance-round"
+                >
+                  {{ roundText(round) }}
+                  <v-chip
+                    v-if="round.source === 'simulated'"
+                    size="x-small"
+                    class="ml-1"
+                    data-test="acceptance-simulated"
+                  >
+                    Simulated
+                  </v-chip>
+                  <span v-if="round.note"> ({{ round.note }})</span>
+                </li>
+              </ul>
+              <span
+                v-if="deliverable.awaiting_answer"
+                class="text-caption"
+                data-test="acceptance-waiting"
+              >
+                Waiting for the answer.
+              </span>
+            </td>
+            <td>
+              <v-btn
+                v-if="mayOffer(deliverable)"
+                size="small"
+                variant="tonal"
+                :disabled="busy"
+                data-test="deliverable-offer"
+                @click="startOffer(deliverable)"
+              >
+                Offer for acceptance
+              </v-btn>
+              <v-btn
+                v-if="mayAnswer(deliverable)"
+                size="small"
+                variant="tonal"
+                :disabled="busy"
+                data-test="deliverable-answer"
+                @click="startAnswer(deliverable)"
+              >
+                Record the answer
+              </v-btn>
+              <template v-if="mayWrite && deliverable.status !== 'accepted'">
                 <v-btn
                   v-for="status in SETTABLE_STATUSES.filter((s) => s !== deliverable.status)"
                   :key="status"
@@ -260,6 +421,83 @@ async function spend() {
           </tr>
         </tbody>
       </v-table>
+      <v-card v-if="offering" variant="outlined" class="mb-4 pa-4" data-test="offer-form">
+        <p class="text-body-2 mb-2">
+          Offer {{ offering.name }} for acceptance. Record how it was offered: nothing is sent from
+          here.
+        </p>
+        <v-text-field
+          v-model="offeredTo"
+          label="Offered to"
+          :maxlength="MAX_OFFERED_TO"
+          data-test="offer-to"
+        />
+        <v-text-field
+          v-model="offeredOn"
+          label="Offered on"
+          type="date"
+          :max="delivery.today"
+          data-test="offer-on"
+        />
+        <v-text-field
+          v-model="means"
+          label="By (for example: email, meeting)"
+          :maxlength="MAX_MEANS"
+          data-test="offer-means"
+        />
+        <v-textarea
+          v-model="offerNote"
+          label="Note (optional)"
+          rows="2"
+          auto-grow
+          :maxlength="MAX_ACCEPTANCE_TEXT"
+          data-test="offer-note"
+        />
+        <v-btn color="primary" :disabled="busy || !offerReady" data-test="offer-save" @click="offer">
+          Offer
+        </v-btn>
+        <v-btn variant="text" :disabled="busy" @click="offering = null">Cancel</v-btn>
+      </v-card>
+      <v-card v-if="answering" variant="outlined" class="mb-4 pa-4" data-test="answer-form">
+        <p class="text-body-2 mb-2">Record the answer for {{ answering.name }}</p>
+        <v-radio-group v-model="answerValue" inline data-test="answer-choice">
+          <v-radio
+            v-for="choice in answerChoices"
+            :key="choice.value"
+            :label="choice.title"
+            :value="choice.value"
+            :data-test="`answer-${choice.value}`"
+          />
+        </v-radio-group>
+        <v-text-field
+          v-model="answeredOn"
+          label="Answer came on"
+          type="date"
+          :max="delivery.today"
+          data-test="answer-on"
+        />
+        <v-textarea
+          v-if="answerValue === 'not_accepted'"
+          v-model="missingText"
+          label="What is missing"
+          rows="2"
+          auto-grow
+          :maxlength="MAX_ACCEPTANCE_TEXT"
+          data-test="answer-missing"
+        />
+        <v-textarea
+          v-model="answerNote"
+          label="Note (optional)"
+          rows="2"
+          auto-grow
+          :maxlength="MAX_ACCEPTANCE_TEXT"
+          data-test="answer-note"
+        />
+        <v-btn color="primary" :disabled="busy || !answerReady" data-test="answer-save" @click="answer">
+          Save the answer
+        </v-btn>
+        <v-btn variant="text" :disabled="busy" @click="answering = null">Cancel</v-btn>
+      </v-card>
 
       <h3 class="text-subtitle-2 mb-1">Spend to date</h3>
       <p class="text-body-2" data-test="spend-current">
