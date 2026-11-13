@@ -9,7 +9,9 @@ A deliverable leaves delivery as `accepted` only through a recorded answer to an
   answer yet (so no answer without an offer, and never a second answer to one offer), and the
   deliverable is still `ready_for_acceptance`. `accepted` sets the deliverable to `accepted`;
   `not_accepted` records what is missing and sets it back to `in_progress`, so the project
-  manager works on it and offers it again in a new round. Every round is kept.
+  manager works on it and offers it again in a new round. Every round is kept. While an offer
+  waits for its answer, the status route won't move the deliverable out of
+  `ready_for_acceptance` (`offer_waiting`): the answer does.
 - **Who answers.** For a client project, a person with `project:write` records the client's
   answer (`answerer_refusal`). A project with no client has its deliverables accepted by the
   sponsor instead, with `gate:decide`, and never by the project's own project manager. For a

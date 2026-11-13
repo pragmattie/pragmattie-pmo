@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app import delivery as rules
 from app import simulated_client
+from app.api.delivery import OFFER_WAITING, STALE
 from app.baselines import freeze
 from app.db import engine
 from app.main import app
@@ -274,6 +275,51 @@ def test_an_offer_needs_a_ready_deliverable_and_no_offer_waiting(db, pm):
     assert offer(web, pid2, did2).status_code == 201
     assert offer(web, pid2, did2).status_code == 409
     assert _refusals(db) == ["not_ready", "already_offered"]
+
+
+def test_a_waiting_offer_keeps_the_deliverable_ready_until_its_answer(db, pm):
+    web, user = pm
+    pid, did = make_project(db, user)
+    shown = _deliverable(offer(web, pid, did).json(), did)
+    status_url = f"/api/v1/projects/{pid}/delivery/deliverables/{did}"
+    for to in ("in_progress", "not_started"):
+        moved = web.put(status_url, json={"version": shown["version"], "status": to})
+        assert moved.status_code == 409, moved.text
+        assert moved.json()["detail"] == OFFER_WAITING
+    assert _refusals(db) == ["offer_waiting", "offer_waiting"]
+    refused = _audit(db, status="rejected")[-1]
+    assert refused.action_taken["action"] == "deliverable_status_refused"
+    assert refused.action_taken["requested_status"] == "not_started"
+    db.expire_all()
+    assert db.get(PlanDeliverable, did).status == "ready_for_acceptance"
+    # The client's answer is recorded instead: not accepted sends it back to work.
+    answered = answer(web, pid, did, "not_accepted")
+    assert answered.status_code == 201, answered.text
+    shown = _deliverable(answered.json(), did)
+    assert shown["status"] == "in_progress"
+    # With no offer waiting, the status route moves it again.
+    moved = web.put(status_url, json={"version": shown["version"], "status": "not_started"})
+    assert moved.status_code == 200, moved.text
+
+
+def test_an_answer_that_loses_the_race_keeps_nothing_and_is_audited(db, pm, monkeypatch):
+    web, user = pm
+    pid, did = make_project(db, user)
+    offer(web, pid, did)
+    # Another write moves the deliverable between the checks and the save.
+    monkeypatch.setattr(rules, "set_status", lambda *args: False)
+    lost = answer(web, pid, did)
+    assert lost.status_code == 409, lost.text
+    assert lost.json()["detail"] == STALE
+    assert _refusals(db) == ["stale_version"]
+    refused = _audit(db, status="rejected")[-1]
+    assert refused.action_taken["action"] == "deliverable_answer_refused"
+    assert refused.action_taken["answer"] == "accepted"
+    assert refused.output["status"] == "ready_for_acceptance"
+    kinds = db.scalars(
+        select(DeliverableAcceptance.kind).where(DeliverableAcceptance.deliverable_id == did)
+    )
+    assert list(kinds) == ["offer"]
 
 
 def test_dates_after_today_or_before_the_offer_are_refused(db, pm):

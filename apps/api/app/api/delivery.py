@@ -89,6 +89,10 @@ STALE = "this has changed since you read it; reload it and try again"
 FUTURE_DATE = "a milestone can't be reached after today"
 ACCEPTED_HERE = "only the acceptance step sets a deliverable to accepted"
 ALREADY_ACCEPTED = "this deliverable is accepted; only the acceptance step changes it"
+OFFER_WAITING = (
+    "this deliverable's offer is waiting for the client's answer; record the answer instead "
+    "(not accepted sends it back to in progress)"
+)
 STALE_SPEND = (
     "a correction must name the project's newest spend entry; reload the spend and try again"
 )
@@ -527,6 +531,14 @@ def set_deliverable_status(
             status.HTTP_409_CONFLICT,
             ALREADY_ACCEPTED,
         ),
+        (
+            "offer_waiting",
+            deliverable.status == acceptance.READY
+            and body.status != acceptance.READY
+            and acceptance.waiting_offer(db, deliverable.id) is not None,
+            status.HTTP_409_CONFLICT,
+            OFFER_WAITING,
+        ),
     ):
         if refused:
             raise _refuse(
@@ -708,6 +720,16 @@ def answer_deliverable(
         )
     except acceptance.Lost:
         db.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, STALE) from None
+        raise _refuse(
+            db,
+            user,
+            project,
+            deliverable,
+            action=action,
+            refusal="stale_version",
+            code=status.HTTP_409_CONFLICT,
+            detail=STALE,
+            answer=body.answer,
+        ) from None
     _commit(db)
     return _view(db, project)
