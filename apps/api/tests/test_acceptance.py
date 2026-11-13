@@ -502,9 +502,7 @@ def test_a_simulated_not_accepted_says_it_is_simulated(db, pm):
     assert "simulated" in row.missing.lower()
 
 
-def test_a_simulated_answer_that_loses_the_race_keeps_nothing_and_is_skipped(
-    db, pm, monkeypatch
-):
+def test_a_simulated_answer_that_loses_the_race_keeps_nothing_and_is_skipped(db, pm, monkeypatch):
     _, did = _offered_long_ago(db, pm, "simulated")
     # Another write moves the deliverable between the checks and the save.
     monkeypatch.setattr(rules, "set_status", lambda *args: False)
