@@ -213,6 +213,10 @@ features:
     title: Executive view and report flags
     rules: [R3, R5, R12]
     notes: One page from a published report's frozen figures. Overdue or unread reports reach set people at policy limits and leave once published or read; all audited.
+  - id: P7-deliverable-acceptance
+    title: Deliverable acceptance and gate
+    rules: [R1, R3, R5, R12]
+    notes: Accepted only by a recorded answer, every round kept; the sponsor passes the gate to closure once its checks are met. Simulated answers say so; all audited.
   - id: P7-closure
     title: Closure report and lessons
     rules: []
