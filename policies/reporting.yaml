@@ -33,3 +33,19 @@ risk:
     High: 1
   red_at:
     High: 2
+# Report flags (item 7.5): when the orchestrator raises a status report in the Inbox, in working
+# days (Monday to Friday). Each is a whole number from 1 to 260.
+# - overdue_pm_working_days: a period with no published report goes to the project manager's
+#   Inbox this many working days after the period's due day.
+# - overdue_sponsor_working_days: and to the sponsor's after this many (at least the project
+#   manager's limit). Both count from the period's due day, not its last day, so weekly,
+#   fortnightly and monthly plans are treated alike.
+# - unread_working_days: a published report the project's sponsor hasn't opened goes to the
+#   sponsor's Inbox this many working days after it was published.
+# A report published and then withdrawn still counts as published, so its period is not overdue;
+# a draft withdrawn before publishing leaves the period overdue. Only a report still published can
+# be unread. An item leaves the Inbox by itself once the report is published or read.
+flags:
+  overdue_pm_working_days: 10
+  overdue_sponsor_working_days: 15
+  unread_working_days: 5

@@ -18,29 +18,22 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-Apply both files together, in one pull request: the loader refuses an autonomy file without the
-three new steps, and the orchestrator, Inbox and board need the reporting file's `flags` once the
-code knows the steps. Until both are applied, the Inbox, the board, orchestrator passes and the
-status report create and refresh routes answer 503 (as each did before its policy file first
-arrived).
-
-- **`policies/reporting.yaml`** (item 7.5): today's file plus a `flags` section, the limits in
-  working days at which the orchestrator raises a status report in the Inbox.
-  `overdue_pm_working_days: 10`: a period with no published report goes to the project manager 10
-  working days after its due day. `overdue_sponsor_working_days: 15`: and to the sponsor too
-  after 15 (must be at least the project manager's). `unread_working_days: 5`: a published report
-  the project's sponsor hasn't opened goes to the sponsor 5 working days after it was published.
-  Each is a whole number from 1 to 260. Both overdue limits count from the period's due day
-  (`due_on`), not its last day, so weekly, fortnightly and monthly plans are treated alike. The
-  numbers are drafts: the person applying the file sets them. Nothing else in the file changes.
-- **`policies/autonomy.yaml`** (item 7.5): today's file plus three person steps for the report
-  flags: `report_overdue_pm` (who `project_manager`), `report_overdue_sponsor` (who `sponsor`)
-  and `report_unread` (who `sponsor`). The code refuses any other mode or `who` for them, so an
-  agent never clears a flag: an item leaves the Inbox by itself once the report is published or
-  the sponsor opens it. Nothing else in the file changes.
+Nothing yet.
 
 ## Applied
 
+- **`policies/reporting.yaml`** and **`policies/autonomy.yaml`** (item 7.5), applied together
+  in one pull request, since the loader needs both. `reporting.yaml` gains a `flags` section, the
+  limits in working days at which the orchestrator raises a status report in the Inbox: overdue to
+  the project manager 10 working days after a period's due day, to the sponsor too after 15, and
+  unread to the sponsor 5 working days after publishing (kept as drafted). Both overdue limits
+  count from the due day, so weekly, fortnightly and monthly plans are treated alike. Its comment
+  on withdrawn reports was corrected: a report published and then withdrawn still counts as
+  published, while a draft withdrawn before publishing leaves the period overdue.
+  `autonomy.yaml` gains three person steps, `report_overdue_pm` (who `project_manager`),
+  `report_overdue_sponsor` and `report_unread` (who `sponsor`); the code refuses any other mode or
+  `who`. The Inbox, the board, orchestrator passes and status report create and refresh answer
+  again, and tests now read the applied files.
 - **`policies/autonomy.yaml`** (item 7.4): two steps and one agent switch added.
   `draft_status_report` is `agent` (`status_report_agent`, who `project_manager`): once a report
   is due and its period has no report, the orchestrator creates the period's draft and the agent
