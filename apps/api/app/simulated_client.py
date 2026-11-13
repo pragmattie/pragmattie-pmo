@@ -201,21 +201,23 @@ def accept_now(
         raise Skipped(why)
     project = deliverable_project(db, deliverable)
     try:
-        _, audit_id = acceptance.answer(
-            db,
-            project,
-            deliverable,
-            answer=answer,
-            answered_on=min(now.date(), delivery.today()),
-            missing=SIMULATED_MISSING if answer == "not_accepted" else None,
-            note=f"{LABEL}: answered automatically in the demo",
-            actor_user_id=None,
-            source=SIMULATED,
-            agent=AGENT,
-            trigger=TRIGGER,
-            by=AGENT,
-            delay_minutes=delay_minutes,
-        )
+        # A savepoint, so a lost write rolls back the answer row it flushed.
+        with db.begin_nested():
+            _, audit_id = acceptance.answer(
+                db,
+                project,
+                deliverable,
+                answer=answer,
+                answered_on=min(now.date(), delivery.today()),
+                missing=SIMULATED_MISSING if answer == "not_accepted" else None,
+                note=f"{LABEL}: answered automatically in the demo",
+                actor_user_id=None,
+                source=SIMULATED,
+                agent=AGENT,
+                trigger=TRIGGER,
+                by=AGENT,
+                delay_minutes=delay_minutes,
+            )
     except acceptance.Lost:
         raise Skipped(NOT_OFFERED) from None
     return audit_id

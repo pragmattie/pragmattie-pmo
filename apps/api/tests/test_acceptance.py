@@ -11,9 +11,10 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app import delivery as rules
-from app import simulated_client
+from app import orchestrator, simulated_client
 from app.api.delivery import OFFER_WAITING, STALE
 from app.baselines import freeze
+from app.config import get_settings
 from app.db import engine
 from app.main import app
 from app.models import (
@@ -499,6 +500,34 @@ def test_a_simulated_not_accepted_says_it_is_simulated(db, pm):
     row = db.scalars(select(DeliverableAcceptance).order_by(DeliverableAcceptance.id)).all()[-1]
     assert row.answer == "not_accepted"
     assert "simulated" in row.missing.lower()
+
+
+def test_a_simulated_answer_that_loses_the_race_keeps_nothing_and_is_skipped(
+    db, pm, monkeypatch
+):
+    _, did = _offered_long_ago(db, pm, "simulated")
+    # Another write moves the deliverable between the checks and the save.
+    monkeypatch.setattr(rules, "set_status", lambda *args: False)
+    ctx = orchestrator.Context(
+        db, get_settings(), None, None, "", "deliverable", NOW + timedelta(days=1)
+    )
+    skip_id = orchestrator._client_acceptance(ctx, did)
+    db.commit()
+    db.expire_all()
+    kinds = db.scalars(
+        select(DeliverableAcceptance.kind).where(DeliverableAcceptance.deliverable_id == did)
+    )
+    assert list(kinds) == ["offer"]
+    assert db.get(PlanDeliverable, did).status == "ready_for_acceptance"
+    skipped = db.get(AuditDecision, skip_id)
+    assert (skipped.status, skipped.subject_type, skipped.subject_id) == (
+        "skipped",
+        "deliverable",
+        str(did),
+    )
+    assert skipped.action_taken["action"] == "client_acceptance"
+    assert skipped.action_taken["reason"] == simulated_client.NOT_OFFERED
+    assert not _audit(db, agent="simulated_client")
 
 
 def test_the_simulated_client_waits_for_its_delay_and_answers_once(db, pm):
