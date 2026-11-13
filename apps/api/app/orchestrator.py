@@ -40,6 +40,12 @@ agent steps the autonomy policy allows, and hands every other step to a person.
   published and then withdrawn isn't overdue, and a withdrawn report is never unread. Each flag
   leaves by itself once the report is published or read: its step is no longer given, so the
   Inbox drops it at once and the next pass closes it, with an audit row as for any step.
+- Acceptance (item 7.6): `client_acceptance` is a deliverable's step while its offer waits for an
+  answer. For a simulated client it is the simulated client's answer (`app.simulated_client`),
+  only after its delay; for a real client it goes to the project manager to record; for a project
+  with no client it goes to the sponsor, who accepts. Once every code check of the acceptance gate
+  (`app.gates.ACCEPTANCE_CHECKS`) is met for a project in delivery, `pass_gate` asks the sponsor
+  for the acceptance gate, as it does for the go-ahead gate in planning. The step names its gate.
 
 Run it with `python -m app.orchestrator once` (one pass) or `run` (a pass every
 `ORCHESTRATOR_INTERVAL_SECONDS` until Ctrl+C).
@@ -60,7 +66,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import delivery, simulated_client
+from app import acceptance, delivery, simulated_client
 from app import policy as policies
 from app import proposals as proposal_rules
 from app import reports as report_rules
@@ -84,13 +90,14 @@ from app.autonomy import (
 )
 from app.changes import working_days
 from app.config import Settings, get_settings
-from app.gates import GO_AHEAD_CHECKS, PROJECT_CHECKS
+from app.gates import ACCEPTANCE_CHECKS, GO_AHEAD_CHECKS, PROJECT_CHECKS
 from app.models import (
     AuditDecision,
     ChangeRequest,
     InboxItem,
     OrchestratorAction,
     OrchestratorLease,
+    PlanDeliverable,
     Project,
     ProjectPlan,
     ProjectProposal,
@@ -128,6 +135,12 @@ RISK = "risk"
 PROPOSAL = "proposal"
 CHANGE_REQUEST = "change_request"
 STATUS_REPORT = "status_report"
+DELIVERABLE = "deliverable"
+
+# The gate a project's `pass_gate` step asks for, by the project's stage.
+GO_AHEAD_GATE = "go_ahead"
+ACCEPTANCE_GATE = "acceptance"
+SPONSOR = "sponsor"
 
 MAX_RETRIES = 3
 RETRY_AFTER = timedelta(minutes=5)
@@ -170,6 +183,7 @@ class NextStep:
     gives an agent goes to a person instead (its agent is off, no agent does it yet, and so on).
     `unavailable` is set when that is only because the agent can't act (switched off, not built
     yet, or `AGENT_MODE` not `enforce`), so the inbox item can be cancelled when it can again.
+    `gate` names the gate a `pass_gate` step asks for.
     """
 
     step: str
@@ -180,6 +194,7 @@ class NextStep:
     mode: str
     handoff: str | None = None
     unavailable: bool = False
+    gate: str | None = None
 
     @property
     def key(self) -> str:
@@ -224,6 +239,7 @@ def _make(
     who: str | None = None,
     person: str | None = None,
     blocked: bool = False,
+    gate: str | None = None,
 ) -> NextStep:
     """One next step. `person` sends it to a person whatever the policy says, with that text as
     the reason why (a Medium or High risk agent suggestion, which only a person may open).
@@ -236,7 +252,15 @@ def _make(
     rule = policy.steps[step]
     waits_on = (who or rule.who) if mode == PERSON else rule.agent
     return NextStep(
-        step, subject_type, subject_id, reason, waits_on or rule.who, mode, handoff, unavailable
+        step,
+        subject_type,
+        subject_id,
+        reason,
+        waits_on or rule.who,
+        mode,
+        handoff,
+        unavailable,
+        gate,
     )
 
 
@@ -264,7 +288,13 @@ def _exists(db: Session, model: type, request_id: int) -> bool:
 def _request_steps(db: Session, request: ProjectRequest, make: Callable) -> list[NextStep]:
     if request.status == "submitted":
         return [
-            make("pass_gate", REQUEST, request.id, "the request is waiting at the approval gate")
+            make(
+                "pass_gate",
+                REQUEST,
+                request.id,
+                "the request is waiting at the approval gate",
+                gate="approval",
+            )
         ]
     if request.status != "draft":
         return []
@@ -318,7 +348,7 @@ def _planning_steps(db: Session, project: Project, make: Callable) -> list[NextS
         steps.append(make("propose_risks", PROJECT, project.id, reason))
     if all(PROJECT_CHECKS[name](db, project).met for name in GO_AHEAD_CHECKS):
         reason = f"the {len(GO_AHEAD_CHECKS)} go-ahead checks are met"
-        steps.append(make("pass_gate", PROJECT, project.id, reason))
+        steps.append(make("pass_gate", PROJECT, project.id, reason, gate=GO_AHEAD_GATE))
     return steps
 
 
@@ -656,6 +686,64 @@ def is_unread(db: Session, report: StatusReport, flags: ReportFlags) -> bool:
     return not sponsor_opened(db, report, project.sponsor_user_id)
 
 
+# --- Acceptance (item 7.6)
+
+ACCEPTANCE_WAITING = "the deliverable '{name}' was offered for acceptance and has no answer yet"
+REAL_CLIENT_ACCEPTANCE = "the client is real, so the project manager records its answer"
+NO_CLIENT_ACCEPTANCE = "the project has no client, so the sponsor accepts its deliverables"
+TO_SIMULATED_ACCEPTANCE = (
+    "the deliverable '{name}' was offered to a simulated client {minutes} or more minutes ago "
+    "and has no answer"
+)
+
+
+def _acceptance_steps(
+    db: Session, deliverable: PlanDeliverable, project: Project, make: Callable, now: datetime
+) -> list[NextStep]:
+    """A deliverable whose offer waits for an answer, on a live project in delivery. A real
+    client's answer is the project manager's to record, and the sponsor accepts for a project
+    with no client; a simulated client's is the simulation's once its delay is over."""
+    if delivery.refusal(project) is not None or deliverable.status != acceptance.READY:
+        return []
+    offer = acceptance.waiting_offer(db, deliverable.id)
+    if offer is None:
+        return []
+    reason = ACCEPTANCE_WAITING.format(name=deliverable.name)
+    if project.client_id is None:
+        return [
+            make(
+                "client_acceptance",
+                DELIVERABLE,
+                deliverable.id,
+                reason,
+                person=NO_CLIENT_ACCEPTANCE,
+                who=SPONSOR,
+            )
+        ]
+    if not simulated_client.project_simulated(db, project):
+        return [
+            make(
+                "client_acceptance",
+                DELIVERABLE,
+                deliverable.id,
+                reason,
+                person=REAL_CLIENT_ACCEPTANCE,
+                who=PROJECT_MANAGER,
+            )
+        ]
+    delay = get_settings().simulated_client_delay_minutes
+    due = simulated_client.acceptance_due_at(offer, delay)
+    if due is None or now < due:
+        return []
+    reason = TO_SIMULATED_ACCEPTANCE.format(name=deliverable.name, minutes=delay)
+    return [make("client_acceptance", DELIVERABLE, deliverable.id, reason)]
+
+
+def acceptance_checks_met(db: Session, project: Project) -> bool:
+    """Whether every code check of the acceptance gate is met for the project."""
+    return all(PROJECT_CHECKS[name](db, project).met for name in ACCEPTANCE_CHECKS)
+
+
 def _delivery_steps(
     db: Session, project: Project, make: Callable, flags: Callable[[], ReportFlags]
 ) -> list[NextStep]:
@@ -664,7 +752,26 @@ def _delivery_steps(
     if due is not None:
         steps.append(make("draft_status_report", PROJECT, project.id, due[0]))
     steps.extend(_overdue_steps(db, project, make, flags()))
+    if delivery.refusal(project) is None and acceptance_checks_met(db, project):
+        reason = f"the {len(ACCEPTANCE_CHECKS)} acceptance checks are met"
+        steps.append(make("pass_gate", PROJECT, project.id, reason, gate=ACCEPTANCE_GATE))
     return steps
+
+
+def _deliverables(db: Session, project: Project) -> list[PlanDeliverable]:
+    stmt = (
+        select(PlanDeliverable)
+        .join(ProjectPlan, ProjectPlan.id == PlanDeliverable.plan_id)
+        .where(ProjectPlan.project_id == project.id)
+        .order_by(PlanDeliverable.id)
+    )
+    return list(db.scalars(stmt))
+
+
+def deliverable_project(db: Session, deliverable_id: int) -> Project | None:
+    """The project a deliverable belongs to, or None when it is gone."""
+    deliverable = db.get(PlanDeliverable, deliverable_id)
+    return simulated_client.deliverable_project(db, deliverable) if deliverable else None
 
 
 def _report_steps(
@@ -730,6 +837,8 @@ def next_steps(
             steps.extend(_planning_steps(db, project, make))
         else:
             steps.extend(_delivery_steps(db, project, make, flags))
+            for deliverable in _deliverables(db, project):
+                steps.extend(_acceptance_steps(db, deliverable, project, make, now))
         risks = select(Risk).where(
             Risk.project_id == project.id, Risk.status.in_(("proposed", "open"))
         )
@@ -791,6 +900,12 @@ def subject_steps(
         if project.stage == "planning":
             return _planning_steps(db, project, make)
         return _delivery_steps(db, project, make, flags)
+    if subject_type == DELIVERABLE:
+        deliverable = db.get(PlanDeliverable, subject_id)
+        project = deliverable_project(db, subject_id)
+        if deliverable is None or not is_live(project):
+            return []
+        return _acceptance_steps(db, deliverable, project, make, now)
     model = {
         RISK: Risk,
         PROPOSAL: ProjectProposal,
@@ -985,6 +1100,22 @@ def _client_answer(ctx: Context, proposal_id: int) -> int:
         return _skipped(ctx, "client_answer", proposal_id, str(exc), subject=PROPOSAL)
 
 
+def _client_acceptance(ctx: Context, deliverable_id: int) -> int:
+    """The simulated client's answer to an offered deliverable (item 7.6), checked again now;
+    skipped when it may not."""
+    answer = ctx.policy.acceptance_answer if ctx.policy else "accepted"
+    try:
+        return simulated_client.accept_now(
+            ctx.db,
+            deliverable_id,
+            answer=answer,
+            delay_minutes=ctx.settings.simulated_client_delay_minutes,
+            now=ctx.now or utcnow(),
+        )
+    except simulated_client.Skipped as exc:
+        return _skipped(ctx, "client_acceptance", deliverable_id, str(exc), subject=DELIVERABLE)
+
+
 REPORT_CHANGED = (
     "the project no longer needs this report drafted (a person published, withdrew or wrote it, "
     "another period fell due, or it left delivery)"
@@ -1123,6 +1254,7 @@ ACTIONS: dict[str, StepAction] = {
     # No Claude call: rules only, so neither counts against the caps.
     "submit_proposal": StepAction(_submit_proposal, uses_claude=False),
     "client_answer": StepAction(_client_answer, uses_claude=False),
+    "client_acceptance": StepAction(_client_acceptance, uses_claude=False),
     "draft_status_report": StepAction(_draft_status_report),
 }
 assert not PERSON_ONLY & ACTIONS.keys(), "a person always takes these steps (R1)"
