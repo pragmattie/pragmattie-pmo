@@ -34,6 +34,8 @@ class InboxEntryOut(BaseModel):
     created_at: datetime
     action_id: int | None
     due_at: datetime | None
+    # The gate a `pass_gate` item asks for: approval, go_ahead or acceptance.
+    gate_id: str | None = None
     # The agent's case: the facts, and a recommendation code wrote from them.
     facts: list[FactOut]
     recommendation: str

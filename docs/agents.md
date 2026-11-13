@@ -418,8 +418,21 @@ any other mode or role): an item leaves the Inbox at once when the report is pub
 sponsor opens its one-page view, and the next pass closes it, with an audit row for each raise
 and each close.
 
-**What it never does.** Decide a gate, approve, return or mark sent a proposal, record a client's
-answer, accept a risk, decide a change request, publish a status report or clear a report flag,
+**Acceptance (item 7.6).** Once the project manager offers a deliverable for acceptance,
+`client_acceptance` is that deliverable's step (subject `deliverable`) until its offer has an
+answer. For a simulated client, the simulated client answers after `SIMULATED_CLIENT_DELAY_MINUTES`
+with `agents.simulated_client.acceptance_answer` (`accepted`, or `not_accepted` with a fixed "what
+is missing" that says it is simulated); its answer is `source = simulated`, has no person, and is
+labelled "Simulated client" wherever it shows. A real client's answer goes to the project
+manager's inbox to record, and a project with no client goes to the sponsor, who accepts. When
+every code check of the acceptance gate is met for a project in delivery (every deliverable in the
+latest baseline accepted, every milestone reached, no change request waiting, no open escalation
+above the project manager), `pass_gate` asks the sponsor for the acceptance gate; the step and its
+inbox item name the gate (`gate_id`), so the Inbox opens the acceptance gate rather than the
+go-ahead gate.
+
+**What it never does.** Decide a gate, approve, return or mark sent a proposal, record a real
+client's answer, accept a risk, decide a change request, publish a status report or clear a report flag,
 whatever the policy says: those steps, and any
 step no agent may do, always go to a person. It never sends anything outside the product. It
 never deletes an inbox item: items close as `done` or `cancelled` with when and why.

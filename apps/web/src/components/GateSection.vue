@@ -7,6 +7,7 @@ import {
   type GateOutcome,
   type GateSubject,
   gateApi,
+  GATE_NAMES,
   gateVersion,
   MAX_GATE_NOTE,
   MAX_GATE_REASON,
@@ -19,7 +20,7 @@ import {
 import { ApiError, type Person } from '../lib/risks'
 import { useAuthStore } from '../stores/auth'
 
-// A stage gate: the approval gate on a request, or the go-ahead gate on a project. Each criterion
+// A stage gate: the approval gate on a request, or the go-ahead or acceptance gate on a project. Each criterion
 // with a tick or a cross, the person criteria as tick boxes with notes, and Pass, Return and
 // Decline for a role the gate lists (never on the person's own request or project). Each decision
 // asks for a reason. The ticks stay in the form until a decision is sent, and the API records them
@@ -57,9 +58,9 @@ const sendReady = computed(
 const decision = computed(() => gate.value?.latest_decision ?? null)
 const choices = computed(() => outcomeChoices(props.subject))
 const chosen = computed(() => choices.value.find((o) => o.value === outcome.value) ?? null)
-const fallbackName = computed(() =>
-  props.subject === 'project' ? 'Go-ahead gate' : 'Approval gate',
-)
+const fallbackName = computed(() => GATE_NAMES[props.subject])
+// What the dialog calls the subject.
+const noun = computed(() => (props.subject === 'request' ? 'request' : 'project'))
 
 // Keep the ticks and notes typed so far when the gate reloads; add any new person criterion.
 function syncTicks(loaded: AnyGate) {
@@ -145,7 +146,7 @@ async function send() {
 </script>
 
 <template>
-  <section class="mt-6" data-test="gate">
+  <section class="mt-6" :data-test="subject === 'acceptance' ? 'acceptance-gate' : 'gate'">
     <h2 class="text-subtitle-1 mb-2">{{ gate?.gate.name ?? fallbackName }}</h2>
     <v-alert v-if="loadError" type="info" variant="tonal" class="mb-2" data-test="gate-error">
       {{ loadError }}
@@ -231,7 +232,7 @@ async function send() {
 
     <v-dialog :model-value="outcome !== null" max-width="520" @update:model-value="outcome = null">
       <v-card v-if="chosen" data-test="gate-dialog">
-        <v-card-title>{{ chosen.title }} this {{ subject }}?</v-card-title>
+        <v-card-title>{{ chosen.title }} this {{ noun }}?</v-card-title>
         <v-card-text>
           <v-alert v-if="formError" type="error" variant="tonal" class="mb-2" data-test="gate-form-error">
             {{ formError }}

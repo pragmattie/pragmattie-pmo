@@ -18,6 +18,10 @@
   problem) anything that would leave an invalid plan: an item removed or changed that the plan no
   longer has, a milestone that isn't there, or a line not above zero. It only flushes; the route
   freezes the next baseline and commits it with the decision in one transaction.
+- `waiting_changes`: a project's change requests that are waiting, meaning submitted and not yet
+  decided (item 7.6). The one definition: the status report counts these as "change requests
+  waiting" and the acceptance gate's `no_waiting_changes` refuses while there is one, so the two
+  never disagree. A draft never submitted is not waiting.
 """
 
 from datetime import date, timedelta
@@ -27,7 +31,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import PlanDeliverable, PlanEstimateLine, PlanMilestone, ProjectPlan
+from app.models import (
+    ChangeRequest,
+    PlanDeliverable,
+    PlanEstimateLine,
+    PlanMilestone,
+    ProjectPlan,
+)
 from app.plans import CENT, compute_total
 from app.policy import ChangesPolicy
 
@@ -44,6 +54,20 @@ NO_PROJECT_MANAGER = "no_project_manager"
 
 class ChangeConflict(Exception):
     """The change can't be applied to the plan as it is now; the message names the problem."""
+
+
+# A change request waits from its submission until it is decided.
+WAITING = "submitted"
+
+
+def waiting_changes(db: Session, project_id: int) -> list[ChangeRequest]:
+    """The project's change requests waiting for a decision, oldest first."""
+    stmt = (
+        select(ChangeRequest)
+        .where(ChangeRequest.project_id == project_id, ChangeRequest.status == WAITING)
+        .order_by(ChangeRequest.id)
+    )
+    return list(db.scalars(stmt))
 
 
 def working_days(start: date, end: date) -> int:

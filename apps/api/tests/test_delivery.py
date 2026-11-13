@@ -256,7 +256,15 @@ def test_the_project_manager_moves_a_deliverable_between_the_first_three(db, pm,
     response = _status(pm[0], pid, did, status)
     assert response.status_code == 200, response.text
     assert response.json()["deliverables"] == [
-        {"id": did, "name": "Model", "milestone_id": ids[1], "status": status, "version": 2}
+        {
+            "id": did,
+            "name": "Model",
+            "milestone_id": ids[1],
+            "status": status,
+            "version": 2,
+            "acceptance": [],
+            "awaiting_answer": False,
+        }
     ]
 
 

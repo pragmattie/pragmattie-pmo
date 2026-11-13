@@ -378,8 +378,35 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
             uq["name"]: uq["column_names"]
             for uq in inspector.get_unique_constraints("status_report_reads")
         } == {"uq_status_report_reads_report_user": ["report_id", "user_id"]}
+        # 0031: deliverable acceptance, append-only rounds of offers and answers. The deliverable
+        # is not a foreign key, so its history outlives a change that removes it.
+        assert {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("deliverable_acceptances")
+        } == {
+            "fk_deliverable_acceptances_project": "projects",
+            "fk_deliverable_acceptances_recorded_by": "users",
+        }
+        assert {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("deliverable_acceptances")
+        } == {"uq_deliverable_acceptances_round": ["deliverable_id", "round", "kind"]}
+        assert {
+            ck["name"] for ck in inspector.get_check_constraints("deliverable_acceptances")
+        } == {
+            "ck_deliverable_acceptances_kind",
+            "ck_deliverable_acceptances_answer",
+            "ck_deliverable_acceptances_source",
+            "ck_deliverable_acceptances_shape",
+            "ck_deliverable_acceptances_person",
+            "ck_deliverable_acceptances_round",
+        }
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0030")
+        inspector = inspect(create_engine(get_settings().database_url))
+        assert "deliverable_acceptances" not in inspector.get_table_names()
+        assert "status_report_reads" in inspector.get_table_names()
         command.downgrade(config, "0029")
         inspector = inspect(create_engine(get_settings().database_url))
         assert "status_report_reads" not in inspector.get_table_names()

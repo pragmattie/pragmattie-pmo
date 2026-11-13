@@ -110,8 +110,9 @@ def test_only_the_simulated_client_has_an_answer():
     _refused(_with(misplaced), "unknown keys: answer")
 
 
-def test_the_proposed_file_is_todays_file_plus_the_report_flags():
-    """Item 7.5: the draft changes nothing in today's file; it adds the three report flags."""
+def test_the_proposed_file_is_todays_file_plus_client_acceptance():
+    """Item 7.6: the draft changes nothing in today's file; it adds the `client_acceptance` step
+    and the simulated client's `acceptance_answer`, drafted as `accepted`."""
     proposed = Path(__file__).resolve().parents[3] / "ci/proposed/policies/autonomy.yaml"
     if not proposed.exists():
         pytest.skip("the proposed autonomy file has been applied")
@@ -120,11 +121,58 @@ def test_the_proposed_file_is_todays_file_plus_the_report_flags():
     assert draft["version"] == today["version"]
     assert draft["steps"] == {
         **today["steps"],
-        "report_overdue_pm": {"mode": "person", "who": "project_manager"},
-        "report_overdue_sponsor": {"mode": "person", "who": "sponsor"},
-        "report_unread": {"mode": "person", "who": "sponsor"},
+        "client_acceptance": {
+            "mode": "agent",
+            "agent": "simulated_client",
+            "who": "project_manager",
+        },
     }
-    assert draft["agents"] == today["agents"]
+    agents = copy.deepcopy(today["agents"])
+    agents["simulated_client"]["acceptance_answer"] = "accepted"
+    assert draft["agents"] == agents
+
+
+def test_the_acceptance_answer_is_drafted_as_accepted_and_may_be_not_accepted():
+    """Item 7.6: `agents.simulated_client.acceptance_answer`, kept apart from `answer`."""
+    loaded = load_autonomy(autonomy_dir())
+    assert loaded.acceptance_answer == "accepted"
+    assert loaded.steps["client_acceptance"].agent == "simulated_client"
+    assert loaded.steps["client_acceptance"].who == "project_manager"
+
+    def not_accepted(data):
+        data["agents"]["simulated_client"]["acceptance_answer"] = "not_accepted"
+
+    found = parse_autonomy(_with(not_accepted))
+    assert (found.acceptance_answer, found.simulated_answer) == ("not_accepted", "accepted")
+
+
+@pytest.mark.parametrize("value", ["declined", "maybe", "", None, True, ["accepted"]])
+def test_a_bad_acceptance_answer_is_refused(value):
+    def bad(data):
+        data["agents"]["simulated_client"]["acceptance_answer"] = value
+
+    _refused(_with(bad), "agents.simulated_client.acceptance_answer")
+
+
+def test_only_the_simulated_client_answers_an_offered_deliverable():
+    def other_agent(data):
+        data["steps"]["client_acceptance"]["agent"] = "proposal_agent"
+
+    _refused(_with(other_agent), "proposal_agent can't do client_acceptance")
+
+    def misplaced(data):
+        data["agents"]["risk_agent"]["acceptance_answer"] = "accepted"
+
+    _refused(_with(misplaced), "unknown keys: acceptance_answer")
+
+
+def test_the_live_file_without_client_acceptance_is_refused():
+    """Until a person applies the draft, the live loader refuses the file (a 503 for the
+    orchestrator and the Inbox, as for 7.5)."""
+    if (APPLIED / "autonomy.yaml").read_text().count("client_acceptance:"):
+        pytest.skip("the proposed autonomy file has been applied")
+    with pytest.raises(PolicyError, match="missing steps: client_acceptance"):
+        load_autonomy(APPLIED)
 
 
 def test_floor_steps_are_fixed_in_code():
