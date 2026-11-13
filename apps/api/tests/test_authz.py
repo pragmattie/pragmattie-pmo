@@ -35,6 +35,7 @@ from app.models import (
     Base,
     ChangeRequest,
     Client,
+    DeliverableAcceptance,
     GateDecision,
     OrchestratorAction,
     PlanDeliverable,
@@ -634,6 +635,58 @@ def _delivery_sample(suffix: str = "", body: dict | None = None):
     return sample
 
 
+ACCEPTANCE_GATE = "/api/v1/projects/{project_id}/acceptance-gate"
+OFFER = f"{DELIVERY}/deliverables/{{deliverable_id}}/offer"
+ANSWER = f"{DELIVERY}/deliverables/{{deliverable_id}}/answer"
+
+
+def _acceptance_sample(what: str, body: dict):
+    """Item 7.6: the delivery sample's deliverable, ready for acceptance; for `answer`, with an
+    offer waiting. The project has no client, so its sponsor accepts."""
+
+    def sample(target: int) -> dict:
+        found = _delivery_sample(f"/deliverables/{{deliverable}}/{what}", body)(target)
+        with Session(engine) as session:
+            deliverable = session.scalar(
+                select(PlanDeliverable).order_by(PlanDeliverable.id.desc()).limit(1)
+            )
+            deliverable.status = "ready_for_acceptance"
+            plan = session.get(ProjectPlan, deliverable.plan_id)
+            if what == "answer":
+                session.add(
+                    DeliverableAcceptance(
+                        project_id=plan.project_id,
+                        deliverable_id=deliverable.id,
+                        deliverable_name=deliverable.name,
+                        round=1,
+                        kind="offer",
+                        offered_to="The sponsor",
+                        offered_on=delivery.today(),
+                        means="meeting",
+                        source="person",
+                        recorded_by=target,
+                    )
+                )
+            session.commit()
+        return found
+
+    return sample
+
+
+def _acceptance_gate_sample(body: dict | None = None):
+    """Item 7.6: a project in delivery (from `_change_sample`) at the acceptance gate."""
+
+    def sample(target: int) -> dict:
+        url = _change_sample()(target)["url"].removesuffix("/changes") + "/acceptance-gate"
+        if body is None:
+            return {"url": url}
+        with Session(engine) as session:
+            version = session.scalar(select(Project.version).order_by(Project.id.desc()).limit(1))
+        return {"url": url, "json": {**body, "version": version}}
+
+    return sample
+
+
 REPORTS = "/api/v1/projects/{project_id}/status-reports"
 REPORT = f"{REPORTS}/{{report_id}}"
 
@@ -956,6 +1009,17 @@ SAMPLES = {
     ("POST", f"{DELIVERY}/spend"): _delivery_sample(
         "/spend", {"amount": "10.00", "as_of": "2027-01-01", "note": "Finance report"}
     ),
+    ("POST", OFFER): _acceptance_sample(
+        "offer",
+        {"offered_to": "The sponsor", "offered_on": date.today().isoformat(), "means": "meeting"},
+    ),
+    ("POST", ANSWER): _acceptance_sample(
+        "answer", {"answer": "accepted", "answered_on": date.today().isoformat()}
+    ),
+    ("GET", ACCEPTANCE_GATE): _acceptance_gate_sample(),
+    ("POST", ACCEPTANCE_GATE): _acceptance_gate_sample(
+        {"outcome": "return", "reason": "Two deliverables are still being reworked"}
+    ),
     ("GET", REPORTS): _report_sample(),
     ("POST", REPORTS): _report_sample("", {"period_end": "{period_end}"}),
     ("GET", REPORT): _report_sample(status="published"),
@@ -1010,6 +1074,8 @@ CREATED = {
     ("POST", CHANGES),
     ("POST", f"{DELIVERY}/spend"),
     ("POST", REPORTS),
+    ("POST", OFFER),
+    ("POST", ANSWER),
 }
 
 # Allowed deletes answer 204.
@@ -1039,6 +1105,9 @@ GATE_DECIDERS = {
     ("POST", "/api/v1/requests/{request_id}/gate"): {Role.SPONSOR},
     ("POST", GO_AHEAD): {Role.SPONSOR},
     ("POST", f"{CHANGE}/decide"): {Role.SPONSOR},
+    # Item 7.6: the acceptance gate; and with no client, the sponsor accepts a deliverable.
+    ("POST", ACCEPTANCE_GATE): {Role.SPONSOR},
+    ("POST", ANSWER): {Role.SPONSOR},
     # Only the step's `who` may hold it: the project manager, for score_risk.
     ("POST", HOLD): {Role.PROJECT_MANAGER},
 }
@@ -1245,6 +1314,12 @@ def test_matrix_covers_the_existing_routes():
         ("POST", f"{DELIVERY}/spend"),
     ):
         assert by_method[(method, path)] == Action.PROJECT_WRITE
+    # Item 7.6: offering is the project manager's; the answer route lets in either permission and
+    # then checks who answers this project's deliverables.
+    assert by_method[("POST", OFFER)] == Action.PROJECT_WRITE
+    assert by_method[("POST", ANSWER)] == frozenset({Action.PROJECT_WRITE, Action.GATE_DECIDE})
+    assert by_method[("GET", ACCEPTANCE_GATE)] == Action.PROJECT_READ
+    assert by_method[("POST", ACCEPTANCE_GATE)] == Action.GATE_DECIDE
     assert by_method[("POST", "/api/v1/orchestrator/run")] == Action.ORCHESTRATOR_RUN
     # Every role reads its own inbox; an admin's or auditor's is always empty.
     assert by_method[("GET", "/api/v1/inbox")] == Action.PROJECT_READ
