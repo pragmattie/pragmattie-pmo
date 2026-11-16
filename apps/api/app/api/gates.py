@@ -43,6 +43,14 @@ manage). `pass` moves the project to `closure`; `return` keeps it in delivery; `
 status to `cancelled` and leaves its stage at delivery. Its code criteria (`app.gates`): every
 deliverable in the latest baseline accepted, every milestone reached, no change request waiting,
 and no open risk escalated beyond the project manager waiting.
+
+The close-out gate (item 7.7): `GET` and `POST /projects/{id}/close-out-gate`. Only a project in
+closure is decided, by the same shared rules. `pass` sets the project to `closed` and, in the same
+transaction, freezes its closure report as it is then (its figures read once more), with its own
+audit row; `return` keeps it in closure; `decline` sets its status to `cancelled`. Its code
+criteria (`app.gates`): the closure report exists and has no unreviewed agent section, every
+benefit has a value now or an owner and date to measure it, at least one lesson is recorded, and
+no risk is still proposed or open.
 """
 
 import logging
@@ -52,6 +60,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import closure
 from app.api.intake import (
     AUDIT_SUBJECT,
     FINAL,
@@ -274,6 +283,59 @@ class AcceptanceSubject(ProjectSubject):
 
     def after_decision(self, db: Session, decision: GateDecision) -> dict[str, Any]:
         return {}
+
+
+CLOSE_OUT_GATE = "close_out"
+CLOSE_OUT_UNAVAILABLE = (
+    "the close-out gate isn't available yet: a person needs to apply the gates policy file"
+)
+NOT_IN_CLOSURE = "the close-out gate is decided while the project is in closure"
+CLOSE_OUT_UNMET = "this project can't pass the close-out gate until every criterion is met"
+
+
+class CloseOutSubject(ProjectSubject):
+    """A project at the close-out gate (item 7.7): from closure to closed."""
+
+    gate_id = CLOSE_OUT_GATE
+    unavailable = CLOSE_OUT_UNAVAILABLE
+    unmet = CLOSE_OUT_UNMET
+
+    @staticmethod
+    def load(db: Session, subject_id: int, *, for_update: bool = False) -> "CloseOutSubject":
+        return CloseOutSubject(ProjectSubject.load(db, subject_id, for_update=for_update).row)
+
+    def refusals(self, version: int) -> list[tuple[str, bool, str]]:
+        return [
+            ("stale_version", version != self.row.version, PROJECT_STALE),
+            ("cancelled", self.row.status == CANCELLED, PROJECT_CANCELLED),
+            ("not_in_closure", self.row.stage != CLOSURE, NOT_IN_CLOSURE),
+        ]
+
+    def apply(self, db: Session, user: User, outcome: str) -> None:
+        if outcome == "pass":
+            self.row.stage = closure.CLOSED
+        elif outcome == "decline":
+            self.row.status = CANCELLED
+
+    def after_decision(self, db: Session, decision: GateDecision) -> dict[str, Any]:
+        """A pass freezes the closure report as it is now, in the same transaction as the
+        decision; the closed project shows that snapshot."""
+        if decision.outcome != "pass":
+            return {}
+        report = closure.report_of(db, self.row.id, lock=True)
+        if report is None:  # closure_report_reviewed is unmet without one
+            raise RuntimeError("a project passed the close-out gate without a closure report")
+        before = closure.snapshot(report)
+        closure.freeze(db, report, self.row)
+        closure.record_report(
+            db,
+            report,
+            actor_user_id=decision.decided_by,
+            before=before,
+            action="frozen",
+            decision_id=decision.id,
+        )
+        return {"closure_report_id": report.id, "closure_report_version": report.version}
 
 
 Subject = RequestSubject | ProjectSubject
@@ -753,5 +815,37 @@ def decide_acceptance_gate(
 ) -> ProjectGateOut:
     gate, digest = _gate(AcceptanceSubject)
     subject = _locked(AcceptanceSubject, db, project_id)
+    criteria = _decide(db, subject, gate, digest, body, user)
+    return _project_out(db, gate, digest, subject, criteria)
+
+
+# --- The close-out gate: a project in closure (item 7.7)
+
+
+@project_router.get("/{project_id}/close-out-gate", response_model=ProjectGateOut)
+def get_close_out_gate(
+    project_id: int,
+    _user: Annotated[User, Depends(require(Action.PROJECT_READ))],
+    db: Annotated[Session, Depends(get_db)],
+) -> ProjectGateOut:
+    gate, digest = _gate(CloseOutSubject)
+    subject = CloseOutSubject.load(db, project_id)
+    return _project_out(db, gate, digest, subject, _evaluate(db, gate, subject, {}))
+
+
+@project_router.post("/{project_id}/close-out-gate", response_model=ProjectGateOut)
+def decide_close_out_gate(
+    project_id: int,
+    body: ProjectGateDecisionIn,
+    user: Annotated[
+        User,
+        Depends(
+            require_audited(Action.GATE_DECIDE, _refusal_recorder(CloseOutSubject, "project_id"))
+        ),
+    ],
+    db: Annotated[Session, Depends(get_db)],
+) -> ProjectGateOut:
+    gate, digest = _gate(CloseOutSubject)
+    subject = _locked(CloseOutSubject, db, project_id)
     criteria = _decide(db, subject, gate, digest, body, user)
     return _project_out(db, gate, digest, subject, criteria)
