@@ -522,6 +522,35 @@ def test_a_suggestion_is_recorded_edited_or_discarded_by_a_person(db, web, pm):
     assert refusals(db) == ["discarded", "not_suggested"]
 
 
+def test_recording_a_suggestion_can_offer_it_as_a_risk(db, web, pm):
+    pid = closing_project(db, pm)
+    suggestions = [
+        Lesson(
+            project_id=pid,
+            category="ai",
+            what_happened=f"The model drifted {word}.",
+            do_differently="Monitor it weekly.",
+            source="agent",
+            status="suggested",
+        )
+        for word in ("once", "twice")
+    ]
+    db.add_all(suggestions)
+    db.commit()
+    url = LESSONS.format(pid=pid)
+    plain = web.post(f"{url}/{suggestions[0].id}/record", json={"version": 1})
+    assert plain.json()["suggest_as_risk"] is False
+    offered = web.post(
+        f"{url}/{suggestions[1].id}/record", json={"version": 1, "suggest_as_risk": True}
+    )
+    assert offered.status_code == 200
+    assert offered.json()["suggest_as_risk"] is True and offered.json()["status"] == "recorded"
+    db.expire_all()
+    row = db.scalars(select(AuditDecision).order_by(AuditDecision.id.desc())).first()
+    assert row.action_taken["action"] == "lesson_confirmed"
+    assert row.output["suggest_as_risk"] is True
+
+
 # --- A closed project refuses every write
 
 

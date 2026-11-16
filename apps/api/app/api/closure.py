@@ -21,7 +21,7 @@ lessons. Figures come from the records (`app.closure`), as a status report's do 
   person: the agent has no such field.
 - `POST /projects/{id}/lessons` (`project:write`): record a lesson. `PATCH .../lessons/{lid}`
   edits one (an agent's suggestion edited is recorded by the person), `POST .../record` records a
-  suggestion as it is, and `POST .../discard` discards a suggestion.
+  suggestion as it is (with whether to offer it as a risk for future projects), and `POST .../discard` discards a suggestion.
 
 The report, its benefits and the agent work only for a project in `closure`; lessons are recorded
 in `delivery` or `closure`. Anything else is refused (409), and once the project is `closed` every
@@ -61,6 +61,7 @@ from app.schemas.closure import (
     LessonEditIn,
     LessonIn,
     LessonOut,
+    LessonRecordIn,
     LessonVersionIn,
 )
 
@@ -726,14 +727,16 @@ def _suggestion(
 
 @router.post("/{project_id}/lessons/{lesson_id}/record", response_model=LessonOut)
 def confirm_lesson(
-    project_id: int, lesson_id: int, body: LessonVersionIn, user: LessonRecorder, db: Db
+    project_id: int, lesson_id: int, body: LessonRecordIn, user: LessonRecorder, db: Db
 ) -> LessonOut:
-    """A person records an agent's suggested lesson as it is."""
+    """A person records an agent's suggested lesson as it is, choosing whether to offer it to
+    future projects as a suggested risk (off unless they say so)."""
     action = "confirm_lesson"
     project = _locked_project(db, project_id)
     lesson = _locked_lesson(db, user, project, lesson_id, body.version, action)
     _suggestion(db, user, project, lesson, action, "recorded as it is")
     before = rules.lesson_snapshot(lesson)
+    lesson.suggest_as_risk = body.suggest_as_risk
     lesson.status = RECORDED
     lesson.reviewed_by = user.id
     lesson.reviewed_at = utcnow()

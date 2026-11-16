@@ -143,6 +143,7 @@ async function mountAt(found: Closure, role = 'project_manager') {
         return json({ items: [{ id: 7, display_name: 'Pat Manager' }], total: 1, limit: 100, offset: 0 })
       }
       if (url.pathname.endsWith('/lessons/3/record')) return json({ ...found.lessons[0], status: 'recorded' })
+      if (url.pathname.endsWith('/lessons/3')) return json({ ...found.lessons[0], status: 'recorded' })
       if (url.pathname.startsWith('/api/v1/projects/5/closure')) return json(found)
       return json({ detail: `unexpected ${url.pathname}` }, 404)
     }),
@@ -271,12 +272,64 @@ describe('the closure report page', () => {
   it('records an agent suggestion as a lesson', async () => {
     const { sent } = await mountAt(closure())
     expect(find('lesson-status')?.textContent).toContain('Agent suggestion, not recorded')
+    const offer = find('record-as-risk')?.querySelector('input') as HTMLInputElement
+    expect(offer.checked).toBe(false)
     await click('record-lesson')
     expect(sent[0]).toEqual({
       method: 'POST',
       path: '/api/v1/projects/5/lessons/3/record',
-      body: { version: 1 },
+      body: { version: 1, suggest_as_risk: false },
     })
+  })
+
+  it('records an agent suggestion offered as a risk for future projects', async () => {
+    const { sent } = await mountAt(closure())
+    const offer = find('record-as-risk')?.querySelector('input') as HTMLInputElement
+    offer.click()
+    await flushPromises()
+    await click('record-lesson')
+    expect(sent[0]).toEqual({
+      method: 'POST',
+      path: '/api/v1/projects/5/lessons/3/record',
+      body: { version: 1, suggest_as_risk: true },
+    })
+  })
+
+  it('edits a recorded lesson, flag included, with its version', async () => {
+    const recorded = closure()
+    recorded.lessons[0] = { ...recorded.lessons[0], status: 'recorded', source: 'person', version: 2 }
+    const { sent } = await mountAt(recorded)
+    expect(find('record-lesson')).toBeNull()
+    await click('edit-lesson')
+    const what = find('edit-what')?.querySelector('textarea') as HTMLTextAreaElement
+    expect(what.value).toBe('The regions moved twice.')
+    what.value = 'The regions moved twice in a month.'
+    what.dispatchEvent(new Event('input'))
+    ;(find('edit-as-risk')?.querySelector('input') as HTMLInputElement).click()
+    await flushPromises()
+    await click('save-lesson')
+    expect(sent).toEqual([
+      {
+        method: 'PATCH',
+        path: '/api/v1/projects/5/lessons/3',
+        body: {
+          version: 2,
+          category: 'scope',
+          what_happened: 'The regions moved twice in a month.',
+          do_again: null,
+          do_differently: 'Agree regions first.',
+          suggest_as_risk: true,
+        },
+      },
+    ])
+  })
+
+  it('offers no lesson edit for a discarded lesson', async () => {
+    const dropped = closure()
+    dropped.lessons[0] = { ...dropped.lessons[0], status: 'discarded' }
+    await mountAt(dropped)
+    expect(find('edit-lesson')).toBeNull()
+    expect(find('record-as-risk')).toBeNull()
   })
 
   it('shows a sponsor the report without any write', async () => {
@@ -301,6 +354,7 @@ describe('the closure report page', () => {
     expect(find('measure')).toBeNull()
     expect(find('lesson-form')).toBeNull()
     expect(find('record-lesson')).toBeNull()
+    expect(find('edit-lesson')).toBeNull()
   })
 
   it('offers to start the report in closure when there is none', async () => {

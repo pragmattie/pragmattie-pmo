@@ -14,6 +14,7 @@ import {
   closureApi,
   type Lesson,
   type LessonCategory,
+  type LessonInput,
   LESSON_STATUS_TEXT,
   lessonsOpen,
   MAX_SECTION,
@@ -165,8 +166,49 @@ function addLesson() {
   }, 'Lesson recorded.')
 }
 
+// Only lessons flagged as a risk for future projects reach the risk agent, so recording an
+// agent's suggestion asks whether to offer it; the choice is off unless a person ticks it.
+const offerAsRisk = ref<Record<number, boolean>>({})
+
 const recordLesson = (item: Lesson) =>
-  write(() => closureApi.recordLesson(projectId.value, item), 'Lesson recorded.')
+  write(
+    () => closureApi.recordLesson(projectId.value, item, !!offerAsRisk.value[item.id]),
+    'Lesson recorded.',
+  )
+
+// The lesson being edited: any lesson not discarded, the flag included, while the project is open.
+const editing = ref<Lesson | null>(null)
+const edited = ref<LessonInput>({
+  category: 'scope',
+  what_happened: '',
+  do_again: null,
+  do_differently: null,
+  suggest_as_risk: false,
+})
+
+function startEditing(item: Lesson) {
+  editing.value = item
+  edited.value = {
+    category: item.category,
+    what_happened: item.what_happened,
+    do_again: item.do_again,
+    do_differently: item.do_differently,
+    suggest_as_risk: item.suggest_as_risk,
+  }
+}
+
+function saveLesson() {
+  const item = editing.value!
+  const input = {
+    category: edited.value.category,
+    what_happened: edited.value.what_happened.trim(),
+    do_again: edited.value.do_again?.trim() || null,
+    do_differently: edited.value.do_differently?.trim() || null,
+    suggest_as_risk: edited.value.suggest_as_risk,
+  }
+  editing.value = null
+  write(() => closureApi.editLesson(projectId.value, item, input), 'Lesson saved.')
+}
 const discardLesson = (item: Lesson) =>
   write(() => closureApi.discardLesson(projectId.value, item), 'Lesson discarded.')
 
@@ -469,25 +511,85 @@ const flagsBySection = computed(() => {
           <p v-if="item.do_differently" class="text-body-2">
             Do differently: {{ item.do_differently }}
           </p>
-          <div v-if="lessonsEditable && item.status === 'suggested'">
+          <v-checkbox
+            v-if="lessonsEditable && item.status === 'suggested' && editing?.id !== item.id"
+            v-model="offerAsRisk[item.id]"
+            label="Suggest as a risk for future projects"
+            density="compact"
+            hide-details
+            data-test="record-as-risk"
+          />
+          <div v-if="lessonsEditable && item.status !== 'discarded' && editing?.id !== item.id">
+            <template v-if="item.status === 'suggested'">
+              <v-btn
+                size="small"
+                variant="text"
+                :disabled="busy"
+                data-test="record-lesson"
+                @click="recordLesson(item)"
+              >
+                Record
+              </v-btn>
+              <v-btn
+                size="small"
+                variant="text"
+                :disabled="busy"
+                data-test="discard-lesson"
+                @click="discardLesson(item)"
+              >
+                Discard
+              </v-btn>
+            </template>
             <v-btn
               size="small"
               variant="text"
               :disabled="busy"
-              data-test="record-lesson"
-              @click="recordLesson(item)"
+              data-test="edit-lesson"
+              @click="startEditing(item)"
             >
-              Record
+              Edit
             </v-btn>
-            <v-btn
-              size="small"
-              variant="text"
-              :disabled="busy"
-              data-test="discard-lesson"
-              @click="discardLesson(item)"
-            >
-              Discard
+          </div>
+          <div v-if="lessonsEditable && editing?.id === item.id" class="mt-2" data-test="lesson-edit">
+            <v-select
+              v-model="edited.category"
+              :items="CATEGORIES"
+              item-title="title"
+              item-value="value"
+              label="Category"
+              density="compact"
+            />
+            <v-textarea
+              v-model="edited.what_happened"
+              label="What happened"
+              rows="2"
+              density="compact"
+              data-test="edit-what"
+            />
+            <v-textarea
+              v-model="edited.do_again"
+              label="What we would do again"
+              rows="2"
+              density="compact"
+              data-test="edit-again"
+            />
+            <v-textarea
+              v-model="edited.do_differently"
+              label="What we would do differently"
+              rows="2"
+              density="compact"
+              data-test="edit-differently"
+            />
+            <v-checkbox
+              v-model="edited.suggest_as_risk"
+              label="Suggest as a risk for future projects"
+              density="compact"
+              data-test="edit-as-risk"
+            />
+            <v-btn color="primary" size="small" :disabled="busy" data-test="save-lesson" @click="saveLesson">
+              Save
             </v-btn>
+            <v-btn size="small" variant="text" @click="editing = null">Cancel</v-btn>
           </div>
         </v-card>
         <v-card v-if="lessonsEditable" variant="outlined" class="pa-3" data-test="lesson-form">

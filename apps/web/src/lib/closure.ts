@@ -180,8 +180,16 @@ export const closureApi = {
     }),
   addLesson: (projectId: number, input: LessonInput) =>
     call<Lesson>(`${base(projectId)}/lessons`, post(input)),
-  recordLesson: (projectId: number, lesson: Lesson) =>
-    call<Lesson>(`${base(projectId)}/lessons/${lesson.id}/record`, post({ version: lesson.version })),
+  recordLesson: (projectId: number, lesson: Lesson, suggestAsRisk: boolean) =>
+    call<Lesson>(
+      `${base(projectId)}/lessons/${lesson.id}/record`,
+      post({ version: lesson.version, suggest_as_risk: suggestAsRisk }),
+    ),
+  editLesson: (projectId: number, lesson: Lesson, input: LessonInput) =>
+    call<Lesson>(`${base(projectId)}/lessons/${lesson.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ version: lesson.version, ...input }),
+    }),
   discardLesson: (projectId: number, lesson: Lesson) =>
     call<Lesson>(
       `${base(projectId)}/lessons/${lesson.id}/discard`,

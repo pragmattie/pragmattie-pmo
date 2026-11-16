@@ -77,6 +77,11 @@ class LessonVersionIn(_Input):
     version: Version
 
 
+class LessonRecordIn(LessonVersionIn):
+    # Whether the recorded suggestion is offered to future projects as a suggested risk.
+    suggest_as_risk: bool = False
+
+
 class BenefitOut(BaseModel):
     benefit_id: int
     position: int
