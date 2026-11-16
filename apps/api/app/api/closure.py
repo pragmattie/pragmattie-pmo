@@ -21,7 +21,8 @@ lessons. Figures come from the records (`app.closure`), as a status report's do 
   person: the agent has no such field.
 - `POST /projects/{id}/lessons` (`project:write`): record a lesson. `PATCH .../lessons/{lid}`
   edits one (an agent's suggestion edited is recorded by the person), `POST .../record` records a
-  suggestion as it is (with whether to offer it as a risk for future projects), and `POST .../discard` discards a suggestion.
+  suggestion as it is (with whether to offer it as a risk for future projects), and
+  `POST .../discard` discards a suggestion.
 
 The report, its benefits and the agent work only for a project in `closure`; lessons are recorded
 in `delivery` or `closure`. Anything else is refused (409), and once the project is `closed` every
