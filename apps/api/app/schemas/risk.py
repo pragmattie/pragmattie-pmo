@@ -153,6 +153,8 @@ class RiskOut(BaseModel):
     suggested_impact_reason: str | None = None
     suggested_model: str | None = None
     suggested_audit_id: int | None = None
+    # The lesson of a closed project the risk agent suggested this risk from (item 7.7).
+    source_lesson_id: int | None = None
     version: int
     created_at: datetime
     updated_at: datetime

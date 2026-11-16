@@ -33,6 +33,7 @@ AGENTS = (
     "planner_agent",
     "simulated_client",
     "status_report_agent",
+    "closure_agent",
 )
 
 # Every step, and the agents that may do it. A step with no agents can only be `person`.
@@ -67,6 +68,9 @@ STEP_AGENTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         # for a simulated client only; a real client's answer, and the sponsor's for a project
         # with no client, is a person's to record.
         "client_acceptance": ("simulated_client",),
+        # Closing a project (item 7.7): the closure agent drafts the closure report's text and
+        # suggests lessons, once per project; a person reviews them and the sponsor closes it.
+        "draft_closure_report": ("closure_agent",),
     }
 )
 STEPS = tuple(STEP_AGENTS)

@@ -46,6 +46,12 @@ agent steps the autonomy policy allows, and hands every other step to a person.
   with no client it goes to the sponsor, who accepts. Once every code check of the acceptance gate
   (`app.gates.ACCEPTANCE_CHECKS`) is met for a project in delivery, `pass_gate` asks the sponsor
   for the acceptance gate, as it does for the go-ahead gate in planning. The step names its gate.
+- Closure (item 7.7): a project in closure (not cancelled) is read here too, though it isn't live
+  for anything else. `draft_closure_report` makes its closure report when it has none (no person;
+  its own audit row) and has the closure agent fill its empty sections and suggest lessons, once
+  per project: never again once the agent has drafted for it in `enforce`, nor when every section
+  is written. Once every code check of the close-out gate (`app.gates.CLOSE_OUT_CHECKS`) is met,
+  `pass_gate` asks the sponsor for the close-out gate.
 
 Run it with `python -m app.orchestrator once` (one pass) or `run` (a pass every
 `ORCHESTRATOR_INTERVAL_SECONDS` until Ctrl+C).
@@ -66,11 +72,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import acceptance, delivery, simulated_client
+from app import acceptance, closure, delivery, simulated_client
 from app import policy as policies
 from app import proposals as proposal_rules
 from app import reports as report_rules
 from app.agents import (
+    closure_agent,
     intake_agent,
     planner_agent,
     proposal_agent,
@@ -90,7 +97,7 @@ from app.autonomy import (
 )
 from app.changes import working_days
 from app.config import Settings, get_settings
-from app.gates import ACCEPTANCE_CHECKS, GO_AHEAD_CHECKS, PROJECT_CHECKS
+from app.gates import ACCEPTANCE_CHECKS, CLOSE_OUT_CHECKS, GO_AHEAD_CHECKS, PROJECT_CHECKS
 from app.models import (
     AuditDecision,
     ChangeRequest,
@@ -140,6 +147,7 @@ DELIVERABLE = "deliverable"
 # The gate a project's `pass_gate` step asks for, by the project's stage.
 GO_AHEAD_GATE = "go_ahead"
 ACCEPTANCE_GATE = "acceptance"
+CLOSE_OUT_GATE = "close_out"
 SPONSOR = "sponsor"
 
 MAX_RETRIES = 3
@@ -758,6 +766,61 @@ def _delivery_steps(
     return steps
 
 
+# --- Closure (item 7.7)
+
+CLOSURE_DUE = "the project is in closure and its closure report's text isn't drafted"
+
+
+def in_closure(project: Project | None) -> bool:
+    return project is not None and closure.refusal(project) is None
+
+
+def _closure_drafted(db: Session, report_id: int) -> bool:
+    """Whether the closure agent has saved a draft (an `enforce` run) on the report."""
+    stmt = select(AuditDecision.action_taken).where(
+        AuditDecision.agent == closure_agent.AGENT,
+        AuditDecision.subject_type == closure_agent.AUDIT_SUBJECT,
+        AuditDecision.subject_id == str(report_id),
+        AuditDecision.status == "ok",
+    )
+    return any(
+        isinstance(action, dict) and action.get("mode") == "enforce" for action in db.scalars(stmt)
+    )
+
+
+def closure_due(db: Session, project: Project) -> str | None:
+    """Why `draft_closure_report` applies to the project now; None when it doesn't: the project
+    isn't in closure, the agent already drafted its report, or no section is empty."""
+    if not in_closure(project):
+        return None
+    report = closure.report_of(db, project.id)
+    if report is not None and (
+        _closure_drafted(db, report.id) or not closure.empty_sections(report)
+    ):
+        return None
+    if report is None and report_rules.first_baseline(db, project.id) is None:
+        return None
+    return CLOSURE_DUE
+
+
+def close_out_checks_met(db: Session, project: Project) -> bool:
+    """Whether every code check of the close-out gate is met for the project."""
+    return all(PROJECT_CHECKS[name](db, project).met for name in CLOSE_OUT_CHECKS)
+
+
+def _closure_steps(db: Session, project: Project, make: Callable) -> list[NextStep]:
+    if not in_closure(project):
+        return []
+    steps = []
+    due = closure_due(db, project)
+    if due is not None:
+        steps.append(make("draft_closure_report", PROJECT, project.id, due))
+    if close_out_checks_met(db, project):
+        reason = f"the {len(CLOSE_OUT_CHECKS)} close-out checks are met"
+        steps.append(make("pass_gate", PROJECT, project.id, reason, gate=CLOSE_OUT_GATE))
+    return steps
+
+
 def _deliverables(db: Session, project: Project) -> list[PlanDeliverable]:
     stmt = (
         select(PlanDeliverable)
@@ -855,6 +918,9 @@ def next_steps(
         )
         for report in db.scalars(reports.order_by(StatusReport.id)):
             steps.extend(_report_steps(db, report, make, flags))
+    closing = select(Project).where(Project.status != CANCELLED, Project.stage == closure.CLOSURE)
+    for project in db.scalars(closing.order_by(Project.id)):
+        steps.extend(_closure_steps(db, project, make))
     return steps
 
 
@@ -895,6 +961,8 @@ def subject_steps(
         return _request_steps(db, request, make) if request is not None else []
     if subject_type == PROJECT:
         project = db.get(Project, subject_id)
+        if in_closure(project):
+            return _closure_steps(db, project, make)
         if not is_live(project):
             return []
         if project.stage == "planning":
@@ -1161,6 +1229,47 @@ def _draft_status_report(ctx: Context, project_id: int) -> int:
     return result.audit_id
 
 
+CLOSURE_CHANGED = (
+    "the project no longer needs its closure report drafted (a person wrote it, the agent "
+    "already drafted it, or it left closure)"
+)
+
+
+def _draft_closure_report(ctx: Context, project_id: int) -> int:
+    """Draft the closure report (item 7.7): make it when the project has none (no person; its
+    own audit row), then have the closure agent fill its empty sections and suggest lessons,
+    for a person to review. Skipped, changing nothing, when the step no longer applies."""
+    db = ctx.db
+    project = db.get(Project, project_id, with_for_update=True, populate_existing=True)
+    due = closure_due(db, project) if project is not None else None
+    if due is None or due[:REASON_MAX] != ctx.planned_reason:
+        return _skipped(ctx, "draft_closure_report", project_id, CLOSURE_CHANGED, subject=PROJECT)
+    report = closure.report_of(db, project.id)
+    if report is None:
+        report = closure.new_report(db, project, created_by=None)
+        closure.record_report(
+            db,
+            report,
+            actor_user_id=None,
+            before=None,
+            action="created",
+            trigger=TRIGGER,
+            by=ORCHESTRATOR,
+            step="draft_closure_report",
+        )
+    result = closure_agent.run(
+        db,
+        ctx.client,
+        report,
+        settings=ctx.settings,
+        save_it=True,
+        actor_user_id=None,
+        trigger=TRIGGER,
+        only_empty=True,
+    )
+    return result.audit_id
+
+
 SCORE_RISK_SKIPPED = "the risk agent may no longer score this risk"
 LOW_RISK_CHANGED = (
     "the risk changed while the window waited (no longer proposed, scored by a person, needs "
@@ -1256,6 +1365,7 @@ ACTIONS: dict[str, StepAction] = {
     "client_answer": StepAction(_client_answer, uses_claude=False),
     "client_acceptance": StepAction(_client_acceptance, uses_claude=False),
     "draft_status_report": StepAction(_draft_status_report),
+    "draft_closure_report": StepAction(_draft_closure_report),
 }
 assert not PERSON_ONLY & ACTIONS.keys(), "a person always takes these steps (R1)"
 
