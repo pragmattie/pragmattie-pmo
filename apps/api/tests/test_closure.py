@@ -246,7 +246,16 @@ def test_the_figures_match_the_baselines_for_a_project_with_two_approved_changes
 
 def test_the_spent_percentage_rounds_half_up(db, web, pm):
     pid = closing_project(db, pm)
-    db.execute(update(ProjectSpend).where(ProjectSpend.project_id == pid).values(amount="1000.05"))
+    # Spend rows are append-only: a newer entry, which the report reads as the final spend.
+    db.add(
+        ProjectSpend(
+            project_id=pid,
+            amount="1000.05",
+            as_of=date(2027, 6, 1),
+            note="Final, corrected",
+            created_by=pm.id,
+        )
+    )
     db.commit()
     figures = _figures(create(web, pid).json())
     assert figures["final_baseline_total"]["value"] == "1000.00"
@@ -388,9 +397,48 @@ def test_a_person_enters_a_benefits_value_now_with_its_date_and_version(db, web,
     rows = db.scalars(
         select(AuditDecision).where(AuditDecision.subject_type == "closure_benefit")
     ).all()
-    assert [(r.status, r.version) for r in rows] == [("ok", 1), ("rejected", 1), ("ok", 2)]
+    assert [(r.status, r.version) for r in rows] == [
+        ("rejected", 0),
+        ("ok", 1),
+        ("rejected", 1),
+        ("ok", 2),
+    ]
     # The value case itself is never changed.
     assert db.get(ValueCaseBenefit, bid).current_value == "ten days"
+
+
+def test_each_benefit_refusal_is_audited_with_its_code(db, web, pm):
+    pid = closing_project(db, pm)
+    url = REPORT.format(pid=pid) + f"/benefits/{_benefit_id(db)}"
+    gone = User(
+        email="left@pmo.example",
+        display_name="Left",
+        password_hash="not-a-real-hash",
+        role="viewer",
+        is_active=False,
+    )
+    db.add(gone)
+    db.commit()
+    bodies = [
+        {"value_now": "three days"},
+        {"measure_owner_id": pm.id},
+        {},
+        {"measure_owner_id": gone.id, "measure_by": "2027-09-01"},
+    ]
+    for body in bodies:
+        refused = web.put(url, json={"version": 0, **body})
+        assert refused.status_code == 422, refused.text
+    db.expire_all()
+    rows = db.scalars(
+        select(AuditDecision)
+        .where(AuditDecision.subject_type == "closure_benefit")
+        .order_by(AuditDecision.id)
+    ).all()
+    assert [(r.status, r.action_taken["action"], r.action_taken["refusal"]) for r in rows] == [
+        ("rejected", "measure_benefit_refused", code)
+        for code in ("value_needs_date", "owner_needs_date", "nothing_entered", "bad_owner")
+    ]
+    assert db.scalar(select(func.count()).select_from(ClosureBenefit)) == 0
 
 
 # --- Lessons
@@ -428,7 +476,21 @@ def test_lessons_are_recorded_in_delivery_and_closure_only(db, web, pm):
     assert web.post(LESSONS.format(pid=planning), json=_lesson()).status_code == 409
     no_takeaway = web.post(LESSONS.format(pid=in_delivery), json=_lesson(do_differently=None))
     assert no_takeaway.status_code == 422
-    assert refusals(db) == ["lessons_not_open"]
+    assert refusals(db) == ["lessons_not_open", "needs_takeaway"]
+    lesson_id = made.json()["id"]
+    bare = {**_lesson(do_differently=None), "version": 1}
+    edit = web.patch(f"{LESSONS.format(pid=in_delivery)}/{lesson_id}", json=bare)
+    assert edit.status_code == 422
+    db.expire_all()
+    row = db.scalars(select(AuditDecision).order_by(AuditDecision.id.desc())).first()
+    assert (row.status, row.subject_type, row.subject_id, row.version) == (
+        "rejected",
+        "lesson",
+        str(lesson_id),
+        1,
+    )
+    assert row.action_taken["action"] == "edit_lesson_refused"
+    assert row.action_taken["refusal"] == "needs_takeaway"
 
 
 def test_a_suggestion_is_recorded_edited_or_discarded_by_a_person(db, web, pm):

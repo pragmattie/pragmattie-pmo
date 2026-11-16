@@ -528,17 +528,26 @@ def measure_benefit(
         )
     problem = None
     if (body.value_now is None) != (body.value_now_on is None):
-        problem = VALUE_NEEDS_DATE
+        problem = ("value_needs_date", VALUE_NEEDS_DATE)
     elif (body.measure_owner_id is None) != (body.measure_by is None):
-        problem = OWNER_NEEDS_DATE
+        problem = ("owner_needs_date", OWNER_NEEDS_DATE)
     elif body.value_now is None and body.measure_owner_id is None:
-        problem = NOTHING_ENTERED
+        problem = ("nothing_entered", NOTHING_ENTERED)
     elif body.measure_owner_id is not None:
         owner = db.get(User, body.measure_owner_id)
         if owner is None or not owner.is_active:
-            problem = BAD_OWNER
+            problem = ("bad_owner", BAD_OWNER)
     if problem is not None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, problem)
+        raise _refuse(
+            db,
+            user,
+            project,
+            action=action,
+            refusal=problem[0],
+            code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=problem[1],
+            subject=subject,
+        )
     before = rules.benefit_snapshot(row) if row else None
     if row is None:
         row = ClosureBenefit(project_id=project.id, benefit_id=benefit_id)
@@ -618,9 +627,25 @@ def _locked_lesson(
     return lesson
 
 
-def _takeaway(body: LessonIn) -> None:
+def _takeaway(
+    db: Session,
+    user: User,
+    project: Project,
+    body: LessonIn,
+    action: str,
+    lesson: Lesson | None = None,
+) -> None:
     if body.do_again is None and body.do_differently is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, NEEDS_TAKEAWAY)
+        raise _refuse(
+            db,
+            user,
+            project,
+            action=action,
+            refusal="needs_takeaway",
+            code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=NEEDS_TAKEAWAY,
+            subject=_lesson_subject(lesson) if lesson is not None else None,
+        )
 
 
 def _record_lesson(
@@ -644,7 +669,7 @@ def record_lesson(project_id: int, body: LessonIn, user: LessonWriter, db: Db) -
     action = "record_lesson"
     project = _locked_project(db, project_id)
     _lessons_open(db, user, project, action)
-    _takeaway(body)
+    _takeaway(db, user, project, body, action)
     now = utcnow()
     lesson = Lesson(
         project_id=project.id,
@@ -670,7 +695,7 @@ def edit_lesson(
     action = "edit_lesson"
     project = _locked_project(db, project_id)
     lesson = _locked_lesson(db, user, project, lesson_id, body.version, action)
-    _takeaway(body)
+    _takeaway(db, user, project, body, action, lesson)
     before = rules.lesson_snapshot(lesson)
     for name, value in body.model_dump(exclude={"version"}).items():
         setattr(lesson, name, value)
