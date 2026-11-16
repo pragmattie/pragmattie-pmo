@@ -13,7 +13,32 @@ column, each in a state the orchestrator has a next step for:
 - one whose client accepted its proposal, with every go-ahead check met (its go-ahead gate);
 - one in delivery with baseline 1 and a small pending change request, raised by the second
   project manager, which the project's own project manager decides;
-- and one project in closure and one closed, which wait on nobody.
+- and one project in closure and one closed.
+
+The second half of a project's life is seeded too (item 7.8), so reports, acceptance and closure
+can be shown without anyone typing them in first:
+
+- the project in delivery has two milestones reached (one a few working days late), deliverables
+  in each status up to ready for acceptance, three spend entries and two published status reports
+  for past periods (the second amber on schedule). Its draft for the current period is due now
+  and empty, so the orchestrator has the status report agent draft it on its first pass. One of
+  its deliverables waits on an offer to its simulated client, so the simulated client's answer
+  comes on the first pass too. Its history is placed relative to the day the seed runs
+  (`delivery_start`): its third weekly report always falls due on the latest Friday on or before
+  today, so no period is overdue and nothing waits on a period that hasn't ended;
+- the project in closure has every deliverable accepted, both milestones reached, a reviewed
+  closure report with one benefit measured and one with an owner and date to measure it, and two
+  recorded lessons: every close-out check is met and only the sponsor's own tick is left;
+- the closed project has a frozen closure report, its benefit measured and three recorded
+  lessons, two of them offered to the risk agent for new projects.
+
+Both projects that finished came from an approved request with a value case, and each passed the
+approval, go-ahead and acceptance gates (and, for the closed one, the close-out gate when the
+gates file has it), decided by the demo sponsor. Every figure in a seeded report is read from the
+seeded records by the same code as any report's, and the checker finds nothing in their text.
+Text written as the agent's is labelled so and reviewed by the project manager, as are the
+agent's lessons; the agents didn't run, so no agent audit row is made, and the seed's own audit
+row counts what it labelled.
 
 Each original project keeps a few scored risks, AI and ordinary, so every priority band appears;
 each risk's score and band come from the risk policy, as for any risk. Every person, company,
@@ -23,15 +48,16 @@ data names (who raised a request, owns a milestone, decided a gate) are the demo
 Seeding is deterministic and idempotent: each seeded client, project, request and risk has a fixed
 `seed_key`, and running the seed again sets those rows back to the values below without adding
 duplicates. A seeded project or request gets its plan, proposal, gate decision, baseline, change
-request, value case and readiness check when it is first made; one that already exists keeps
-what it has. Each seeded risk gets one audit row when it is created or set back, none when it is
+request, value case and readiness check, and its delivery and closure history, when it is first
+made; one that already exists keeps what it has. Each seeded risk gets one audit row when it is created or set back, none when it is
 unchanged.
 
 `--reset` restores exactly the state above. It first deletes the seeded projects and requests with
 everything hung on them, whoever added it (risks, plans, proposals, gate decisions, baselines,
-change requests, and a project made from a seeded request), then every orchestrator action and
-inbox item, then the seeded clients nothing else uses; rows on anything people made are never
-touched. The audit table stays append-only: nothing in it is deleted, and every run adds one row
+change requests, spend, acceptance rounds, status reports, closure reports, benefits and lessons,
+and a project made from a seeded request), then every orchestrator action and inbox item, then
+the seeded clients nothing else uses; rows on anything people made are never touched, except
+that a person's risk drawn from a seeded lesson loses that link, since the lesson is gone. The audit table stays append-only: nothing in it is deleted, and every run adds one row
 saying what it seeded and, on a reset, what it cleared. The demo users the data needs are made if
 missing (with a random password nobody is shown) and set active with their roles; their
 passwords are left alone.
@@ -54,25 +80,33 @@ import subprocess
 import sys
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, exists, or_, select
+from sqlalchemy import delete, exists, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app import closure as closure_rules
+from app import delivery
+from app import policy as policies
+from app import reports as report_rules
 from app.audit import record_decision
 from app.authz import Role
 from app.baselines import freeze
 from app.changes import compute_effect
-from app.gates import PROJECT_CHECKS
+from app.gates import PROJECT_CHECKS, REQUEST_CHECKS
 from app.models import (
     ChangeRequest,
     Client,
+    ClosureBenefit,
+    ClosureReport,
+    DeliverableAcceptance,
     GateDecision,
     InboxItem,
+    Lesson,
     OrchestratorAction,
     PlanDeliverable,
     PlanEstimateLine,
@@ -84,17 +118,24 @@ from app.models import (
     ProjectPlan,
     ProjectProposal,
     ProjectRequest,
+    ProjectSpend,
     ProjectStakeholder,
     ProposalEvent,
     ProposalVersion,
     ReadinessAction,
     ReadinessCheck,
     Risk,
+    StatusReport,
+    StatusReportRead,
     User,
     ValueCase,
     ValueCaseBenefit,
 )
+from app.models.closure import CLOSURE_SECTIONS, RECORDED
+from app.models.delivery import ACCEPTED_ANSWER, ANSWER, OFFER
+from app.models.plan import ACCEPTED
 from app.models.proposal import SIMULATED
+from app.models.report import PUBLISHED, SECTIONS
 from app.plans import milestones_of, new_plan
 from app.policy import (
     ChangesPolicy,
@@ -206,6 +247,7 @@ PROJECTS: tuple[dict[str, Any], ...] = (
         "status": "on_track",
     },
     {
+        # In closure: every close-out check is met, so only the sponsor's tick is left.
         "seed_key": "project-quillmere-yard",
         "client": "client-quillmere",
         "name": "Yard Camera Pilot",
@@ -216,6 +258,7 @@ PROJECTS: tuple[dict[str, Any], ...] = (
         "status": "on_track",
     },
     {
+        # Closed, with a frozen closure report and lessons for the risk agent.
         "seed_key": "project-larchwick-statements",
         "client": "client-larchwick",
         "name": "Statement Archive Move",
@@ -274,11 +317,31 @@ BRIEFS: dict[str, dict[str, Any]] = {
         "budget_low": Decimal("40000.00"),
         "budget_high": Decimal("55000.00"),
     },
+    "project-quillmere-yard": {
+        "purpose": "Try yard cameras that warn staff of unsafe moves and speed up gate check-in.",
+        "objectives": "Halve recorded yard incidents and cut the time a lorry waits at the gate.",
+        "scope_in": "Cameras and alerts in one depot yard, and a report of what the pilot found.",
+        "scope_out": "Other depots and the gate barrier system.",
+        "wanted_by": date(2026, 9, 30),
+        "budget_low": Decimal("45000.00"),
+        "budget_high": Decimal("60000.00"),
+    },
+    "project-larchwick-statements": {
+        "purpose": "Move members' old statements to a cheaper archive and retire the old one.",
+        "objectives": "Keep every statement findable and cut the archive's running cost.",
+        "scope_in": "Copying the statement archive, checking the copy and retiring the old one.",
+        "scope_out": "Current statements and members' online banking.",
+        "wanted_by": date(2026, 5, 29),
+        "budget_low": Decimal("50000.00"),
+        "budget_high": Decimal("60000.00"),
+    },
 }
 
 # The complete plan of each project that has one, by project seed_key. A milestone is (name,
 # target date, owner's demo user key, description); a deliverable is (name, its milestone's
 # position); an estimate line is (description, category, amount). Scope comes from the brief.
+# The project in delivery gives each target as days after its go-ahead (`delivery_start`, a
+# Monday), so its history is always current: the first target is that week's Thursday.
 PLANS: dict[str, dict[str, Any]] = {
     "project-quillmere-routing": {
         "contingency_pct": 10,
@@ -287,17 +350,24 @@ PLANS: dict[str, dict[str, Any]] = {
         "milestones": (
             (
                 "Route data ready",
-                date(2026, 12, 11),
+                timedelta(days=3),
                 PM,
                 "Depot and order data loaded and checked.",
             ),
-            ("Pilot depot live", date(2027, 2, 12), PM, "One depot plans its routes daily."),
-            ("All four depots live", date(2027, 5, 28), PM, "Every northern depot uses it."),
+            (
+                "Route planner tested",
+                timedelta(days=10),
+                PM,
+                "The planner passes its tests on real orders.",
+            ),
+            ("Pilot depot live", timedelta(days=60), PM, "One depot plans its routes daily."),
+            ("All four depots live", timedelta(days=186), PM, "Every northern depot uses it."),
         ),
         "deliverables": (
             ("Depot data feed", 0),
             ("Route planner", 1),
-            ("Drivers' route view", 2),
+            ("Pilot depot training", 2),
+            ("Drivers' route view", 3),
         ),
         "lines": (
             ("Delivery team", "people", Decimal("62000.00")),
@@ -368,6 +438,57 @@ PLANS: dict[str, dict[str, Any]] = {
             ("Manager training", "services", Decimal("4000.00")),
         ),
     },
+    "project-quillmere-yard": {
+        "contingency_pct": 10,
+        "report_period": "monthly",
+        "report_due_day": 10,
+        "milestones": (
+            (
+                "Cameras fitted",
+                date(2026, 6, 19),
+                SECOND_PM,
+                "Cameras and alerts work in the pilot yard.",
+            ),
+            (
+                "Pilot findings agreed",
+                date(2026, 8, 28),
+                SECOND_PM,
+                "Quillmere agrees what the pilot found.",
+            ),
+        ),
+        "deliverables": (
+            ("Yard cameras and alerts", 0),
+            ("Pilot findings report", 1),
+        ),
+        "lines": (
+            ("Pilot team", "people", Decimal("30000.00")),
+            ("Camera hire", "services", Decimal("12000.00")),
+            ("Image review service", "software", Decimal("8000.00")),
+        ),
+    },
+    "project-larchwick-statements": {
+        "contingency_pct": 10,
+        "report_period": "monthly",
+        "report_due_day": 10,
+        "milestones": (
+            (
+                "Archive copied",
+                date(2026, 2, 27),
+                PM,
+                "Every statement is in the new archive and checked.",
+            ),
+            ("Old archive retired", date(2026, 4, 24), PM, "The old archive is switched off."),
+        ),
+        "deliverables": (
+            ("Migrated statement archive", 0),
+            ("Old archive retirement checklist", 1),
+        ),
+        "lines": (
+            ("Migration team", "people", Decimal("38000.00")),
+            ("Archive storage", "software", Decimal("9000.00")),
+            ("Records review", "services", Decimal("5000.00")),
+        ),
+    },
 }
 
 # The proposal of each project that has one, by project seed_key. `status` is how far it got:
@@ -395,21 +516,232 @@ PROPOSALS: dict[str, dict[str, Any]] = {
         "assumptions": "Brackenfold shares leave and skills records before the first milestone.",
         "terms": "Invoiced monthly against milestones; prices exclude tax.",
     },
+    "project-quillmere-yard": {
+        "status": "accepted",
+        "day": -150,
+        "summary": "We will pilot cameras in one Quillmere yard and report what they find.",
+        "assumptions": "Quillmere's yard team helps tune the alerts in the first weeks.",
+        "terms": "Invoiced monthly against milestones; prices exclude tax.",
+    },
+    "project-larchwick-statements": {
+        "status": "accepted",
+        "day": -300,
+        "summary": "We will move Larchwick's old statements to a cheaper archive and retire the "
+        "old one.",
+        "assumptions": "Larchwick's records team reviews the copy before the old archive goes.",
+        "terms": "Invoiced monthly against milestones; prices exclude tax.",
+    },
 }
 
-# The project that passed its go-ahead gate, and the change request pending on it: raised by
-# the second project manager, small enough for the project's own project manager to decide.
-GO_AHEAD_PROJECT = "project-quillmere-routing"
-GO_AHEAD_REASON = "The plan is complete, inside the budget, and the client accepted the proposal."
-GO_AHEAD_NOTE = "Agreed with the delivery team and the client"
+# Each gate a seeded request or project passed, decided by the demo sponsor: the reason, and the
+# note on each criterion a person ticks.
+GATE_TEXT: dict[str, tuple[str, str]] = {
+    "approval": (
+        "The value case and readiness check are confirmed, and readiness is green.",
+        "Worth doing, and the data is good enough",
+    ),
+    "go_ahead": (
+        "The plan is complete, inside the budget, and the client accepted the proposal.",
+        "Agreed with the delivery team and the client",
+    ),
+    "acceptance": (
+        "Every deliverable is accepted and every milestone is reached.",
+        "Confirmed with the client",
+    ),
+    "close_out": (
+        "The closure report is reviewed, every benefit measured or owned and lessons recorded.",
+        "Checked against the records",
+    ),
+}
+
+# The project in delivery: it passed its go-ahead gate on `delivery_start`. The change request
+# pending on it was raised by the second project manager `day` days later, and is small enough
+# for the project's own project manager to decide.
+DELIVERY_PROJECT = "project-quillmere-routing"
 CHANGE: dict[str, Any] = {
-    "project": GO_AHEAD_PROJECT,
+    "project": DELIVERY_PROJECT,
     "raised_by": SECOND_PM,
+    "day": 2,
     "title": "Move the pilot three days for the depot's stock count",
     "reason": "The pilot depot runs its yearly stock count in the pilot week, so drivers can't be "
     "trained then; the trainer's extra days cost a little more.",
-    "move": (1, date(2027, 2, 17)),  # the pilot milestone, Friday to the next Wednesday
+    # The pilot milestone, from its Friday to the next Wednesday (days after the go-ahead).
+    "move": (2, timedelta(days=65)),
     "add_lines": (("Extra trainer days", "services", Decimal("2500.00")),),
+}
+
+READY = "ready_for_acceptance"
+
+# The project in delivery's history, in days after its go-ahead (a Monday). Its weekly periods
+# end on Thursdays: the first holds days -3 to 3, the second 4 to 10 and the third, due now,
+# 11 to 17.
+ROUTING: dict[str, Any] = {
+    # (milestone position, day reached, note): the first three working days late.
+    "reached": (
+        (0, 8, "Reached late: the carrier's data feed came after the agreed day."),
+        (1, 10, None),
+    ),
+    # Each deliverable's status, by position.
+    "statuses": (READY, READY, "in_progress", "not_started"),
+    # (day, spend to date, note); the newest entry is the project's figure.
+    "spend": (
+        (3, Decimal("4400.00"), "Team time and the routing licence to the end of week one"),
+        (10, Decimal("9350.00"), "Team time and the routing licence to the end of week two"),
+        (17, Decimal("14300.00"), "Team time and the routing licence to the end of week three"),
+    ),
+    # The deliverable offered to the simulated client (position), and the day it was offered.
+    "offer": (0, 15),
+    # The first two periods' reports, published on their due days. The status report agent
+    # drafted the sections in `agent`, and the project manager reviewed them.
+    "reports": (
+        {
+            "agent": ("summary",),
+            "sections": {
+                "summary": "Delivery started on the agreed baseline. Depot and order data are "
+                "loading; the carrier's late feed is the main threat, shared with the carrier "
+                "under its contract.",
+                "done": "Loaded the depots' order history and agreed the route data checks with "
+                "Quillmere.",
+                "next": "Finish the route data checks and test the route planner on real orders.",
+                "issues": "The carrier has not yet dated its new export, so the feed may be late.",
+                "decisions": "None this period.",
+            },
+        },
+        {
+            "agent": ("summary", "next"),
+            "sections": {
+                "summary": "Route data ready was reached a few working days after its target "
+                "because the carrier's feed came late, so schedule is amber. The route planner "
+                "passed its tests on time.",
+                "done": "Checked and loaded the depot data feed, and tested the route planner on "
+                "the pilot depot's orders.",
+                "next": "Offer the depot data feed for acceptance and prepare the pilot depot's "
+                "training.",
+                "issues": "The pilot week clashes with the depot's stock count, so a change "
+                "request to move the pilot is waiting.",
+                "decisions": "None: the change is small enough for the project manager to decide.",
+            },
+        },
+    ),
+}
+
+# The projects that finished delivery, by seed_key: when each passed its go-ahead, acceptance and
+# (when the gates file has it) close-out gates; each milestone's day reached; each deliverable's
+# offer and the client's acceptance, as the project manager recorded them; spend; the closure
+# report's text (the closure agent drafted the sections in `agent`, and the project manager
+# reviewed them); each value case benefit as measured at close, by position; and the lessons,
+# each recorded by the project manager (an agent's after it suggested it).
+FINISHED: dict[str, dict[str, Any]] = {
+    "project-quillmere-yard": {
+        "go_ahead": datetime(2026, 5, 11, 9, 0),
+        "reached": (
+            (0, date(2026, 6, 17), "Fitted early: the cameras were delivered ahead of time."),
+            (1, date(2026, 8, 28), None),
+        ),
+        # (deliverable position, day offered, day the client accepted)
+        "accepted": (
+            (0, date(2026, 6, 22), date(2026, 6, 26)),
+            (1, date(2026, 8, 28), date(2026, 9, 4)),
+        ),
+        "spend": (
+            (date(2026, 6, 30), Decimal("21000.00"), "Pilot team and camera hire to June"),
+            (date(2026, 9, 4), Decimal("46750.00"), "Final: every invoice received"),
+        ),
+        "acceptance_gate": datetime(2026, 9, 7, 10, 0),
+        "closure_report": datetime(2026, 9, 30, 15, 0),
+        "agent": ("delivered",),
+        "sections": {
+            "delivered": "Both deliverables in the final baseline were accepted by Quillmere, and "
+            "both milestones were reached, the first ahead of its baseline 1 target.",
+            "value_case": "Recorded yard incidents have already fallen below the value case's "
+            "target. Gate check-in time can't be measured until the winter timetable runs, so "
+            "its owner measures it later.",
+            "remaining": "Measure gate check-in time by the date set for it, and hand the camera "
+            "alerts over to Quillmere's yard team.",
+        },
+        "benefits": (
+            {"value_now": "2 a month", "value_now_on": date(2026, 9, 30)},
+            {"measure_owner": SECOND_PM, "measure_by": date(2027, 3, 31)},
+        ),
+        "lessons": (
+            {
+                "source": "agent",
+                "category": "ai",
+                "what_happened": "Low winter sun and night glare set off false alerts in the "
+                "pilot's first weeks.",
+                "do_again": None,
+                "do_differently": "Test camera alerts at night and in low sun before go-live.",
+                "suggest_as_risk": True,
+            },
+            {
+                "source": "person",
+                "category": "people",
+                "what_happened": "Yard staff trusted the alerts once they had helped tune them.",
+                "do_again": "Involve the people who act on alerts in tuning them.",
+                "do_differently": None,
+                "suggest_as_risk": False,
+            },
+        ),
+        "close_out": None,
+    },
+    "project-larchwick-statements": {
+        "go_ahead": datetime(2025, 12, 15, 9, 0),
+        "reached": (
+            (0, date(2026, 3, 4), "Late: older statements needed reformatting."),
+            (1, date(2026, 4, 24), None),
+        ),
+        "accepted": (
+            (0, date(2026, 3, 5), date(2026, 3, 11)),
+            (1, date(2026, 4, 24), date(2026, 4, 30)),
+        ),
+        "spend": (
+            (date(2026, 2, 27), Decimal("31200.00"), "Migration team and storage to February"),
+            (date(2026, 5, 15), Decimal("55900.00"), "Final: every invoice received"),
+        ),
+        "acceptance_gate": datetime(2026, 5, 4, 10, 0),
+        "closure_report": datetime(2026, 5, 22, 15, 0),
+        "agent": ("delivered",),
+        "sections": {
+            "delivered": "The statement archive was copied and the old archive retired. Both "
+            "deliverables were accepted by Larchwick; the copy finished a few working days "
+            "after its baseline 1 target, and the project closed under its final baseline.",
+            "value_case": "The archive's yearly running cost is already below the value case's "
+            "target.",
+            "remaining": "Nothing remains: the old archive is retired and its contract has ended.",
+        },
+        "benefits": ({"value_now": "12,500 a year", "value_now_on": date(2026, 5, 20)},),
+        "lessons": (
+            {
+                "source": "person",
+                "category": "schedule",
+                "what_happened": "Copying the archive took longer than planned because older "
+                "statements needed reformatting.",
+                "do_again": None,
+                "do_differently": "Sample the oldest records for format problems before planning "
+                "a copy.",
+                "suggest_as_risk": True,
+            },
+            {
+                "source": "agent",
+                "category": "risk",
+                "what_happened": "A records review before the old archive was retired found "
+                "statements the copy had skipped.",
+                "do_again": "Count the records independently before retiring an old system.",
+                "do_differently": None,
+                "suggest_as_risk": True,
+            },
+            {
+                "source": "person",
+                "category": "people",
+                "what_happened": "Branch staff answered members' questions with confidence "
+                "because they saw the new archive early.",
+                "do_again": "Show branch staff a new system before members use it.",
+                "do_differently": None,
+                "suggest_as_risk": False,
+            },
+        ),
+        "close_out": datetime(2026, 5, 29, 16, 0),
+    },
 }
 
 # The seeded requests. `requested_by` is a demo user's key. A `value_case` and `readiness` are
@@ -452,18 +784,107 @@ REQUESTS: tuple[dict[str, Any], ...] = (
             "cost_method": "Six weeks of a two-person team plus forecasting service fees.",
             "strategic_fit": "Supports the society's aim to cut branch waiting times.",
             "cost_of_not_doing": "Members keep queuing at lunchtime and complaints grow.",
-            "benefit": {
-                "description": "Shorter waits at the busiest hour",
-                "measure": "Median wait at 12:00 to 13:00, from the queue system",
-                "current_value": "18 minutes",
-                "target": "Under 10 minutes",
-                "target_date": date(2027, 10, 29),
-            },
+            "benefits": (
+                {
+                    "description": "Shorter waits at the busiest hour",
+                    "measure": "Median wait at 12:00 to 13:00, from the queue system",
+                    "current_value": "18 minutes",
+                    "target": "Under 10 minutes",
+                    "target_date": date(2027, 10, 29),
+                },
+            ),
         },
         "readiness": {
             "problem": "Lunchtime queues are measured and members complain about them.",
             "approach": "Forecasting from past footfall suits the pattern; a person sets rotas.",
             "data": "Two years of hourly footfall for every branch but two; those are excluded.",
+        },
+    },
+    {
+        # Approved at its approval gate and made into the project now in closure. `at` is when
+        # its value case and readiness check were confirmed.
+        "seed_key": "request-quillmere-yard",
+        "client": "client-quillmere",
+        "project": "project-quillmere-yard",
+        "title": "Yard Camera Pilot",
+        "asked_for": "Pilot cameras that warn yard staff of unsafe moves and log gate arrivals.",
+        "problem": "Yard near-misses go unrecorded and lorries queue at the gate.",
+        "outcome": "Fewer yard incidents and a quicker gate check-in.",
+        "budget_low": Decimal("45000.00"),
+        "budget_high": Decimal("60000.00"),
+        "wanted_by": date(2026, 9, 30),
+        "uses_ai": True,
+        "known_risks": "Camera alerts may be wrong at night.",
+        "requested_by": SECOND_PM,
+        "status": "approved",
+        "at": datetime(2026, 4, 20, 10, 0),
+        "value_case": {
+            "cost_low": Decimal("45000.00"),
+            "cost_high": Decimal("55000.00"),
+            "cost_method": "Four months of a small pilot team, plus camera hire.",
+            "strategic_fit": "Supports Quillmere's aim of safer, quicker yards.",
+            "cost_of_not_doing": "Near-misses stay unrecorded until one becomes an accident.",
+            "benefits": (
+                {
+                    "description": "Fewer yard incidents",
+                    "measure": "Recorded yard incidents a month",
+                    "current_value": "6 a month",
+                    "target": "Under 3 a month",
+                    "target_date": date(2026, 12, 31),
+                },
+                {
+                    "description": "Quicker gate check-in",
+                    "measure": "Median gate check-in time in the winter timetable",
+                    "current_value": "9 minutes",
+                    "target": "Under 5 minutes",
+                    "target_date": date(2027, 3, 31),
+                },
+            ),
+        },
+        "readiness": {
+            "problem": "Yard incidents are logged by hand and the gate queue is timed weekly.",
+            "approach": "Camera alerts suit spotting moves; a person decides what to do.",
+            "data": "Sample footage from the pilot yard, day and night, is labelled.",
+        },
+    },
+    {
+        # Approved at its approval gate and made into the project now closed.
+        "seed_key": "request-larchwick-statements",
+        "client": "client-larchwick",
+        "project": "project-larchwick-statements",
+        "title": "Statement Archive Move",
+        "asked_for": "Move members' old statements to a cheaper archive and retire the old one.",
+        "problem": "The old statement archive costs more each year and its supplier is leaving.",
+        "outcome": "Every old statement findable in a cheaper archive.",
+        "budget_low": Decimal("50000.00"),
+        "budget_high": Decimal("60000.00"),
+        "wanted_by": date(2026, 5, 29),
+        "uses_ai": False,
+        "known_risks": "Some old statements may be in formats the new archive can't read.",
+        "requested_by": PM,
+        "status": "approved",
+        "at": datetime(2025, 11, 17, 10, 0),
+        "value_case": {
+            "cost_low": Decimal("50000.00"),
+            "cost_high": Decimal("58000.00"),
+            "cost_method": "Five months of a migration team, plus archive storage.",
+            "strategic_fit": "Supports the society's aim to cut running costs.",
+            "cost_of_not_doing": "Archive costs keep rising and the supplier's exit forces a "
+            "rushed move.",
+            "benefits": (
+                {
+                    "description": "Lower archive running cost",
+                    "measure": "Yearly archive running cost",
+                    "current_value": "40,000 a year",
+                    "target": "Under 15,000 a year",
+                    "target_date": date(2026, 12, 31),
+                },
+            ),
+        },
+        "readiness": {
+            "problem": "The archive's cost and the supplier's exit date are both known.",
+            "approach": "A straight copy with checks; no AI is used.",
+            "data": "The archive's index lists every statement and its format.",
         },
     },
 )
@@ -705,8 +1126,38 @@ def _ids(db: Session, stmt) -> list[int]:
     return list(db.scalars(stmt))
 
 
+def _clear_delivery(db: Session, ids: list[int]) -> None:
+    """Delete the projects' delivery and closure records."""
+    reports = _ids(db, select(StatusReport.id).where(StatusReport.project_id.in_(ids)))
+    if reports:
+        db.execute(delete(StatusReportRead).where(StatusReportRead.report_id.in_(reports)))
+        # A correction names the report it replaces; MySQL checks that link row by row.
+        db.execute(update(StatusReport).where(StatusReport.id.in_(reports)).values(replaces_id=None))
+        db.execute(delete(StatusReport).where(StatusReport.id.in_(reports)))
+    # Spend and acceptance rounds are append-only, so the session refuses to delete them; they go
+    # here only because the project they belong to goes too.
+    connection = db.connection()
+    for model in (ProjectSpend, DeliverableAcceptance):
+        table = model.__table__
+        if model is ProjectSpend:
+            connection.execute(
+                update(table).where(table.c.project_id.in_(ids)).values(supersedes_id=None)
+            )
+        connection.execute(delete(table).where(table.c.project_id.in_(ids)))
+    lessons = _ids(db, select(Lesson.id).where(Lesson.project_id.in_(ids)))
+    if lessons:
+        # A risk on someone else's project may have come from one of these lessons.
+        db.execute(
+            update(Risk).where(Risk.source_lesson_id.in_(lessons)).values(source_lesson_id=None)
+        )
+        db.execute(delete(Lesson).where(Lesson.id.in_(lessons)))
+    for model in (ClosureBenefit, ClosureReport):
+        db.execute(delete(model).where(model.project_id.in_(ids)))
+
+
 def _clear_projects(db: Session, ids: list[int]) -> None:
     """Delete everything hung on the projects, children before the rows they point at."""
+    _clear_delivery(db, ids)
     proposals = _ids(db, select(ProjectProposal.id).where(ProjectProposal.project_id.in_(ids)))
     if proposals:
         db.execute(delete(ProposalEvent).where(ProposalEvent.proposal_id.in_(proposals)))
@@ -841,8 +1292,11 @@ def _ensure_plan(db: Session, project: Project) -> ProjectPlan:
     return plan
 
 
-def _fill_plan(db: Session, plan: ProjectPlan, values: dict[str, Any], people: dict) -> None:
-    """Write a complete plan: milestones, deliverables, estimate lines and reporting."""
+def _fill_plan(
+    db: Session, plan: ProjectPlan, values: dict[str, Any], people: dict, start: date
+) -> None:
+    """Write a complete plan: milestones, deliverables, estimate lines and reporting. A target
+    given as days is that many days after `start`, the day delivery starts."""
     plan.contingency_pct = values["contingency_pct"]
     plan.report_period = values["report_period"]
     plan.report_due_day = values["report_due_day"]
@@ -851,7 +1305,7 @@ def _fill_plan(db: Session, plan: ProjectPlan, values: dict[str, Any], people: d
         milestone = PlanMilestone(
             plan_id=plan.id,
             name=name,
-            target_date=target,
+            target_date=start + target if isinstance(target, timedelta) else target,
             owner_user_id=people[owner].id,
             description=description,
         )
@@ -926,14 +1380,33 @@ def _seed_proposal(
     db.flush()
 
 
-def _seed_go_ahead(
-    db: Session, project: Project, plan: ProjectPlan, gates: GatesPolicy, people: dict
-) -> ProjectBaseline:
-    """The sponsor's pass at the go-ahead gate, each check as it stands, and baseline 1."""
-    gate = gates.gates["go_ahead"]
+def delivery_start(today: date) -> date:
+    """The Monday the project in delivery passed its go-ahead gate: 18 days before the latest
+    Friday on or before `today`, so its third weekly report falls due on that Friday."""
+    friday = today - timedelta(days=(today.weekday() - 4) % 7)
+    return friday - timedelta(days=18)
+
+
+def _at(day: date, hour: int) -> datetime:
+    return datetime.combine(day, time(hour))
+
+
+def _pass_gate(
+    db: Session,
+    gates: GatesPolicy,
+    gate_id: str,
+    subject: Project | ProjectRequest,
+    people: dict,
+    at: datetime,
+) -> GateDecision:
+    """The sponsor's pass at the gate, each check as it stands, flushed."""
+    gate = gates.gates[gate_id]
+    subject_type = "request" if isinstance(subject, ProjectRequest) else "project"
+    checks = REQUEST_CHECKS if subject_type == "request" else PROJECT_CHECKS
+    reason, note = GATE_TEXT[gate_id]
     criteria = []
     for criterion in gate.criteria:
-        result = PROJECT_CHECKS[criterion.check](db, project) if criterion.check else None
+        result = checks[criterion.check](db, subject) if criterion.check else None
         criteria.append(
             {
                 "id": criterion.id,
@@ -942,23 +1415,35 @@ def _seed_go_ahead(
                 "check": criterion.check,
                 "met": result.met if result else True,
                 "detail": result.detail if result else None,
-                "note": None if result else GO_AHEAD_NOTE,
+                "note": None if result else note,
             }
         )
-    at = SEEDED_AT + timedelta(days=5)
     decision = GateDecision(
         gate_id=gate.id,
-        subject_type="project",
-        subject_id=project.id,
+        subject_type=subject_type,
+        subject_id=subject.id,
         outcome="pass",
         decided_by=people[SPONSOR].id,
-        reason=GO_AHEAD_REASON,
+        reason=reason,
         criteria=criteria,
         policy_version=gates.digest,
         created_at=at,
     )
     db.add(decision)
     db.flush()
+    return decision
+
+
+def _seed_go_ahead(
+    db: Session,
+    project: Project,
+    plan: ProjectPlan,
+    gates: GatesPolicy,
+    people: dict,
+    at: datetime,
+) -> ProjectBaseline:
+    """The sponsor's pass at the go-ahead gate and baseline 1."""
+    decision = _pass_gate(db, gates, "go_ahead", project, people, at)
     baseline = freeze(db, plan, decision.id)
     baseline.created_at = at
     return baseline
@@ -971,12 +1456,13 @@ def _seed_change(
     baseline: ProjectBaseline,
     rules: ChangesPolicy,
     people: dict,
+    start: date,
 ) -> None:
     """The submitted change request, measured against the baseline as the change routes do."""
     position, target = CHANGE["move"]
     milestone = milestones_of(db, plan.id)[position]
     changes = ChangeSet(
-        move_milestones=[{"milestone_id": milestone.id, "target_date": target}],
+        move_milestones=[{"milestone_id": milestone.id, "target_date": start + target}],
         add_lines=[
             {"description": d, "category": c, "amount": f"{a:.2f}"}
             for d, c, a in CHANGE["add_lines"]
@@ -991,7 +1477,7 @@ def _seed_change(
         has_project_manager=project.pm_user_id is not None,
         raised_by_project_manager=raiser.id == project.pm_user_id,
     )
-    at = SEEDED_AT + timedelta(days=30)
+    at = _at(start + timedelta(days=CHANGE["day"]), 10)
     db.add(
         ChangeRequest(
             project_id=project.id,
@@ -1011,10 +1497,238 @@ def _seed_change(
     db.flush()
 
 
-def _build_project(
-    db: Session, project: Project, people: dict, gates: GatesPolicy, rules: ChangesPolicy
+# --- Delivery and closure history (item 7.8)
+
+
+def _deliverables_of(db: Session, plan: ProjectPlan) -> list[PlanDeliverable]:
+    stmt = select(PlanDeliverable).where(PlanDeliverable.plan_id == plan.id)
+    return list(db.scalars(stmt.order_by(PlanDeliverable.id)))
+
+
+def _reach(db: Session, plan: ProjectPlan, reached: list[tuple[int, date, str | None]]) -> None:
+    """Mark milestones reached, by position, as the progress route does."""
+    milestones = milestones_of(db, plan.id)
+    for position, on, note in reached:
+        milestone = milestones[position]
+        delivery.set_reached(db, milestone, milestone.reached_version, on, note)
+
+
+def _set_statuses(db: Session, plan: ProjectPlan, statuses: list[str]) -> None:
+    """Set each deliverable's status, by position, as the progress route does."""
+    for row, status in zip(_deliverables_of(db, plan), statuses, strict=True):
+        if row.status != status:
+            delivery.set_status(db, row, row.status_version, status)
+
+
+def _add_spend(
+    db: Session, project: Project, entries: list[tuple[date, Decimal, str]], by: User
 ) -> None:
-    """A new seeded project's brief, plan, proposal, go-ahead decision and change request."""
+    for as_of, amount, note in entries:
+        db.add(
+            ProjectSpend(
+                project_id=project.id,
+                amount=amount,
+                as_of=as_of,
+                note=note,
+                created_by=by.id,
+                created_at=_at(as_of, 17),
+            )
+        )
+    db.flush()
+
+
+def _offer(
+    project: Project, deliverable: PlanDeliverable, on: date, pm: User, client: Client
+) -> DeliverableAcceptance:
+    """The project manager's record of offering the deliverable to the client (round 1)."""
+    return DeliverableAcceptance(
+        project_id=project.id,
+        deliverable_id=deliverable.id,
+        deliverable_name=deliverable.name,
+        round=1,
+        kind=OFFER,
+        offered_to=f"{client.contact_name} <{client.contact_email}>",
+        offered_on=on,
+        means="email",
+        source="person",
+        recorded_by=pm.id,
+        created_at=_at(on, 14),
+    )
+
+
+def _accepted(
+    project: Project, deliverable: PlanDeliverable, on: date, pm: User
+) -> DeliverableAcceptance:
+    """The project manager's record of the client accepting round 1's offer."""
+    return DeliverableAcceptance(
+        project_id=project.id,
+        deliverable_id=deliverable.id,
+        deliverable_name=deliverable.name,
+        round=1,
+        kind=ANSWER,
+        answer=ACCEPTED_ANSWER,
+        answered_on=on,
+        note="Accepted by email",
+        source="person",
+        recorded_by=pm.id,
+        created_at=_at(on, 15),
+    )
+
+
+def _mark_sections(report: StatusReport | ClosureReport, names, agent, pm: User, at: datetime):
+    """Label who wrote each section: the agent's drafts and the project manager's own text, all
+    reviewed by the project manager."""
+    for name in names:
+        report_rules.mark_section(
+            report,
+            name,
+            source=report_rules.AGENT_SOURCE if name in agent else report_rules.PERSON_SOURCE,
+            reviewed_by=pm.id,
+            reviewed_at=at.isoformat(),
+        )
+
+
+def _seed_status_reports(db: Session, project: Project, plan: ProjectPlan, pm: User) -> None:
+    """The past periods' reports, published on their due days, and an empty draft for the
+    latest period that is due. Figures and ratings come from the records, as for any report."""
+    policy = policies.get_reporting()
+    start = report_rules.first_baseline(db, project.id).created_at.date()
+    today = delivery.today()
+    found = report_rules.periods(plan.report_period, plan.report_due_day, start, today)
+    due = [period for period in found if period.due_on <= today]
+    for period, values in zip(due[:-1], ROUTING["reports"], strict=True):
+        published = _at(period.due_on, 16)
+        report = StatusReport(
+            project_id=project.id,
+            period_start=period.start,
+            period_end=period.end,
+            due_on=period.due_on,
+            status=PUBLISHED,
+            sections=dict(values["sections"]),
+            section_sources={},
+            created_by=pm.id,
+            published_by=pm.id,
+            published_at=published,
+            created_at=_at(period.due_on, 9),
+            updated_at=published,
+        )
+        _mark_sections(report, SECTIONS, values["agent"], pm, _at(period.due_on, 15))
+        next_ = report_rules.next_period(plan.report_period, plan.report_due_day, period)
+        report.figures_at = published
+        report.figures = report_rules.build_figures(
+            db, project.id, plan, period, next_, published.date()
+        )
+        report.ratings = report_rules.rate(report.figures, policy)
+        report_rules.run_check(report)
+        db.add(report)
+    db.flush()
+    report_rules.new_draft(db, project.id, plan, due[-1], policy, created_by=pm.id)
+
+
+def _seed_delivery(db: Session, project: Project, plan: ProjectPlan, start: date) -> None:
+    """The project in delivery's progress, spend, waiting offer and status reports."""
+    pm, client = db.get(User, project.pm_user_id), db.get(Client, project.client_id)
+
+    def day(offset: int) -> date:
+        return start + timedelta(days=offset)
+
+    _reach(db, plan, [(p, day(d), note) for p, d, note in ROUTING["reached"]])
+    _set_statuses(db, plan, list(ROUTING["statuses"]))
+    _add_spend(db, project, [(day(d), amount, note) for d, amount, note in ROUTING["spend"]], pm)
+    position, offered = ROUTING["offer"]
+    db.add(_offer(project, _deliverables_of(db, plan)[position], day(offered), pm, client))
+    db.flush()
+    _seed_status_reports(db, project, plan, pm)
+
+
+def _seed_finished(
+    db: Session,
+    project: Project,
+    plan: ProjectPlan,
+    values: dict[str, Any],
+    gates: GatesPolicy,
+    people: dict,
+) -> None:
+    """A finished project's delivery, its acceptance gate, benefits measured at close, lessons
+    and closure report: frozen, after its close-out gate, when the project is closed."""
+    pm, client = db.get(User, project.pm_user_id), db.get(Client, project.client_id)
+    _reach(db, plan, list(values["reached"]))
+    deliverables = _deliverables_of(db, plan)
+    _set_statuses(db, plan, [READY] * len(deliverables))
+    for position, offered, accepted in values["accepted"]:
+        deliverable = deliverables[position]
+        db.add(_offer(project, deliverable, offered, pm, client))
+        db.add(_accepted(project, deliverable, accepted, pm))
+    _set_statuses(db, plan, [ACCEPTED] * len(deliverables))
+    _add_spend(db, project, list(values["spend"]), pm)
+    _pass_gate(db, gates, "acceptance", project, people, values["acceptance_gate"])
+
+    at = values["closure_report"]
+    benefits = closure_rules.value_case_benefits(db, project.id)
+    for benefit, measured in zip(benefits, values["benefits"], strict=True):
+        owner = measured.get("measure_owner")
+        db.add(
+            ClosureBenefit(
+                project_id=project.id,
+                benefit_id=benefit.id,
+                value_now=measured.get("value_now"),
+                value_now_on=measured.get("value_now_on"),
+                measure_owner_id=people[owner].id if owner else None,
+                measure_by=measured.get("measure_by"),
+                updated_by=pm.id,
+                created_at=at,
+                updated_at=at,
+            )
+        )
+    for lesson in values["lessons"]:
+        # An agent's lesson was suggested with no person, then recorded by the project manager.
+        db.add(
+            Lesson(
+                project_id=project.id,
+                **lesson,
+                status=RECORDED,
+                created_by=None if lesson["source"] == "agent" else pm.id,
+                reviewed_by=pm.id,
+                reviewed_at=at,
+                created_at=at,
+                updated_at=at,
+            )
+        )
+    db.flush()
+
+    closed_at = values["close_out"]
+    report = ClosureReport(
+        project_id=project.id,
+        sections=dict(values["sections"]),
+        section_sources={},
+        flags=[],
+        created_by=pm.id,
+        created_at=at,
+    )
+    _mark_sections(report, CLOSURE_SECTIONS, values["agent"], pm, at)
+    if closed_at is None:
+        # Still in closure: the figures are read now, as for any closure report not frozen.
+        closure_rules.fill(db, report, project)
+    else:
+        report.figures_at = report.frozen_at = report.updated_at = closed_at
+        report.figures = closure_rules.build_figures(db, project, closed_at.date())
+        closure_rules.run_check(report)
+    db.add(report)
+    db.flush()
+    if closed_at is not None and "close_out" in gates.gates:
+        _pass_gate(db, gates, "close_out", project, people, closed_at)
+
+
+def _build_project(
+    db: Session,
+    project: Project,
+    people: dict,
+    gates: GatesPolicy,
+    rules: ChangesPolicy,
+    start: date,
+) -> None:
+    """A new seeded project's brief, plan and proposal; and, once past its go-ahead gate, its
+    baseline 1, change request, delivery and closure history."""
     key = project.seed_key
     if key in BRIEFS:
         db.add(
@@ -1023,21 +1737,27 @@ def _build_project(
         db.flush()
     plan = _ensure_plan(db, project)
     if key in PLANS:
-        _fill_plan(db, plan, PLANS[key], people)
+        _fill_plan(db, plan, PLANS[key], people, start)
     if key in PROPOSALS:
         _seed_proposal(db, project, plan, PROPOSALS[key], people)
-    if key == GO_AHEAD_PROJECT:
-        baseline = _seed_go_ahead(db, project, plan, gates, people)
-        if CHANGE["project"] == key:
-            _seed_change(db, project, plan, baseline, rules, people)
+    if key == DELIVERY_PROJECT:
+        baseline = _seed_go_ahead(db, project, plan, gates, people, _at(start, 9))
+        _seed_change(db, project, plan, baseline, rules, people, start)
+        _seed_delivery(db, project, plan, start)
+    elif key in FINISHED:
+        _seed_go_ahead(db, project, plan, gates, people, FINISHED[key]["go_ahead"])
+        _seed_finished(db, project, plan, FINISHED[key], gates, people)
 
 
-def _build_request(db: Session, request: ProjectRequest, values: dict[str, Any]) -> None:
-    """A new seeded request's value case and readiness check, confirmed by its raiser."""
-    at = SEEDED_AT + timedelta(days=12)
+def _build_request(
+    db: Session, request: ProjectRequest, values: dict[str, Any], gates: GatesPolicy, people: dict
+) -> None:
+    """A new seeded request's value case and readiness check, confirmed by its raiser, and the
+    sponsor's pass at its approval gate when it is approved."""
+    at = values.get("at", SEEDED_AT + timedelta(days=12))
     if "value_case" in values:
         case = dict(values["value_case"])
-        benefit = case.pop("benefit")
+        benefits = case.pop("benefits")
         db.add(
             ValueCase(
                 request_id=request.id,
@@ -1047,7 +1767,10 @@ def _build_request(db: Session, request: ProjectRequest, values: dict[str, Any])
                 confirmed_at=at,
                 created_at=at,
                 updated_at=at,
-                benefits=[ValueCaseBenefit(position=1, **benefit)],
+                benefits=[
+                    ValueCaseBenefit(position=position, **benefit)
+                    for position, benefit in enumerate(benefits)
+                ],
             )
         )
     if "readiness" in values:
@@ -1064,9 +1787,11 @@ def _build_request(db: Session, request: ProjectRequest, values: dict[str, Any])
                 updated_at=at,
             )
         )
-    if values["status"] == "submitted":
+    if values["status"] in ("submitted", "approved"):
         request.submitted_at = at + timedelta(hours=1)
     db.flush()
+    if values["status"] == "approved":
+        _pass_gate(db, gates, "approval", request, people, at + timedelta(days=2))
 
 
 AUDIT_AGENT = "seed"
@@ -1079,6 +1804,8 @@ def seed(db: Session, *, reset: bool = False, policy: RiskPolicy | None = None) 
     a `PolicyError` changes nothing. Adds one audit row for the run. The caller commits."""
     policy = policy or risk_policy()
     gates, rules = get_policies().gates, get_changes()
+    policies.get_reporting()  # the seeded status reports are rated from it
+    start = delivery_start(delivery.today())
     cleared = clear_seeded(db) if reset else Cleared()
     people = demo_people(db)
     clients = {}
@@ -1099,20 +1826,25 @@ def seed(db: Session, *, reset: bool = False, policy: RiskPolicy | None = None) 
     for values in RISKS:
         risk = dict(values)
         _seed_risk(db, policy, risk, projects[risk.pop("project")].id)
-    for project in projects.values():
-        if project in new_projects:
-            _build_project(db, project, people, gates, rules)
-        else:
-            _ensure_plan(db, project)
+    # Requests first: a finished project's closure report reads its request's value case.
     for values in REQUESTS:
-        fields = {k: v for k, v in values.items() if k not in ("value_case", "readiness")}
+        fields = {k: v for k, v in values.items() if k not in ("value_case", "readiness", "at")}
         fields["client_id"] = clients[fields.pop("client")].id
         fields["requested_by"] = people[fields["requested_by"]].id
+        if "project" in fields:
+            fields["project_id"] = projects[fields.pop("project")].id
         request, new = _upsert(db, ProjectRequest, fields)
         db.flush()
         if new:
-            _build_request(db, request, values)
+            _build_request(db, request, values, gates, people)
+    for project in projects.values():
+        if project in new_projects:
+            _build_project(db, project, people, gates, rules, start)
+        else:
+            _ensure_plan(db, project)
     result = SeedResult(len(CLIENTS), len(PROJECTS), len(REQUESTS), len(RISKS), cleared)
+    reports = ROUTING["reports"]
+    finished = FINISHED.values()
     record_decision(
         db,
         agent=AUDIT_AGENT,
@@ -1128,6 +1860,16 @@ def seed(db: Session, *, reset: bool = False, policy: RiskPolicy | None = None) 
                 "projects": result.projects,
                 "requests": result.requests,
                 "risks": result.risks,
+                # One more status report: the current period's empty draft.
+                "status_reports": len(reports) + 1,
+                "closure_reports": len(FINISHED),
+                "lessons": sum(len(f["lessons"]) for f in finished),
+            },
+            # Text seeded as the agents', labelled so on each row (the agents didn't run).
+            "agent_labelled": {
+                "status_report_sections": sum(len(r["agent"]) for r in reports),
+                "closure_report_sections": sum(len(f["agent"]) for f in finished),
+                "lessons": sum(1 for f in finished for x in f["lessons"] if x["source"] == "agent"),
             },
             "cleared": asdict(cleared) if reset else None,
         },
