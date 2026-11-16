@@ -246,7 +246,7 @@ def test_what_remains_gives_a_benefits_measure_by_date_as_a_figure(db, web, pm, 
     assert owned.status_code == 200, owned.text
     key = f"benefit_{bid}_measure_by"
     # Until the figures are read again, the agent has no key for the date.
-    dry =_draft(web, pid, dry_run="true").json()["request"]["messages"][0]["content"]
+    dry = _draft(web, pid, dry_run="true").json()["request"]["messages"][0]["content"]
     assert '"measure_by_key": null' in dry
     refreshed = web.post(f"{url}/refresh", json={"version": 1})
     assert refreshed.status_code == 200, refreshed.text
