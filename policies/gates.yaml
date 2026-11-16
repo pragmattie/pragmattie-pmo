@@ -1,4 +1,4 @@
-# Stage gates (items 4.4 and 5.4). Each gate sits between two stages and lists what must be true
+# Stage gates (items 4.4, 5.4 and 7.6). Each gate sits between two stages and lists what must be true
 # before it is passed, and which roles may decide it. Drafted by an agent; a person applies it over
 # policies/gates.yaml.
 #
@@ -67,4 +67,33 @@ gates:
         person: true
       - id: risks_acceptable
         text: The project's risks are acceptable to start
+        person: true
+
+  # The acceptance gate (item 7.6): a project in delivery moves to closure once the client has
+  # accepted what was agreed. Each deliverable is offered for acceptance and its answer recorded;
+  # a project with no client has its deliverables accepted by the sponsor.
+  - id: acceptance
+    name: Acceptance gate
+    from_stage: delivery
+    to_stage: closure
+    applies_to: project
+    deciders: [sponsor]
+    criteria:
+      - id: deliverables_accepted
+        text: Every deliverable in the current baseline is accepted
+        check: deliverables_accepted
+      - id: milestones_reached
+        text: Every milestone is reached
+        check: milestones_reached
+      - id: no_waiting_changes
+        text: No change request is waiting for a decision
+        check: no_waiting_changes
+      - id: escalations_settled
+        text: No open risk escalated beyond the project manager is still waiting
+        check: escalations_settled
+      - id: scope_met
+        text: The work meets the scope in the baseline
+        person: true
+      - id: client_in_good_standing
+        text: The client relationship is in good standing
         person: true
