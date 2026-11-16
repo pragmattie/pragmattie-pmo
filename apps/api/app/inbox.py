@@ -35,16 +35,18 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app import orchestrator
+from app import acceptance, orchestrator
 from app import policy as policies
 from app import reports as report_rules
 from app.authz import Action, allowed_actions
 from app.autonomy import AutonomyPolicy
-from app.gates import CHECKS_BY_SUBJECT
+from app.gates import CHECKS_BY_SUBJECT, GATE_CHECKS
 from app.models import (
     ChangeRequest,
+    Client,
     InboxItem,
     OrchestratorAction,
+    PlanDeliverable,
     Project,
     ProjectPlan,
     ProjectProposal,
@@ -56,7 +58,15 @@ from app.models import (
     ValueCase,
 )
 from app.models.proposal import TEXT_SECTIONS
-from app.orchestrator import CHANGE_REQUEST, PROJECT, PROPOSAL, REQUEST, RISK, STATUS_REPORT
+from app.orchestrator import (
+    CHANGE_REQUEST,
+    DELIVERABLE,
+    PROJECT,
+    PROPOSAL,
+    REQUEST,
+    RISK,
+    STATUS_REPORT,
+)
 from app.plans import missing
 from app.policy import PolicyError, RiskPolicy, get_policies
 from app.proposals import check, latest_version, plan_facts, unreviewed_sections, values_of
@@ -68,8 +78,16 @@ DEFAULT_RECOMMENDATION = "Review and decide."
 NOT_RUN = "not run"
 CHECKER_NOT_RUN = "Read it closely: the checker hasn't run"
 
-# The gate each subject type's `pass_gate` step is decided at.
+# The gate each subject type's `pass_gate` step is decided at; a project in delivery is at the
+# acceptance gate (item 7.6).
 GATES = {REQUEST: "approval", PROJECT: "go_ahead"}
+
+
+def gate_of(subject_type: str, subject: Any) -> str:
+    """The gate a `pass_gate` step on the subject asks for."""
+    if subject_type == PROJECT and subject.stage == "delivery":
+        return orchestrator.ACCEPTANCE_GATE
+    return GATES[subject_type]
 
 
 @dataclass(frozen=True)
@@ -97,6 +115,7 @@ class Entry:
     created_at: datetime
     action_id: int | None = None
     due_at: datetime | None = None
+    gate_id: str | None = None  # the gate a `pass_gate` step asks for
     subject_title: str = ""
     project_id: int | None = None
     project_name: str | None = None
@@ -146,6 +165,12 @@ def _scope(db: Session, subject_type: str, subject_id: int, who: str) -> Scope |
     if subject_type == PROJECT:
         project = db.get(Project, subject_id)
         return None if project is None else Scope(project.name, project, _named(project, who))
+    if subject_type == DELIVERABLE:
+        deliverable = db.get(PlanDeliverable, subject_id)
+        if deliverable is None:
+            return None
+        project = orchestrator.deliverable_project(db, subject_id)
+        return Scope(f"Deliverable '{deliverable.name}'", project, _named(project, who))
     model = {
         RISK: Risk,
         PROPOSAL: ProjectProposal,
@@ -230,12 +255,13 @@ def _yes(value: bool) -> str:
 
 
 def _gate_facts(db: Session, subject_type: str, subject: Any) -> list[Fact]:
-    """The gate's automatic checks, as they stand now. Every check for the subject type when the
-    gates file isn't applied yet."""
+    """The gate's automatic checks, as they stand now. The checks the code names for the gate when
+    the gates file doesn't define it yet."""
     checks = CHECKS_BY_SUBJECT[subject_type]
-    names: list[tuple[str, str]] = [(name, name.replace("_", " ")) for name in checks]
+    gate_id = gate_of(subject_type, subject)
+    names: list[tuple[str, str]] = [(name, name.replace("_", " ")) for name in GATE_CHECKS[gate_id]]
     try:
-        gate = get_policies().gates.gates.get(GATES[subject_type])
+        gate = get_policies().gates.gates.get(gate_id)
     except PolicyError:
         gate = None
     if gate is not None:
@@ -388,6 +414,31 @@ def _unread_facts(report: StatusReport) -> list[Fact]:
     ]
 
 
+def _acceptance_facts(db: Session, deliverable: PlanDeliverable) -> list[Fact]:
+    """The deliverable and the offer waiting for its answer (item 7.6)."""
+    facts = [
+        Fact("deliverable", "Deliverable", deliverable.name),
+        Fact("status", "Status", deliverable.status.replace("_", " ")),
+    ]
+    offer = acceptance.waiting_offer(db, deliverable.id)
+    if offer is not None:
+        facts += [
+            Fact("round", "Round", str(offer.round)),
+            Fact("offered_to", "Offered to", offer.offered_to or ""),
+            Fact(
+                "offered_on", "Offered on", offer.offered_on.isoformat() if offer.offered_on else ""
+            ),
+            Fact("means", "By", offer.means or ""),
+        ]
+    project = orchestrator.deliverable_project(db, deliverable.id)
+    client = db.get(Client, project.client_id) if project and project.client_id else None
+    answerer = "the sponsor (no client)"
+    if client is not None:
+        answerer = "Simulated client" if client.simulated else f"the client, {client.name}"
+    facts.append(Fact("answered_by", "Answered by", answerer))
+    return facts
+
+
 def _request_facts(db: Session, request: ProjectRequest) -> list[Fact]:
     has_value_case = db.scalar(select(ValueCase.id).where(ValueCase.request_id == request.id))
     has_readiness = db.scalar(
@@ -443,6 +494,9 @@ def facts_for(db: Session, step: str, subject_type: str, subject_id: int) -> lis
     if subject_type == CHANGE_REQUEST:
         change = db.get(ChangeRequest, subject_id)
         return [] if change is None else _change_facts(change)
+    if subject_type == DELIVERABLE:
+        deliverable = db.get(PlanDeliverable, subject_id)
+        return [] if deliverable is None else _acceptance_facts(db, deliverable)
     if subject_type == STATUS_REPORT:
         report = db.get(StatusReport, subject_id)
         if report is None:
@@ -551,6 +605,15 @@ def _client_answer(_facts: list[Fact]) -> str:
     return "Record the client's answer when it arrives."
 
 
+def _client_acceptance(facts: list[Fact]) -> str:
+    if _value(facts, "answered_by").startswith("the sponsor"):
+        return (
+            "Accept it if it meets what was agreed; otherwise record it as not accepted with what "
+            "is missing."
+        )
+    return "Record the client's answer on the deliverable when it arrives."
+
+
 def _decide_change(facts: list[Fact]) -> str:
     cost = _value(facts, "cost_difference")
     days = _value(facts, "later_working_days", "0")
@@ -623,6 +686,7 @@ RECOMMENDERS: dict[str, Callable[[list[Fact]], str]] = {
     "submit_proposal": _submit_proposal,
     "draft_proposal": _draft_proposal,
     "client_answer": _client_answer,
+    "client_acceptance": _client_acceptance,
     "decide_change_pm": _decide_change,
     "decide_change_sponsor": _decide_change,
     "draft_value_case": _draft_value_case,
@@ -777,6 +841,7 @@ def entries(
                 created_at=row.created_at,
                 action_id=row.action_id if is_item else row.id,
                 due_at=None if is_item else row.due_at,
+                gate_id=step.gate,
                 subject_title=scope.title,
                 project_id=scope.project.id if scope.project is not None else None,
                 project_name=scope.project.name if scope.project is not None else None,

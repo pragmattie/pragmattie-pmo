@@ -18,7 +18,21 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-Nothing yet.
+- **`policies/gates.yaml`** and **`policies/autonomy.yaml`** (item 7.6), to be applied together in
+  one pull request straight after the item merges, since the orchestrator and the Inbox need both.
+  - `gates.yaml` adds the acceptance gate: from `delivery` to `closure`, for projects, decided by
+    `sponsor`. Its code checks are `deliverables_accepted` (every deliverable in the latest
+    baseline is accepted), `milestones_reached`, `no_waiting_changes` (no change request submitted
+    and not yet decided, the same set the status report counts) and `escalations_settled`; its
+    person criteria are `scope_met` and `client_in_good_standing`. The approval and go-ahead gates
+    are unchanged. Until it is applied, `GET` and `POST /api/v1/projects/{id}/acceptance-gate`
+    answer 503.
+  - `autonomy.yaml` adds the step `client_acceptance` (`agent`, `simulated_client`, who
+    `project_manager`): the simulated client answers an offered deliverable for a simulated client
+    only; a real client's answer goes to the project manager, and with no client the sponsor
+    accepts. It also adds `agents.simulated_client.acceptance_answer: accepted` (`not_accepted`
+    for a demo; the loader refuses any other value). The loader refuses a file missing a step, so
+    until this is applied the orchestrator, the Inbox and the board answer 503, as in 7.5.
 
 ## Applied
 

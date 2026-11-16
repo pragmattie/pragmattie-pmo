@@ -5,7 +5,7 @@ from app.models.auth import RevokedToken, User
 from app.models.base import Base, Money, utcnow
 from app.models.baseline import ProjectBaseline
 from app.models.change import ChangeRequest
-from app.models.delivery import ProjectSpend
+from app.models.delivery import DeliverableAcceptance, ProjectSpend
 from app.models.gate import GateDecision
 from app.models.intake import (
     ProjectRequest,
@@ -27,6 +27,7 @@ __all__ = [
     "Base",
     "ChangeRequest",
     "Client",
+    "DeliverableAcceptance",
     "GateDecision",
     "InboxItem",
     "Money",

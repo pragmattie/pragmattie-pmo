@@ -47,6 +47,7 @@ from sqlalchemy.orm import Session
 
 from app import delivery
 from app.audit import next_attempt, record_decision
+from app.changes import waiting_changes
 from app.models import ChangeRequest, PlanDeliverable, ProjectPlan, ProjectSpend, Risk
 from app.models.base import utcnow
 from app.models.baseline import ProjectBaseline
@@ -545,13 +546,7 @@ def build_figures(
             )
         )
     escalated_risks = [r for r in open_risks if r.escalated_to not in (None, PROJECT_MANAGER)]
-    waiting = list(
-        db.scalars(
-            select(ChangeRequest)
-            .where(ChangeRequest.project_id == project_id, ChangeRequest.status == "submitted")
-            .order_by(ChangeRequest.id)
-        )
-    )
+    waiting = waiting_changes(db, project_id)
     escalated_changes = [c for c in waiting if c.decider != PROJECT_MANAGER]
     add(
         _figure(

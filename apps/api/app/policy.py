@@ -114,6 +114,10 @@ CHECK_SUBJECTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "proposal_accepted": ("project",),
         "no_unreviewed_risks": ("project",),
         "escalations_settled": ("project",),
+        # The acceptance gate (item 7.6).
+        "deliverables_accepted": ("project",),
+        "milestones_reached": ("project",),
+        "no_waiting_changes": ("project",),
     }
 )
 KNOWN_CHECKS = tuple(CHECK_SUBJECTS)
@@ -829,23 +833,33 @@ def parse_autonomy(data: dict, where: str = AUTONOMY_FILE, digest: str = "") -> 
         raise PolicyError(f"{where} agents: missing agents: {', '.join(missing)}")
     enabled = {}
     answer = autonomy.DEFAULT_SIMULATED_ANSWER
+    acceptance_answer = autonomy.DEFAULT_ACCEPTANCE_ANSWER
     for name in autonomy.AGENTS:
         at = f"{where} agents.{name}"
         entry = _mapping(raw[name], at)
-        # Only the simulated client has an answer (item 6.8); it is optional.
-        optional = ("answer",) if name == autonomy.SIMULATED_CLIENT else ()
+        # Only the simulated client has answers: to a proposal (item 6.8) and to an offered
+        # deliverable (item 7.6). Both are optional.
+        optional = ("answer", "acceptance_answer") if name == autonomy.SIMULATED_CLIENT else ()
         _keys(entry, at, ("enabled",), optional)
         if not isinstance(entry["enabled"], bool):
             raise PolicyError(f"{at}.enabled: expected true or false")
         enabled[name] = entry["enabled"]
         if "answer" in entry:
             answer = _choice(entry["answer"], f"{at}.answer", autonomy.SIMULATED_ANSWERS, "answer")
+        if "acceptance_answer" in entry:
+            acceptance_answer = _choice(
+                entry["acceptance_answer"],
+                f"{at}.acceptance_answer",
+                autonomy.ACCEPTANCE_ANSWERS,
+                "acceptance answer",
+            )
 
     return AutonomyPolicy(
         steps=MappingProxyType(steps),
         enabled=MappingProxyType(enabled),
         digest=digest,
         simulated_answer=answer,
+        acceptance_answer=acceptance_answer,
     )
 
 

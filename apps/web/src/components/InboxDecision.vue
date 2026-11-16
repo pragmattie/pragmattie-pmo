@@ -2,8 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { type Baseline, gateApi, type GateSubject } from '../lib/gates'
-import { formFor, type InboxEntry, riskLink, subjectLink } from '../lib/inbox'
+import { type Baseline, gateApi } from '../lib/gates'
+import { formFor, gateSubjectFor, type InboxEntry, riskLink, subjectLink } from '../lib/inbox'
 import { REQUEST_CONFLICT } from '../lib/intake'
 import { projectApi } from '../lib/projects'
 import {
@@ -246,7 +246,7 @@ onMounted(async () => {
 
     <GateSection
       v-if="form === 'gate'"
-      :subject="entry.subject_type as GateSubject"
+      :subject="gateSubjectFor(entry)"
       :subject-id="entry.subject_id"
       @decided="emit('decided', $event)"
       @conflict="gateConflict"

@@ -17,7 +17,14 @@ export interface InboxEntry {
   kind: 'item' | 'window'
   id: number
   step: string
-  subject_type: 'request' | 'project' | 'risk' | 'proposal' | 'change_request' | 'status_report'
+  subject_type:
+    | 'request'
+    | 'project'
+    | 'risk'
+    | 'proposal'
+    | 'change_request'
+    | 'status_report'
+    | 'deliverable'
   subject_id: number
   subject_title: string
   project_id: number | null
@@ -30,6 +37,8 @@ export interface InboxEntry {
   created_at: string
   action_id: number | null
   due_at: string | null
+  // The gate a `pass_gate` item asks for: approval, go_ahead or acceptance (item 7.6).
+  gate_id?: string | null
   facts: InboxFact[]
   recommendation: string
 }
@@ -76,6 +85,7 @@ const STEP_TITLES: Record<string, string> = {
   approve_proposal: 'Approve or return the proposal',
   send_proposal: 'Send the proposal',
   client_answer: "Record the client's answer",
+  client_acceptance: 'Record the answer on a deliverable',
   pass_gate: 'Decide the gate',
   decide_change_pm: 'Decide a change request',
   decide_change_sponsor: 'Decide a change request',
@@ -118,6 +128,12 @@ export function dueText(entry: Pick<InboxEntry, 'due_at'>): string | null {
 // Hold shows only for a window action, and only to the step's role; the API checks it too.
 export function mayHold(entry: Pick<InboxEntry, 'kind' | 'who'>, role: string | undefined) {
   return entry.kind === 'window' && role === entry.who
+}
+
+// The gate section a `pass_gate` item opens: a project in delivery is at the acceptance gate.
+export function gateSubjectFor(entry: Pick<InboxEntry, 'subject_type' | 'gate_id'>) {
+  if (entry.gate_id === 'acceptance') return 'acceptance' as const
+  return entry.subject_type === 'request' ? ('request' as const) : ('project' as const)
 }
 
 // Which existing form decides the item in place.

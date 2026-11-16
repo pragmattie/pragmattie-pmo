@@ -24,7 +24,8 @@ import {
 
 // Projects (item 4.6). Without an id, the list of projects; with one, the project: its brief,
 // plan (item 5.1), proposal (item 5.2), the go-ahead gate and its latest baseline (item 5.4), its
-// change requests and delivery progress once in delivery (items 5.5 and 7.2), stakeholders and
+// change requests and delivery progress once in delivery (items 5.5 and 7.2), the acceptance gate
+// from delivery on (item 7.6), stakeholders and
 // assumptions, links to its status reports (item 7.3) and risks, and one back to its request.
 // The API guards every route; the baseline is read-only.
 const route = useRoute()
@@ -41,6 +42,13 @@ const baseline = ref<Baseline | null>(null)
 const message = ref('')
 const messageType = ref<'success' | 'warning'>('success')
 const missing = ref<string[]>([])
+// Bumped when delivery progress or an acceptance answer is saved, so the acceptance gate's checks
+// are read again.
+const deliveryVersion = ref(0)
+// Item 7.6: the acceptance gate shows once the project is in delivery, and stays as a record after.
+const atAcceptance = computed(
+  () => !!project.value && ['delivery', 'closure', 'closed'].includes(project.value.stage),
+)
 
 function gateLoaded(gate: AnyGate) {
   baseline.value = 'baseline' in gate ? gate.baseline : null
@@ -299,6 +307,17 @@ watch(projectId, load, { immediate: true })
         v-if="project.stage === 'delivery'"
         :key="baseline?.number ?? 0"
         :project-id="project.id"
+        @changed="deliveryVersion++"
+      />
+
+      <GateSection
+        v-if="atAcceptance"
+        subject="acceptance"
+        :subject-id="project.id"
+        :version="deliveryVersion"
+        class="mb-6"
+        @decided="gateDecided"
+        @conflict="gateConflict"
       />
 
       <section id="stakeholders" class="mb-6" data-test="stakeholders">

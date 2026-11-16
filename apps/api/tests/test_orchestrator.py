@@ -393,7 +393,42 @@ def _world(db: Session) -> dict[str, int]:
     db.commit()
     ids["report_overdue_pm"] = ids["report_overdue_sponsor"] = late.id
     ids["report_unread"] = _published(db, late, pm, _due_periods(db, late)[0]).id
+    # Item 7.6: a deliverable offered to a real client, waiting for its answer.
+    accepting = _project(db, stage="delivery", client=True)
+    ids["client_acceptance"] = _offered(db, accepting, pm).id
     return ids
+
+
+def _offered(db: Session, project: Project, user: User, at: datetime | None = None):
+    """A deliverable on `project`'s plan (made if needed), ready for acceptance and offered at
+    `at`."""
+    from app.models import DeliverableAcceptance
+
+    plan = db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    if plan is None:
+        plan = ProjectPlan(project_id=project.id, scope_in="The pilot", contingency_pct=0)
+        db.add(plan)
+        db.flush()
+    deliverable = PlanDeliverable(plan_id=plan.id, name="Model", status="ready_for_acceptance")
+    db.add(deliverable)
+    db.flush()
+    db.add(
+        DeliverableAcceptance(
+            project_id=project.id,
+            deliverable_id=deliverable.id,
+            deliverable_name=deliverable.name,
+            round=1,
+            kind="offer",
+            offered_to="Dana Reyes",
+            offered_on=date(2027, 5, 20),
+            means="email",
+            source="person",
+            recorded_by=user.id,
+            **({"created_at": at} if at is not None else {}),
+        )
+    )
+    db.commit()
+    return deliverable
 
 
 def _found(steps, step: str, subject_id: int):
@@ -469,6 +504,13 @@ def test_every_step_id_comes_from_some_state(db, rules):
     answer = _found(steps, "client_answer", ids["client_answer"])
     assert (answer.mode, answer.waits_on) == (PERSON, "project_manager")
     assert answer.handoff == orchestrator.REAL_CLIENT
+    accepting = _found(steps, "client_acceptance", ids["client_acceptance"])
+    assert (accepting.subject_type, accepting.mode, accepting.waits_on) == (
+        "deliverable",
+        PERSON,
+        "project_manager",
+    )
+    assert accepting.handoff == orchestrator.REAL_CLIENT_ACCEPTANCE
     assert _found(steps, "decide_change_pm", ids["decide_change_pm"]).waits_on == "project_manager"
     assert (
         _found(steps, "decide_change_sponsor", ids["decide_change_sponsor"]).waits_on == "sponsor"

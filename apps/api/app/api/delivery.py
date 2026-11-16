@@ -16,6 +16,18 @@ stand and what it has spent, recorded so later reports read it from records.
   409 (`stale_spend`). A new entry with no `supersedes_id` needs no version, and none of this
   touches the project's `version`, which guards gate decisions.
 
+- `POST .../delivery/deliverables/{did}/offer` (`project:write`, item 7.6): offer a deliverable
+  that is `ready_for_acceptance` for acceptance: to whom, on what date and by what means. Nothing
+  is sent from here. Refused (409) while its last offer is still waiting for an answer.
+- `POST .../delivery/deliverables/{did}/answer` (item 7.6): record the answer to the waiting
+  offer: `accepted` sets the deliverable to `accepted`, `not_accepted` (with what is missing) sets
+  it back to `in_progress`. For a client project a role with `project:write` records it; a
+  project with no client has its deliverables accepted by the sponsor (`gate:decide`), never its
+  own project manager. Refused with no waiting offer, so never twice for one offer.
+  `app.acceptance` holds the rules; the simulated client answers through them too.
+
+`GET .../delivery` shows each deliverable's acceptance history, every round oldest first.
+
 Every write needs a project in delivery that isn't cancelled (otherwise a 409). None of them
 changes the plan or the baseline: dates, scope and cost still change only by a change request.
 Each write is one audit row (agent `delivery`, trigger `human`, the person's id), and so is every
@@ -29,22 +41,35 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import acceptance
 from app import delivery as rules
 from app.api.intake import _commit, _names
 from app.api.projects import Db, Reader
 from app.audit import next_attempt, record_decision, record_refusal
-from app.authz import Action, require_audited
+from app.authz import Action, require_any_audited, require_audited
 from app.baselines import latest_baseline
-from app.models import PlanDeliverable, PlanMilestone, Project, ProjectPlan, ProjectSpend, User
+from app.models import (
+    Client,
+    PlanDeliverable,
+    PlanMilestone,
+    Project,
+    ProjectPlan,
+    ProjectSpend,
+    User,
+)
+from app.models.delivery import PERSON
 from app.models.plan import ACCEPTED
 from app.plans import CENT, milestones_of
 from app.schemas.common import DEFAULT_LIMIT, Limit, Offset, Page, paginate
 from app.schemas.delivery import (
+    AcceptanceOut,
+    AnswerIn,
     DeliverableProgressOut,
     DeliverableStatusIn,
     DeliveryOut,
     MilestoneProgressOut,
     MilestoneReachedIn,
+    OfferIn,
     SpendIn,
     SpendOut,
 )
@@ -64,6 +89,10 @@ STALE = "this has changed since you read it; reload it and try again"
 FUTURE_DATE = "a milestone can't be reached after today"
 ACCEPTED_HERE = "only the acceptance step sets a deliverable to accepted"
 ALREADY_ACCEPTED = "this deliverable is accepted; only the acceptance step changes it"
+OFFER_WAITING = (
+    "this deliverable's offer is waiting for the client's answer; record the answer instead "
+    "(not accepted sends it back to in progress)"
+)
 STALE_SPEND = (
     "a correction must name the project's newest spend entry; reload the spend and try again"
 )
@@ -275,6 +304,17 @@ def _writer(action: str):
 MilestoneWriter = _writer("milestone_reached")
 DeliverableWriter = _writer("deliverable_status")
 SpendWriter = _writer("spend")
+OfferWriter = _writer("deliverable_offer")
+# Either permission reaches the route, which then checks who answers this project's deliverables.
+Answerer = Annotated[
+    User,
+    Depends(
+        require_any_audited(
+            frozenset({Action.PROJECT_WRITE, Action.GATE_DECIDE}),
+            _refusal_recorder("deliverable_answer"),
+        )
+    ),
+]
 
 
 def _locked_project(db: Session, user: User, project_id: int, action: str) -> Project:
@@ -311,6 +351,24 @@ def _spend_out(db: Session, rows: list[ProjectSpend]) -> list[SpendOut]:
     ]
 
 
+def _acceptance_out(db: Session, rows) -> dict[int, list[AcceptanceOut]]:
+    people = _names(
+        db,
+        User,
+        {r.recorded_by for rs in rows.values() for r in rs if r.recorded_by},
+        User.display_name,
+    )
+    return {
+        deliverable_id: [
+            AcceptanceOut.model_validate(r).model_copy(
+                update={"recorded_by_name": people.get(r.recorded_by) if r.recorded_by else None}
+            )
+            for r in found
+        ]
+        for deliverable_id, found in rows.items()
+    }
+
+
 def _view(db: Session, project: Project, *, limit: int = DEFAULT_LIMIT, offset: int = 0):
     baseline = latest_baseline(db, project.id)
     targets = rules.baseline_targets(baseline)
@@ -336,10 +394,15 @@ def _view(db: Session, project: Project, *, limit: int = DEFAULT_LIMIT, offset: 
         offset=offset,
     )
     newest = _newest_spend(db, project.id)
+    history = _acceptance_out(db, acceptance.histories(db, [d.id for d in deliverables]))
+    client = db.get(Client, project.client_id) if project.client_id else None
     return DeliveryOut(
         project_id=project.id,
         project_stage=project.stage,
         project_status=project.status,
+        has_client=client is not None,
+        client_simulated=bool(client and client.simulated),
+        pm_user_id=project.pm_user_id,
         baseline_number=baseline.number if baseline else None,
         baseline_total=baseline.total if baseline else None,
         today=on,
@@ -363,6 +426,8 @@ def _view(db: Session, project: Project, *, limit: int = DEFAULT_LIMIT, offset: 
                 milestone_id=d.milestone_id,
                 status=d.status,
                 version=d.status_version,
+                acceptance=history[d.id],
+                awaiting_answer=bool(history[d.id]) and history[d.id][-1].kind == "offer",
             )
             for d in deliverables
         ],
@@ -466,6 +531,14 @@ def set_deliverable_status(
             status.HTTP_409_CONFLICT,
             ALREADY_ACCEPTED,
         ),
+        (
+            "offer_waiting",
+            deliverable.status == acceptance.READY
+            and body.status != acceptance.READY
+            and acceptance.waiting_offer(db, deliverable.id) is not None,
+            status.HTTP_409_CONFLICT,
+            OFFER_WAITING,
+        ),
     ):
         if refused:
             raise _refuse(
@@ -537,5 +610,126 @@ def record_spend(project_id: int, body: SpendIn, user: SpendWriter, db: Db) -> D
         action="spend_corrected" if body.supersedes_id else "spend_recorded",
         project_id=project.id,
     )
+    _commit(db)
+    return _view(db, project)
+
+
+def _locked_deliverable(
+    db: Session, user: User, project_id: int, deliverable_id: int, action: str
+) -> tuple[Project, PlanDeliverable]:
+    project = _locked_project(db, user, project_id, action)
+    deliverable = _item(
+        db, PlanDeliverable, project.id, deliverable_id, DELIVERABLE_NOT_FOUND, lock=True
+    )
+    return project, deliverable
+
+
+def _conflict_or_invalid(is_conflict: bool) -> int:
+    return status.HTTP_409_CONFLICT if is_conflict else status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
+@router.post(
+    "/{project_id}/delivery/deliverables/{deliverable_id}/offer",
+    response_model=DeliveryOut,
+    status_code=201,
+)
+def offer_deliverable(
+    project_id: int, deliverable_id: int, body: OfferIn, user: OfferWriter, db: Db
+) -> DeliveryOut:
+    action = "deliverable_offer"
+    project, deliverable = _locked_deliverable(db, user, project_id, deliverable_id, action)
+    refused = acceptance.offer_refusal(db, deliverable, body.offered_on)
+    if refused is not None:
+        refusal, detail, conflict = refused
+        raise _refuse(
+            db,
+            user,
+            project,
+            deliverable,
+            action=action,
+            refusal=refusal,
+            code=_conflict_or_invalid(conflict),
+            detail=detail,
+            offered_on=body.offered_on.isoformat(),
+        )
+    acceptance.offer(
+        db,
+        project,
+        deliverable,
+        offered_to=body.offered_to,
+        offered_on=body.offered_on,
+        means=body.means,
+        note=body.note,
+        user=user,
+        agent=AUDIT_AGENT,
+    )
+    _commit(db)
+    return _view(db, project)
+
+
+@router.post(
+    "/{project_id}/delivery/deliverables/{deliverable_id}/answer",
+    response_model=DeliveryOut,
+    status_code=201,
+)
+def answer_deliverable(
+    project_id: int, deliverable_id: int, body: AnswerIn, user: Answerer, db: Db
+) -> DeliveryOut:
+    action = "deliverable_answer"
+    project, deliverable = _locked_deliverable(db, user, project_id, deliverable_id, action)
+    who = acceptance.answerer_refusal(user, project)
+    if who is not None:
+        raise _refuse(
+            db,
+            user,
+            project,
+            deliverable,
+            action=action,
+            refusal=who[0],
+            code=status.HTTP_403_FORBIDDEN,
+            detail=who[1],
+            answer=body.answer,
+        )
+    refused = acceptance.answer_refusal(db, deliverable, body.answered_on)
+    if refused is not None:
+        refusal, detail, conflict = refused
+        raise _refuse(
+            db,
+            user,
+            project,
+            deliverable,
+            action=action,
+            refusal=refusal,
+            code=_conflict_or_invalid(conflict),
+            detail=detail,
+            answer=body.answer,
+        )
+    try:
+        acceptance.answer(
+            db,
+            project,
+            deliverable,
+            answer=body.answer,
+            answered_on=body.answered_on,
+            missing=body.missing,
+            note=body.note,
+            actor_user_id=user.id,
+            source=PERSON,
+            agent=AUDIT_AGENT,
+            trigger="human",
+        )
+    except acceptance.Lost:
+        db.rollback()
+        raise _refuse(
+            db,
+            user,
+            project,
+            deliverable,
+            action=action,
+            refusal="stale_version",
+            code=status.HTTP_409_CONFLICT,
+            detail=STALE,
+            answer=body.answer,
+        ) from None
     _commit(db)
     return _view(db, project)

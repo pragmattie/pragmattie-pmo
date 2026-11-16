@@ -39,6 +39,7 @@ from app.models import (
     Client,
     InboxItem,
     OrchestratorAction,
+    PlanDeliverable,
     PlanEstimateLine,
     Project,
     ProjectBrief,
@@ -53,6 +54,7 @@ from app.models.portfolio import CANCELLED
 from app.models.report import PUBLISHED
 from app.orchestrator import (
     CHANGE_REQUEST,
+    DELIVERABLE,
     PROJECT,
     PROPOSAL,
     REQUEST,
@@ -115,6 +117,11 @@ STEP_WORDS: dict[str, tuple[str, str, str]] = {
     "approve_proposal": ("approving the proposal", "approve the proposal", "proposal approval"),
     "send_proposal": ("sending the proposal", "send the proposal", "proposal to send"),
     "client_answer": ("answering the proposal", "answer the proposal", "client's answer"),
+    "client_acceptance": (
+        "answering for a deliverable",
+        "answer for a deliverable",
+        "deliverable acceptance",
+    ),
     "accept_risk": ("deciding a risk", "decide a risk", "risk decision"),
     "pass_gate": ("deciding the gate", "decide the gate", "gate"),
     "decide_change_pm": ("deciding a change", "decide a change", "change request decision"),
@@ -134,6 +141,12 @@ STEP_WORDS: dict[str, tuple[str, str, str]] = {
     "report_unread": ("", "", "status report to read"),
 }
 GATE_NAMES = {REQUEST: "approval gate", PROJECT: "go-ahead gate"}
+# By the gate a `pass_gate` step names (item 7.6 adds the acceptance gate).
+GATE_NAMES_BY_ID = {
+    "approval": "approval gate",
+    "go_ahead": "go-ahead gate",
+    "acceptance": "acceptance gate",
+}
 
 WAITING_PERSON = "person"
 WAITING_AGENT = "agent"
@@ -230,7 +243,7 @@ def _role(role: str) -> str:
 
 def _person_label(step: NextStep) -> str:
     if step.step == "pass_gate":
-        return GATE_NAMES[step.subject_type]
+        return GATE_NAMES_BY_ID.get(step.gate or "", GATE_NAMES[step.subject_type])
     return STEP_WORDS[step.step][2]
 
 
@@ -369,7 +382,8 @@ def _request_card(
 
 
 def _owner_projects(db: Session, steps: list[NextStep]) -> dict[tuple[str, int], int]:
-    """The project each risk, proposal, status report and change request step belongs to."""
+    """The project each risk, proposal, status report, change request and deliverable step
+    belongs to."""
     owners: dict[tuple[str, int], int] = {}
     for subject_type, model in (
         (RISK, Risk),
@@ -386,6 +400,14 @@ def _owner_projects(db: Session, steps: list[NextStep]) -> dict[tuple[str, int],
             select(ChangeRequest.id, ChangeRequest.project_id).where(ChangeRequest.id.in_(ids))
         )
         owners.update({(CHANGE_REQUEST, row.id): row.project_id for row in rows})
+    ids = {s.subject_id for s in steps if s.subject_type == DELIVERABLE}
+    if ids:
+        rows = db.execute(
+            select(PlanDeliverable.id, ProjectPlan.project_id)
+            .join(ProjectPlan, ProjectPlan.id == PlanDeliverable.plan_id)
+            .where(PlanDeliverable.id.in_(ids))
+        )
+        owners.update({(DELIVERABLE, row.id): row.project_id for row in rows})
     return owners
 
 
@@ -452,7 +474,8 @@ def cards(
     found = [_request_card(db, r, clients, raisers) for r in requests]
     for project in db.scalars(projects):
         # The go-ahead column is the orchestrator's own rule: a planning project whose next steps
-        # include its gate has every go-ahead check met.
+        # include its gate has every go-ahead check met. (A project in delivery at the acceptance
+        # gate stays in the Delivery column.)
         at_gate = any(
             w.step == "pass_gate" and w.subject_type == PROJECT
             for w in waiting.get(f"{PROJECT}-{project.id}", [])

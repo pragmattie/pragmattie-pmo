@@ -63,6 +63,10 @@ STEP_AGENTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "report_overdue_pm": (),
         "report_overdue_sponsor": (),
         "report_unread": (),
+        # Deliverable acceptance (item 7.6): the simulated client answers an offered deliverable
+        # for a simulated client only; a real client's answer, and the sponsor's for a project
+        # with no client, is a person's to record.
+        "client_acceptance": ("simulated_client",),
     }
 )
 STEPS = tuple(STEP_AGENTS)
@@ -122,6 +126,10 @@ SIMULATED_CLIENT = "simulated_client"
 # in the file, `accepted` when it is missing.
 SIMULATED_ANSWERS = ("accepted", "declined")
 DEFAULT_SIMULATED_ANSWER = "accepted"
+# What the simulated client answers an offered deliverable (item 7.6):
+# `agents.simulated_client.acceptance_answer`, `accepted` when it is missing.
+ACCEPTANCE_ANSWERS = ("accepted", "not_accepted")
+DEFAULT_ACCEPTANCE_ANSWER = "accepted"
 MIN_WINDOW = 1
 MAX_WINDOW = 24 * 60
 
@@ -139,12 +147,13 @@ class Step:
 class AutonomyPolicy:
     """Every step in `STEPS` order, each agent's off switch, the SHA-256 of the file as loaded
     (so a step that runs can record exactly which rules applied), and the simulated client's
-    answer."""
+    answers to a proposal and to an offered deliverable."""
 
     steps: Mapping[str, Step]
     enabled: Mapping[str, bool]
     digest: str = ""
     simulated_answer: str = DEFAULT_SIMULATED_ANSWER
+    acceptance_answer: str = DEFAULT_ACCEPTANCE_ANSWER
 
 
 class JudgedRisk(Protocol):
