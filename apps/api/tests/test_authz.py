@@ -35,8 +35,10 @@ from app.models import (
     Base,
     ChangeRequest,
     Client,
+    ClosureReport,
     DeliverableAcceptance,
     GateDecision,
+    Lesson,
     OrchestratorAction,
     PlanDeliverable,
     PlanEstimateLine,
@@ -52,6 +54,8 @@ from app.models import (
     Risk,
     StatusReport,
     User,
+    ValueCase,
+    ValueCaseBenefit,
 )
 from app.proposals import plan_facts, refresh_from_plan, values_of
 from app.security import CSRF_COOKIE, SESSION_COOKIE, issue_token
@@ -746,6 +750,92 @@ def _report_sample(
     return sample
 
 
+CLOSURE = "/api/v1/projects/{project_id}/closure"
+CLOSURE_REPORT = "/api/v1/projects/{project_id}/closure-report"
+LESSONS = "/api/v1/projects/{project_id}/lessons"
+LESSON = f"{LESSONS}/{{lesson_id}}"
+CLOSE_OUT_GATE = "/api/v1/projects/{project_id}/close-out-gate"
+LESSON_BODY = {
+    "category": "scope",
+    "what_happened": "The regions weren't agreed at the start.",
+    "do_differently": "Agree them before the go-ahead.",
+}
+
+
+def _closure_sample(
+    suffix: str = "",
+    body: dict | None = None,
+    *,
+    report: bool = False,
+    benefit: bool = False,
+    lesson: bool = False,
+    gate: bool = False,
+):
+    """Item 7.7: a project in closure (from `_change_sample`) managed by the target. With
+    `report`, it has a closure report whose `delivered` section is the agent's unreviewed draft;
+    with `benefit`, a value case benefit (`{benefit}` in `suffix`); with `lesson`, an agent's
+    suggested lesson (`{lesson}`). With `gate`, the body gets the project's version."""
+
+    def sample(target: int) -> dict:
+        base = _change_sample()(target)["url"].removesuffix("/changes")
+        ids = {"benefit": None, "lesson": None}
+        with Session(engine) as session:
+            project = session.scalar(select(Project).order_by(Project.id.desc()).limit(1))
+            project.stage = "closure"
+            session.flush()
+            if report:
+                session.add(
+                    ClosureReport(
+                        project_id=project.id,
+                        figures=[],
+                        figures_at=datetime(2026, 1, 1),
+                        sections={"delivered": "The pilot", "value_case": None, "remaining": None},
+                        section_sources={"delivered": {"source": "agent", "reviewed_by": None}},
+                        flags=[],
+                        created_by=target,
+                    )
+                )
+            if benefit:
+                request = ProjectRequest(
+                    title="Forecasts",
+                    asked_for="A",
+                    problem="B",
+                    outcome="C",
+                    requested_by=target,
+                    status="approved",
+                    project_id=project.id,
+                )
+                session.add(request)
+                session.flush()
+                case = ValueCase(request_id=request.id, strategic_fit="Core")
+                session.add(case)
+                session.flush()
+                row = ValueCaseBenefit(
+                    value_case_id=case.id, position=0, description="Faster", measure="Days"
+                )
+                session.add(row)
+                session.flush()
+                ids["benefit"] = row.id
+            if lesson:
+                row = Lesson(
+                    project_id=project.id,
+                    source="agent",
+                    status="suggested",
+                    **{k: v for k, v in LESSON_BODY.items()},
+                )
+                session.add(row)
+                session.flush()
+                ids["lesson"] = row.id
+            version = project.version
+            session.commit()
+        url = base + suffix.format(**ids)
+        if body is None:
+            return {"url": url}
+        return {"url": url, "json": {**body, "version": version} if gate else body}
+
+    return sample
+
+
 HOLD = "/api/v1/orchestrator/actions/{action_id}/hold"
 
 
@@ -1039,6 +1129,43 @@ SAMPLES = {
     # Item 7.5: the executive view and the opening, of a published report.
     ("GET", f"{REPORT}/executive"): _report_sample("/executive", status="published"),
     ("POST", f"{REPORT}/opened"): _report_sample("/opened", status="published"),
+    # Item 7.7: the closure report, its benefits, lessons and the close-out gate.
+    ("GET", CLOSURE): _closure_sample("/closure"),
+    ("POST", CLOSURE_REPORT): _closure_sample("/closure-report"),
+    ("PATCH", CLOSURE_REPORT): _closure_sample(
+        "/closure-report", {"version": 1, "sections": {"remaining": "Nothing"}}, report=True
+    ),
+    ("POST", f"{CLOSURE_REPORT}/refresh"): _closure_sample(
+        "/closure-report/refresh", {"version": 1}, report=True
+    ),
+    ("POST", f"{CLOSURE_REPORT}/sections/{{section}}/confirm"): _closure_sample(
+        "/closure-report/sections/delivered/confirm", {"version": 1}, report=True
+    ),
+    # AGENT_MODE is off in tests, so an allowed caller gets the refusal (409), never a call.
+    ("POST", f"{CLOSURE_REPORT}/draft"): _closure_sample(
+        "/closure-report/draft?dry_run=true", report=True
+    ),
+    ("PUT", f"{CLOSURE_REPORT}/benefits/{{benefit_id}}"): _closure_sample(
+        "/closure-report/benefits/{benefit}",
+        {"version": 0, "value_now": "Three days", "value_now_on": "2027-01-01"},
+        benefit=True,
+    ),
+    ("POST", LESSONS): _closure_sample("/lessons", LESSON_BODY),
+    ("PATCH", LESSON): _closure_sample(
+        "/lessons/{lesson}", {**LESSON_BODY, "version": 1}, lesson=True
+    ),
+    ("POST", f"{LESSON}/record"): _closure_sample(
+        "/lessons/{lesson}/record", {"version": 1}, lesson=True
+    ),
+    ("POST", f"{LESSON}/discard"): _closure_sample(
+        "/lessons/{lesson}/discard", {"version": 1}, lesson=True
+    ),
+    ("GET", CLOSE_OUT_GATE): _closure_sample("/close-out-gate"),
+    ("POST", CLOSE_OUT_GATE): _closure_sample(
+        "/close-out-gate",
+        {"outcome": "return", "reason": "The closure report needs another read"},
+        gate=True,
+    ),
     ("POST", HOLD): _hold_sample,
     # ORCHESTRATOR_MODE is off in tests, so an allowed caller gets an empty pass, never a call.
     ("POST", "/api/v1/orchestrator/run"): lambda _target: {"url": "/api/v1/orchestrator/run"},
@@ -1076,6 +1203,8 @@ CREATED = {
     ("POST", REPORTS),
     ("POST", OFFER),
     ("POST", ANSWER),
+    ("POST", CLOSURE_REPORT),
+    ("POST", LESSONS),
 }
 
 # Allowed deletes answer 204.
@@ -1097,6 +1226,7 @@ REFUSED = {
     ("POST", f"{PROPOSAL}/draft"),
     ("POST", f"{PLAN}/draft"),
     ("POST", f"{REPORT}/draft"),
+    ("POST", f"{CLOSURE_REPORT}/draft"),
 }
 
 # Routes that also need a role the gates policy lists: other roles holding the action get 403.
@@ -1108,6 +1238,8 @@ GATE_DECIDERS = {
     # Item 7.6: the acceptance gate; and with no client, the sponsor accepts a deliverable.
     ("POST", ACCEPTANCE_GATE): {Role.SPONSOR},
     ("POST", ANSWER): {Role.SPONSOR},
+    # Item 7.7: the close-out gate.
+    ("POST", CLOSE_OUT_GATE): {Role.SPONSOR},
     # Only the step's `who` may hold it: the project manager, for score_risk.
     ("POST", HOLD): {Role.PROJECT_MANAGER},
 }
