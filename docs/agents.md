@@ -12,7 +12,8 @@ Code: `apps/api/app/agents/risk_agent.py`. Run by `POST /api/v1/projects/{id}/ri
 project's current risks (title, kind, category and status); the starter risk library; and the
 probability and impact scales from the risk policy; and (item 7.7) lessons from closed projects
 that a person recorded and offered as a suggested risk, those from projects that use AI first
-when this one does, then newest first, at most 20. It never sees people's names or email
+when this one does, then newest first, at most 20 and at most 12,000 characters in all (the
+oldest in that order are left out first). It never sees people's names or email
 addresses. Project text is passed to the model inside tagged data blocks that the prompt marks as
 data, not instructions, and `<`, `>` and `&` in it are escaped so it can't close a block.
 
@@ -373,7 +374,8 @@ step after the project enters closure (filling only empty sections).
 
 **What it reads.** One closure report's figures (key, label, kind, value and what each counts);
 each value case benefit (measure, value before, target and date, and the value now or the date to
-measure it, as a person entered them); the project's name and brief; its published status reports
+measure it, as a person entered them, with the figure key for that date once the figures hold
+it); the project's name and brief; its published status reports
 (newest six), decided change requests, risks and gate decisions; the lessons already on the
 project; and any section a person wrote. No people's names or emails.
 

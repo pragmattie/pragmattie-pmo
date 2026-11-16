@@ -18,7 +18,15 @@ from app.api import closure as closure_api
 from app.config import get_settings
 from app.db import engine
 from app.main import app
-from app.models import AuditDecision, Base, ClosureBenefit, ClosureReport, Lesson, User
+from app.models import (
+    AuditDecision,
+    Base,
+    ClosureBenefit,
+    ClosureReport,
+    Lesson,
+    User,
+    ValueCaseBenefit,
+)
 
 GOOD = {
     "delivered": "The pilot was delivered for {{final_spend}} against a final baseline of "
@@ -225,6 +233,40 @@ def test_a_failed_run_is_audited_and_changes_nothing(db, web, pm, fake, mode):
     assert _draft(web, pid).status_code == 502
     assert [r.status for r in _runs(db)] == ["error", "error"]
     assert _report(db, pid).version == 1
+
+
+def test_what_remains_gives_a_benefits_measure_by_date_as_a_figure(db, web, pm, fake, mode):
+    pid = _ready(db, web, pm)
+    bid = db.scalar(select(ValueCaseBenefit.id))
+    url = REPORT.format(pid=pid)
+    owned = web.put(
+        f"{url}/benefits/{bid}",
+        json={"version": 0, "measure_owner_id": pm.id, "measure_by": "2027-09-01"},
+    )
+    assert owned.status_code == 200, owned.text
+    key = f"benefit_{bid}_measure_by"
+    # Until the figures are read again, the agent has no key for the date.
+    dry =_draft(web, pid, dry_run="true").json()["request"]["messages"][0]["content"]
+    assert '"measure_by_key": null' in dry
+    refreshed = web.post(f"{url}/refresh", json={"version": 1})
+    assert refreshed.status_code == 200, refreshed.text
+    figure = {f["key"]: f for f in refreshed.json()["report"]["figures"]}[key]
+    assert figure["kind"] == "date" and figure["value"] == "2027-09-01"
+    row_id = db.scalar(select(ClosureBenefit.id).where(ClosureBenefit.benefit_id == bid))
+    assert figure["sources"] == [{"table": "closure_benefits", "id": row_id, "field": "measure_by"}]
+    remaining = f"Days to plan has an owner, who measures it by {{{{{key}}}}}."
+    fake.reply = _reply({**GOOD, "remaining": remaining})
+    done = _draft(web, pid)
+    assert done.status_code == 200, done.text
+    sent = fake.requests[0]["messages"][0]["content"]
+    assert f'"measure_by_key": "{key}"' in sent
+    assert key in done.json()["figure_keys"]
+    report = _report(db, pid)
+    date_text = agent.key_values(report.figures)[key]
+    assert report.sections["remaining"] == (
+        f"Days to plan has an owner, who measures it by {date_text}."
+    )
+    assert report.flags == []
 
 
 def test_a_persons_section_is_kept(db, web, pm, fake, mode):

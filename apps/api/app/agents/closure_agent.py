@@ -6,7 +6,8 @@ Limits (also in docs/agents.md, "Closure agent"):
 
 - **Reads** one closure report: its figures (key, label, kind, value and what each counts) and
   each value case benefit (measure, value before, target and its date, and the value now or the
-  owner's date to measure it, as a person entered them); the project's name and brief; its
+  owner's date to measure it, as a person entered them, with that date's figure key); the
+  project's name and brief; its
   published status reports (newest first, capped), its change requests decided (title, reason,
   decision and the reason given), its risks (title, category, status and band) and its gate
   decisions (gate, outcome and reason); the lessons already on the project; and any section a
@@ -83,7 +84,7 @@ from app.models.report import PUBLISHED
 
 AGENT = "closure_agent"
 AUDIT_SUBJECT = closure.SUBJECT
-PROMPT_VERSION = "closure-agent-2026-11-16.1"
+PROMPT_VERSION = "closure-agent-2026-11-16.2"
 
 MAX_LESSONS = 5
 REPORTS_MAX = 6
@@ -156,7 +157,8 @@ whole draft. Write other counts in words without digits, or leave them out.
 Benefits: a person enters each benefit's value now; you never state one, never estimate one and \
 never say a benefit was achieved unless a person has entered its value now. Name a benefit by its \
 measure. Where a benefit has no value now, say who measures it later only if the data says so; \
-otherwise say it still needs an owner and a date.
+otherwise say it still needs an owner and a date. Give the date it is measured by only with its \
+measure_by_key in double braces; when that key is null, leave the date out.
 
 Lessons: at most {MAX_LESSONS}, each from something in the records (a change, a late milestone, \
 a risk, a gate decision, a status report). For each, a category (scope, schedule, cost, risk, \
@@ -198,6 +200,11 @@ def _person_sections(report: ClosureReport) -> dict[str, str]:
     }
 
 
+def _measure_by_key(benefit_id: int, figure_keys: set[str]) -> str | None:
+    key = closure.measure_by_key(benefit_id)
+    return key if key in figure_keys else None
+
+
 def request_data(db: Session, report: ClosureReport) -> dict[str, Any]:
     """Everything the agent reads, as plain data. No people's names or emails."""
     project = db.get(Project, report.project_id)
@@ -231,9 +238,14 @@ def request_data(db: Session, report: ClosureReport) -> dict[str, Any]:
         .where(Lesson.project_id == project.id, Lesson.status != "discarded")
         .order_by(Lesson.id)
     )
+    figure_keys = {f["key"] for f in report.figures}
     benefits = [
         {k: b[k] for k in b if k not in ("benefit_id", "measure_owner_id", "version")}
-        | {"owner_named": b["measure_owner_id"] is not None}
+        | {
+            "owner_named": b["measure_owner_id"] is not None,
+            # The key to write the measure-by date with; null until the figures hold it.
+            "measure_by_key": _measure_by_key(b["benefit_id"], figure_keys),
+        }
         for b in closure.benefits_snapshot(db, project.id)
     ]
     return {

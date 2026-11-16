@@ -13,7 +13,9 @@
     how many on or before their baseline 1 target;
   - deliverables in the final baseline, and how many of them are accepted;
   - accepted risks still standing: an accepted risk is a decision the right person took, so it
-    doesn't hold back close-out, but the report names each one for the sponsor.
+    doesn't hold back close-out, but the report names each one for the sponsor;
+  - for each benefit with an owner to measure it later, the date it is measured by
+    (`benefit_<id>_measure_by`), so "what remains" can give the date as a figure.
 - **Benefits** (`benefits`): each benefit of the value case of the request the project came from,
   with its measure, the value before, the target and its date, and, as measured at close, the
   value now and its date (a person enters both) or the owner and date for measuring it later.
@@ -65,6 +67,7 @@ AUDIT_AGENT = "closure"
 SUBJECT = "closure_report"
 BENEFIT_SUBJECT = "closure_benefit"
 LESSON_SUBJECT = "lesson"
+BENEFITS = "closure_benefits"
 
 _src, _figure, _money = rules._src, rules._figure, rules._money
 
@@ -426,7 +429,29 @@ def build_figures(db: Session, project: Project, read_on: date) -> list[dict[str
             [_src(rules.RISKS, r.id, "status") for r in standing],
         )
     )
+
+    # The date each benefit still to be measured is measured by, as a person entered it.
+    measured = closure_benefits(db, project.id)
+    for benefit in value_case_benefits(db, project.id):
+        row = measured.get(benefit.id)
+        if row is None or row.measure_by is None:
+            continue
+        add(
+            _figure(
+                measure_by_key(benefit.id),
+                f"Measure by: {benefit.measure or benefit.description}",
+                "date",
+                row.measure_by.isoformat(),
+                "The date the benefit's owner measures it by, as a person entered it at close",
+                [_src(BENEFITS, row.id, "measure_by")],
+            )
+        )
     return figures
+
+
+def measure_by_key(benefit_id: int) -> str:
+    """The figure key of the date a value case benefit is measured by."""
+    return f"benefit_{benefit_id}_measure_by"
 
 
 # --- Benefits
