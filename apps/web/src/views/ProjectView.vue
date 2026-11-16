@@ -49,6 +49,10 @@ const deliveryVersion = ref(0)
 const atAcceptance = computed(
   () => !!project.value && ['delivery', 'closure', 'closed'].includes(project.value.stage),
 )
+// Item 7.7: the close-out gate shows once the project is in closure, and stays as a record after.
+const atCloseOut = computed(
+  () => !!project.value && ['closure', 'closed'].includes(project.value.stage),
+)
 
 function gateLoaded(gate: AnyGate) {
   baseline.value = 'baseline' in gate ? gate.baseline : null
@@ -323,6 +327,15 @@ watch(projectId, load, { immediate: true })
         subject="acceptance"
         :subject-id="project.id"
         :version="deliveryVersion"
+        class="mb-6"
+        @decided="gateDecided"
+        @conflict="gateConflict"
+      />
+
+      <GateSection
+        v-if="atCloseOut"
+        subject="close_out"
+        :subject-id="project.id"
         class="mb-6"
         @decided="gateDecided"
         @conflict="gateConflict"

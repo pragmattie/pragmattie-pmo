@@ -1,14 +1,16 @@
 // Stage gates: the approval gate on a submitted project request (item 4.4), the go-ahead gate on a
-// project in planning (item 5.4), and the acceptance gate on a project in delivery (item 7.6). The gate, its criteria and who decides it come from the API
+// project in planning (item 5.4), the acceptance gate on a project in delivery (item 7.6) and the
+// close-out gate on a project in closure (item 7.7). The gate, its criteria and who decides it come
+// from the API
 // (the gates policy); the web only shows them and hides the decision buttons from roles that
 // can't use them. The API checks everything again.
 
 import { call, type Page, type Person } from './risks'
 
 export type GateOutcome = 'pass' | 'return' | 'decline'
-// What a gate decides: a project request, a project at the go-ahead gate, or a project at the
-// acceptance gate.
-export type GateSubject = 'request' | 'project' | 'acceptance'
+// What a gate decides: a project request, a project at the go-ahead gate, a project at the
+// acceptance gate, or a project at the close-out gate (item 7.7).
+export type GateSubject = 'request' | 'project' | 'acceptance' | 'close_out'
 
 export interface GateCriterion {
   id: string
@@ -210,6 +212,31 @@ const CHOICES: Record<GateSubject, OutcomeChoice[]> = {
       explain: "A declined project is cancelled: it can't be passed to closure after this.",
     },
   ],
+  close_out: [
+    {
+      value: 'pass',
+      title: 'Pass',
+      color: 'primary',
+      done: 'Project passed the close-out gate: it is closed and its closure report is frozen.',
+      explain:
+        'Passing closes the project and freezes its closure report as it is now: its figures, ' +
+        'text, benefits and lessons no longer change.',
+    },
+    {
+      value: 'return',
+      title: 'Return',
+      color: 'secondary',
+      done: 'Project returned: it stays in closure.',
+      explain: 'The project stays in closure so its project manager can complete the record.',
+    },
+    {
+      value: 'decline',
+      title: 'Decline',
+      color: 'error',
+      done: 'Project declined and cancelled.',
+      explain: "A declined project is cancelled: it can't be closed at the gate after this.",
+    },
+  ],
 }
 
 export function outcomeChoices(subject: GateSubject): OutcomeChoice[] {
@@ -223,6 +250,7 @@ const OUTCOME_TEXT: Record<GateSubject, Record<GateOutcome, string>> = {
   request: { pass: 'Passed', return: 'Returned to draft', decline: 'Declined' },
   project: { pass: 'Passed', return: 'Returned', decline: 'Declined' },
   acceptance: { pass: 'Passed', return: 'Returned', decline: 'Declined' },
+  close_out: { pass: 'Passed', return: 'Returned', decline: 'Declined' },
 }
 
 // The gate's name before it loads.
@@ -230,6 +258,7 @@ export const GATE_NAMES: Record<GateSubject, string> = {
   request: 'Approval gate',
   project: 'Go-ahead gate',
   acceptance: 'Acceptance gate',
+  close_out: 'Close-out gate',
 }
 
 export function outcomeText(outcome: GateOutcome, subject: GateSubject = 'request'): string {
@@ -267,6 +296,7 @@ export function readyToPass(gate: Pick<AnyGate, 'criteria'>, ticks: PersonTick[]
 
 function gateUrl(subject: GateSubject, id: number): string {
   if (subject === 'acceptance') return `/api/v1/projects/${id}/acceptance-gate`
+  if (subject === 'close_out') return `/api/v1/projects/${id}/close-out-gate`
   return `/api/v1/${subject === 'project' ? 'projects' : 'requests'}/${id}/gate`
 }
 

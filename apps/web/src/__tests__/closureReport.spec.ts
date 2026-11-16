@@ -12,6 +12,7 @@ import {
   lessonsOpen,
   reportOpen,
 } from '../lib/closure'
+import { gateSubjectFor } from '../lib/inbox'
 import { makeVuetify } from '../plugins/vuetify'
 import { makeRouter } from '../router'
 
@@ -195,6 +196,10 @@ describe('the closure report helpers', () => {
     expect(changedSections(report(), { delivered: 'The pilot.', remaining: 'Nothing' })).toEqual({
       remaining: 'Nothing',
     })
+  })
+
+  it('sends an Inbox close-out decision to the close-out gate', () => {
+    expect(gateSubjectFor({ subject_type: 'project', gate_id: 'close_out' })).toBe('close_out')
   })
 
   it('opens writes only in closure, and lessons in delivery too, never once closed', () => {
