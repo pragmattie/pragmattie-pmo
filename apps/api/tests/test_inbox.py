@@ -133,8 +133,11 @@ def test_each_role_sees_only_its_own_items(db, web, settings, actions, sign_in):
     hidden = {"report_overdue_pm", "report_overdue_sponsor", "report_unread"}
     assert not {e["step"] for e in by_role["sponsor"]["items"]} & {"report_unread"}
     assert ("report_overdue_pm", ids["draft_status_report"]) not in pm_steps
+    # Item 7.7: the project in closure names its project manager, so its closure report draft
+    # goes to that person.
+    assert ("draft_closure_report", ids["draft_closure_report"]) not in pm_steps
     shown = sum(len(page["items"]) for page in by_role.values())
-    assert shown == len(open_items) - 4 - len(hidden) - 1 - 1
+    assert shown == len(open_items) - 4 - len(hidden) - 1 - 1 - 1
 
 
 def test_a_draft_request_goes_to_the_project_manager_who_raised_it(
