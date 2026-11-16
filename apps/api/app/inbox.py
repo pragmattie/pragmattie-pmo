@@ -79,7 +79,7 @@ NOT_RUN = "not run"
 CHECKER_NOT_RUN = "Read it closely: the checker hasn't run"
 
 # The gate each subject type's `pass_gate` step is decided at; a project in delivery is at the
-# acceptance gate (item 7.6).
+# acceptance gate (item 7.6) and a project in closure at the close-out gate (item 7.7).
 GATES = {REQUEST: "approval", PROJECT: "go_ahead"}
 
 
@@ -87,6 +87,8 @@ def gate_of(subject_type: str, subject: Any) -> str:
     """The gate a `pass_gate` step on the subject asks for."""
     if subject_type == PROJECT and subject.stage == "delivery":
         return orchestrator.ACCEPTANCE_GATE
+    if subject_type == PROJECT and subject.stage == "closure":
+        return orchestrator.CLOSE_OUT_GATE
     return GATES[subject_type]
 
 
@@ -479,6 +481,9 @@ def facts_for(db: Session, step: str, subject_type: str, subject_id: int) -> lis
             due = orchestrator.report_due(db, project)
             reason = due[0] if due is not None else "no report is due"
             return [Fact("report_due", "Report due", reason)]
+        if step == "draft_closure_report":
+            reason = orchestrator.closure_due(db, project) or "nothing to draft"
+            return [Fact("closure_due", "Closure report", reason)]
         if step in OVERDUE_LIMITS:
             return _overdue_facts(db, project, step)
         open_risks = db.scalars(
@@ -648,6 +653,10 @@ def _draft_status_report(_facts: list[Fact]) -> str:
     return "Create the period's report and write its text."
 
 
+def _draft_closure_report(_facts: list[Fact]) -> str:
+    return "Make the closure report and write its text, then record the project's lessons."
+
+
 def _publish_status_report(facts: list[Fact]) -> str:
     unreviewed = _value(facts, "unreviewed_sections", "none")
     empty = _value(facts, "empty_sections", "none")
@@ -694,6 +703,7 @@ RECOMMENDERS: dict[str, Callable[[list[Fact]], str]] = {
     "draft_plan": _draft_plan,
     "propose_risks": _propose_risks,
     "draft_status_report": _draft_status_report,
+    "draft_closure_report": _draft_closure_report,
     "publish_status_report": _publish_status_report,
     "report_overdue_pm": _report_overdue_pm,
     "report_overdue_sponsor": _report_overdue_sponsor,

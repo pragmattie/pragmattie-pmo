@@ -378,7 +378,7 @@ def test_proposed_gates_file_adds_the_acceptance_gate(tmp_path):
     from app.gates import ACCEPTANCE_CHECKS
 
     gates = load_policies(gates_policy_dir(tmp_path)).gates
-    assert list(gates.gates) == ["approval", "go_ahead", "acceptance"]
+    assert list(gates.gates) == ["approval", "go_ahead", "acceptance", "close_out"]
     acceptance = gates.gates["acceptance"]
     assert (acceptance.from_stage, acceptance.to_stage) == ("delivery", "closure")
     assert acceptance.applies_to == "project"
@@ -395,6 +395,19 @@ def test_proposed_gates_file_adds_the_acceptance_gate(tmp_path):
         "The work meets the scope in the baseline",
         "The client relationship is in good standing",
     ]
+
+
+def test_proposed_gates_file_adds_the_close_out_gate(tmp_path):
+    """Item 7.7: from closure to closed, for a project, decided by the sponsor; its code
+    criteria are exactly the ones the orchestrator runs to ask for it."""
+    from app.gates import CLOSE_OUT_CHECKS
+
+    gate = load_policies(gates_policy_dir(tmp_path)).gates.gates["close_out"]
+    assert (gate.from_stage, gate.to_stage) == ("closure", "closed")
+    assert gate.applies_to == "project"
+    assert gate.deciders == ("sponsor",)
+    assert tuple(c.check for c in gate.criteria if not c.person) == CLOSE_OUT_CHECKS
+    assert [c.text for c in gate.criteria if c.person] == ["The record is complete and accurate"]
 
 
 def test_the_go_ahead_checks_are_the_ones_the_orchestrator_runs(tmp_path):

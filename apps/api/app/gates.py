@@ -1,7 +1,7 @@
-"""The automatic checks a gate criterion can name (items 4.4, 5.4 and 7.6).
+"""The automatic checks a gate criterion can name (items 4.4, 5.4, 7.6 and 7.7).
 
-Each check reads the subject (a project request, or a project for the go-ahead and acceptance
-gates) as it is now
+Each check reads the subject (a project request, or a project for the go-ahead, acceptance and
+close-out gates) as it is now
 and returns whether it is met and a short, plain detail for the person deciding. The names here
 must be exactly `app.policy.KNOWN_CHECKS`, which the policy loader uses to refuse a gates file
 naming a check the code doesn't know, and each one works for the subjects
@@ -13,7 +13,7 @@ came from by the same rule.
 
 A missing input is unmet, never met: no plan, no top budget in the brief, or no proposal for a
 client project each fail their check, and so do no baseline, or a baseline or plan with no
-deliverables or milestones, at the acceptance gate.
+deliverables or milestones, at the acceptance gate; and no closure report at the close-out gate.
 
 `GATE_CHECKS` lists the checks each gate's code names, which the orchestrator runs to ask for a
 gate, and the inbox shows while the gates file isn't applied.
@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import closure
 from app.api.intake import readiness_gaps, readiness_of, value_case_gaps, value_case_of
 from app.baselines import latest_baseline
 from app.changes import waiting_changes
@@ -276,6 +277,59 @@ def no_waiting_changes(db: Session, project: Project) -> CheckResult:
     return CheckResult(True, "no change request is waiting for a decision")
 
 
+# --- The close-out gate's checks (item 7.7): the subject is a project in closure.
+
+# Still open: a risk nobody has settled yet. An accepted risk is a decision the right person
+# already took, so it doesn't block close-out (the closure report lists it); closed and rejected
+# risks are settled.
+OPEN_RISK_STATUSES = ("proposed", "open")
+
+
+def closure_report_reviewed(db: Session, project: Project) -> CheckResult:
+    report = closure.report_of(db, project.id)
+    if report is None:
+        return CheckResult(False, "this project has no closure report yet")
+    unreviewed = closure.unreviewed_sections(report)
+    if unreviewed:
+        named = _names([name.replace("_", " ") for name in unreviewed])
+        return CheckResult(False, "agent draft not reviewed by a person: " + named)
+    return CheckResult(True, "no section of the closure report is an unreviewed agent draft")
+
+
+def benefits_measured_or_owned(db: Session, project: Project) -> CheckResult:
+    benefits = closure.value_case_benefits(db, project.id)
+    if not benefits:
+        return CheckResult(True, "not needed: the project has no value case benefits")
+    gaps = closure.benefit_gaps(db, project.id)
+    if gaps:
+        return CheckResult(False, "no value now, nor an owner and date to measure: " + _names(gaps))
+    return CheckResult(
+        True, f"all {len(benefits)} benefit(s) have a value now or an owner and date to measure"
+    )
+
+
+def lesson_recorded(db: Session, project: Project) -> CheckResult:
+    lessons = closure.recorded_lessons(db, project.id)
+    if not lessons:
+        return CheckResult(
+            False, "no lesson is recorded (an agent's suggestion counts once a person records it)"
+        )
+    return CheckResult(True, f"{len(lessons)} lesson(s) recorded")
+
+
+def no_open_risks(db: Session, project: Project) -> CheckResult:
+    stmt = (
+        select(Risk)
+        .where(Risk.project_id == project.id, Risk.status.in_(OPEN_RISK_STATUSES))
+        .order_by(Risk.id)
+    )
+    still = list(db.scalars(stmt))
+    if still:
+        named = _names([f"risk {r.id} '{r.title}' ({r.status})" for r in still])
+        return CheckResult(False, "still open: " + named)
+    return CheckResult(True, "no risk is still proposed or open")
+
+
 PROJECT_CHECKS: dict[str, ProjectCheck] = {
     "plan_complete": plan_complete,
     "estimate_within_budget": estimate_within_budget,
@@ -286,6 +340,10 @@ PROJECT_CHECKS: dict[str, ProjectCheck] = {
     "deliverables_accepted": deliverables_accepted,
     "milestones_reached": milestones_reached,
     "no_waiting_changes": no_waiting_changes,
+    "closure_report_reviewed": closure_report_reviewed,
+    "benefits_measured_or_owned": benefits_measured_or_owned,
+    "lesson_recorded": lesson_recorded,
+    "no_open_risks": no_open_risks,
 }
 
 # The checks each gate's code criteria name, as the gates file drafts them.
@@ -303,10 +361,17 @@ ACCEPTANCE_CHECKS = (
     "no_waiting_changes",
     "escalations_settled",
 )
+CLOSE_OUT_CHECKS = (
+    "closure_report_reviewed",
+    "benefits_measured_or_owned",
+    "lesson_recorded",
+    "no_open_risks",
+)
 GATE_CHECKS: dict[str, tuple[str, ...]] = {
     "approval": tuple(REQUEST_CHECKS),
     "go_ahead": GO_AHEAD_CHECKS,
     "acceptance": ACCEPTANCE_CHECKS,
+    "close_out": CLOSE_OUT_CHECKS,
 }
 
 CHECKS_BY_SUBJECT: dict[str, dict[str, Callable[[Session, object], CheckResult]]] = {

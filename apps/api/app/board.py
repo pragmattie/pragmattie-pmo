@@ -136,16 +136,23 @@ STEP_WORDS: dict[str, tuple[str, str, str]] = {
         "publish the status report",
         "status report to publish",
     ),
+    "draft_closure_report": (
+        "drafting the closure report",
+        "draft the closure report",
+        "closure report to write",
+    ),
     "report_overdue_pm": ("", "", "status report overdue"),
     "report_overdue_sponsor": ("", "", "status report overdue"),
     "report_unread": ("", "", "status report to read"),
 }
 GATE_NAMES = {REQUEST: "approval gate", PROJECT: "go-ahead gate"}
-# By the gate a `pass_gate` step names (item 7.6 adds the acceptance gate).
+# By the gate a `pass_gate` step names (items 7.6 and 7.7 add the acceptance and close-out
+# gates).
 GATE_NAMES_BY_ID = {
     "approval": "approval gate",
     "go_ahead": "go-ahead gate",
     "acceptance": "acceptance gate",
+    "close_out": "close-out gate",
 }
 
 WAITING_PERSON = "person"

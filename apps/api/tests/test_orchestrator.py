@@ -396,6 +396,11 @@ def _world(db: Session) -> dict[str, int]:
     # Item 7.6: a deliverable offered to a real client, waiting for its answer.
     accepting = _project(db, stage="delivery", client=True)
     ids["client_acceptance"] = _offered(db, accepting, pm).id
+    # Item 7.7: a project in closure with no closure report yet.
+    closing = _in_delivery(db, pm, date.today() - timedelta(days=30))
+    closing.stage = "closure"
+    db.commit()
+    ids["draft_closure_report"] = closing.id
     return ids
 
 
@@ -531,6 +536,13 @@ def test_every_step_id_comes_from_some_state(db, rules):
     ):
         flag = _found(steps, step, ids[step])
         assert (flag.subject_type, flag.mode, flag.waits_on) == (subject_type, PERSON, who)
+    closing = _found(steps, "draft_closure_report", ids["draft_closure_report"])
+    assert (closing.subject_type, closing.mode, closing.waits_on) == (
+        "project",
+        AGENT,
+        "closure_agent",
+    )
+    assert closing.reason == orchestrator.CLOSURE_DUE
     # The same state gives the same steps, in the same order.
     assert next_steps(db, rules) == steps
 

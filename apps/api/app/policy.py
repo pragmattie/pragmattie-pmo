@@ -118,6 +118,11 @@ CHECK_SUBJECTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "deliverables_accepted": ("project",),
         "milestones_reached": ("project",),
         "no_waiting_changes": ("project",),
+        # The close-out gate (item 7.7).
+        "closure_report_reviewed": ("project",),
+        "benefits_measured_or_owned": ("project",),
+        "lesson_recorded": ("project",),
+        "no_open_risks": ("project",),
     }
 )
 KNOWN_CHECKS = tuple(CHECK_SUBJECTS)

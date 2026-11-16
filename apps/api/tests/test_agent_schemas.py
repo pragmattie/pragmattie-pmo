@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app import risks
 from app.agents import (
+    closure_agent,
     intake_agent,
     planner_agent,
     proposal_agent,
@@ -24,6 +25,7 @@ from app.config import get_settings
 from app.db import engine
 from app.models import (
     Base,
+    ClosureReport,
     Project,
     ProjectProposal,
     ProjectRequest,
@@ -38,6 +40,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Every schema an agent sends as `output_config.format.schema`.
 SCHEMAS = {
+    "closure_agent.OUTPUT_SCHEMA": closure_agent.OUTPUT_SCHEMA,
     "intake_agent.OUTPUT_SCHEMA": intake_agent.OUTPUT_SCHEMA,
     "planner_agent.OUTPUT_SCHEMA": planner_agent.OUTPUT_SCHEMA,
     "proposal_agent.OUTPUT_SCHEMA": proposal_agent.OUTPUT_SCHEMA,
@@ -199,7 +202,16 @@ def _sent_schemas(db: Session) -> dict[str, dict]:
         figures_at=datetime(2027, 3, 8),
         created_by=user.id,
     )
-    db.add_all([request, proposal, risk, report])
+    closing = ClosureReport(
+        project_id=project.id,
+        figures=[],
+        figures_at=datetime(2027, 6, 1),
+        sections={},
+        section_sources={},
+        flags=[],
+        created_by=user.id,
+    )
+    db.add_all([request, proposal, risk, report, closing])
     db.flush()
     facts = PlanFacts(
         version=1,
@@ -226,6 +238,7 @@ def _sent_schemas(db: Session) -> dict[str, dict]:
         "status_report_agent.run": lambda c: status_report_agent.run(
             db, c, report, save_it=False, **common
         ),
+        "closure_agent.run": lambda c: closure_agent.run(db, c, closing, save_it=False, **common),
     }
     sent = {}
     for task, call in tasks.items():
@@ -246,6 +259,7 @@ def test_every_agent_request_sends_a_schema_the_api_accepts(db):
         "risk_agent.run",
         "risk_agent.score",
         "status_report_agent.run",
+        "closure_agent.run",
     }
     found = {task: problems(schema) for task, schema in sent.items()}
     assert found == {task: [] for task in sent}

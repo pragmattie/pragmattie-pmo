@@ -130,9 +130,11 @@ export function mayHold(entry: Pick<InboxEntry, 'kind' | 'who'>, role: string | 
   return entry.kind === 'window' && role === entry.who
 }
 
-// The gate section a `pass_gate` item opens: a project in delivery is at the acceptance gate.
+// The gate section a `pass_gate` item opens: a project in delivery is at the acceptance gate, and
+// one in closure at the close-out gate (item 7.7).
 export function gateSubjectFor(entry: Pick<InboxEntry, 'subject_type' | 'gate_id'>) {
   if (entry.gate_id === 'acceptance') return 'acceptance' as const
+  if (entry.gate_id === 'close_out') return 'close_out' as const
   return entry.subject_type === 'request' ? ('request' as const) : ('project' as const)
 }
 

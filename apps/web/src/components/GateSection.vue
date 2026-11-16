@@ -146,7 +146,12 @@ async function send() {
 </script>
 
 <template>
-  <section class="mt-6" :data-test="subject === 'acceptance' ? 'acceptance-gate' : 'gate'">
+  <section
+    class="mt-6"
+    :data-test="
+      subject === 'acceptance' ? 'acceptance-gate' : subject === 'close_out' ? 'close-out-gate' : 'gate'
+    "
+  >
     <h2 class="text-subtitle-1 mb-2">{{ gate?.gate.name ?? fallbackName }}</h2>
     <v-alert v-if="loadError" type="info" variant="tonal" class="mb-2" data-test="gate-error">
       {{ loadError }}

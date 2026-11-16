@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 RISKS_TABLE = table_name("risks")
 PROJECTS_TABLE = table_name("projects")
 USERS_TABLE = table_name("users")
+LESSONS_TABLE = table_name("lessons")
 
 KINDS = ("threat", "opportunity")
 CATEGORIES = ("ai", "project")
@@ -119,6 +120,10 @@ class Risk(Base):
     suggested_impact_reason: Mapped[str | None] = mapped_column(String(SUGGESTED_REASON_MAX))
     suggested_model: Mapped[str | None] = mapped_column(String(64))
     suggested_audit_id: Mapped[int | None]
+    # The lesson of a closed project a risk the risk agent suggested came from (item 7.7).
+    source_lesson_id: Mapped[int | None] = mapped_column(
+        ForeignKey(f"{LESSONS_TABLE}.id", name="fk_risks_source_lesson"), index=True
+    )
     version: Mapped[int] = mapped_column(default=1)
     # Set only on demo risks made by `python -m app.seed`; risks people add leave it empty.
     seed_key: Mapped[str | None] = mapped_column(String(64))

@@ -878,13 +878,17 @@ def _without_known_numbers(text: str, numbers: set[Decimal]) -> str:
 
 
 def check(
-    sections: dict[str, str | None], figures: list[dict[str, Any]], period: Period
+    sections: dict[str, str | None],
+    figures: list[dict[str, Any]],
+    period: Period | None,
+    names: tuple[str, ...] = SECTIONS,
 ) -> list[Flag]:
     """One flag for each money figure, date or plain number in the text that isn't one of the
-    report's figures, in section order."""
+    report's figures, in section order. `names` are the sections to read (a closure report's,
+    item 7.7, which has no period, so only its date figures match)."""
     money: set[Decimal] = set()
     numbers: set[Decimal] = set()
-    dates = {period.start, period.end, period.due_on}
+    dates = set() if period is None else {period.start, period.end, period.due_on}
     for figure in figures:
         value = figure["value"]
         if value is None:
@@ -896,7 +900,7 @@ def check(
             money.add(Decimal(value).quantize(CENT))
         numbers.add(Decimal(str(value)))
     flags: list[Flag] = []
-    for section in SECTIONS:
+    for section in names:
         text = sections.get(section) or ""
         undated = _without_known_numbers(_without_dates(text), numbers)
         for written, amount in _amounts(undated):

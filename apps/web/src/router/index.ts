@@ -7,6 +7,7 @@ import { safeRedirect } from '../lib/redirect'
 import { useAuthStore } from '../stores/auth'
 import AuditView from '../views/AuditView.vue'
 import BoardView from '../views/BoardView.vue'
+import ClosureReportView from '../views/ClosureReportView.vue'
 import ExecutiveReportView from '../views/ExecutiveReportView.vue'
 import HomeView from '../views/HomeView.vue'
 import InboxView from '../views/InboxView.vue'
@@ -68,6 +69,13 @@ export function makeRouter(memory = false) {
         path: '/projects/:id(\\d+)/status-reports',
         name: 'status-reports',
         component: StatusReportsView,
+        meta: { action: 'project:read' },
+      },
+      // A project's closure report, benefits at close and lessons (item 7.7).
+      {
+        path: '/projects/:id(\\d+)/closure',
+        name: 'closure-report',
+        component: ClosureReportView,
         meta: { action: 'project:read' },
       },
       // One published status report on one page (item 7.5), where a sponsor lands.
