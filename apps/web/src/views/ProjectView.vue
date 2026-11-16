@@ -165,6 +165,14 @@ watch(projectId, load, { immediate: true })
         >
           Status reports
         </v-btn>
+        <v-btn
+          v-if="['delivery', 'closure', 'closed'].includes(project.stage)"
+          variant="outlined"
+          :to="{ name: 'closure-report', params: { id: project.id } }"
+          data-test="closure-link"
+        >
+          {{ project.stage === 'delivery' ? 'Lessons' : 'Closure report' }}
+        </v-btn>
         <v-btn color="primary" variant="outlined" :to="risksLink(project.id)" data-test="risks-link">
           Risks
         </v-btn>
