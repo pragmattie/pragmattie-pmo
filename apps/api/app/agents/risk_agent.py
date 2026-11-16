@@ -6,8 +6,9 @@ Limits of the first task, suggesting risks (also in docs/agents.md, "Risk agent"
 - **Reads** one project (its name, stage, status and client), the project's current risks (title,
   kind, category and status), the starter risk library, the probability and impact scales from
   the risk policy, and (item 7.7) at most `MAX_LESSONS` lessons from closed projects that a
-  person recorded and offered as suggested risks: those from projects that use AI first when this
-  one does, then newest first. It never sees people's names or email addresses.
+  person recorded and offered as suggested risks, within `MAX_LESSON_CHARS` characters in all:
+  those from projects that use AI first when this one does, then newest first, the oldest left
+  out first. It never sees people's names or email addresses.
 - **May write** only `proposed` risks with `source = agent`, unscored, and only when `AGENT_MODE`
   is `enforce`; plus one `pmo_audit` row per run (agent `risk_agent`) and one per saved risk.
 - **Never** opens, rejects, accepts, scores or closes a risk, never changes an existing risk and
@@ -52,7 +53,7 @@ from dataclasses import asdict, dataclass, field
 from decimal import ROUND_UP, Decimal
 from typing import Any, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -82,6 +83,8 @@ MAX_REASON = 500
 MAX_EXISTING_RISKS = 200
 # The most lessons from closed projects the request lists (item 7.7).
 MAX_LESSONS = 20
+# The most characters of lessons (their JSON, all together) the request holds (item 7.7).
+MAX_LESSON_CHARS = 12_000
 # Stored error text is cut to this length.
 MAX_ERROR = 500
 # How many attempt numbers a run tries for its audit row when parallel runs take them first.
@@ -294,8 +297,12 @@ def _uses_ai(db: Session, project_id: int) -> bool:
 
 def lessons_for(db: Session, project: Project) -> list[dict[str, Any]]:
     """The lessons from closed projects that a person recorded and offered as a suggested risk
-    (item 7.7), at most `MAX_LESSONS`: those from projects that use AI first when this project
-    does, then newest first."""
+    (item 7.7): those from projects that use AI first when this project does, then newest first.
+    The query takes at most `MAX_LESSONS`, and the lessons sent stop before their JSON passes
+    `MAX_LESSON_CHARS` characters in all, so the oldest in that order are left out first."""
+    order = [Lesson.created_at.desc(), Lesson.id.desc()]
+    if _uses_ai(db, project.id):
+        order.insert(0, case((ProjectRequest.uses_ai.is_(True), 0), else_=1))
     rows = db.execute(
         select(Lesson, ProjectRequest.uses_ai)
         .join(Project, Project.id == Lesson.project_id)
@@ -306,22 +313,25 @@ def lessons_for(db: Session, project: Project) -> list[dict[str, Any]]:
             Lesson.status == "recorded",
             Lesson.suggest_as_risk.is_(True),
         )
-        .order_by(Lesson.created_at.desc(), Lesson.id.desc())
+        .order_by(*order)
+        .limit(MAX_LESSONS)
     ).all()
-    found = [(lesson, bool(ai)) for lesson, ai in rows]
-    if _uses_ai(db, project.id):
-        found.sort(key=lambda pair: not pair[1])  # stable: newest first within each group
-    return [
-        {
+    lessons: list[dict[str, Any]] = []
+    used = 0
+    for lesson, ai in rows:
+        item = {
             "id": lesson.id,
             "category": lesson.category,
-            "from_ai_project": ai,
+            "from_ai_project": bool(ai),
             "what_happened": lesson.what_happened,
             "do_again": lesson.do_again,
             "do_differently": lesson.do_differently,
         }
-        for lesson, ai in found[:MAX_LESSONS]
-    ]
+        used += len(json.dumps(item))
+        if used > MAX_LESSON_CHARS:
+            break  # the rest come later in the order, so the oldest are the ones left out
+        lessons.append(item)
+    return lessons
 
 
 def project_data(

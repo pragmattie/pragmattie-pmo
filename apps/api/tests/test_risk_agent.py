@@ -899,6 +899,23 @@ def test_without_ai_the_lessons_are_newest_first_and_capped(
     assert first not in [lesson["id"] for lesson in _lessons_sent(fake)]
 
 
+def test_the_lessons_sent_keep_to_a_character_budget_dropping_the_oldest(
+    db, web, pm, project, fake, mode, monkeypatch
+):
+    mode("shadow")
+    first = _closed_with_lesson(db, "First", uses_ai=False)
+    second = _closed_with_lesson(db, "Second", uses_ai=False)
+    third = _closed_with_lesson(db, "Third", uses_ai=False)
+    one = len(json.dumps(risk_agent.lessons_for(db, project)[0]))
+    # Room for two lessons but not three: the oldest is the one left out.
+    monkeypatch.setattr(risk_agent, "MAX_LESSON_CHARS", one * 2 + one // 2)
+    assert _suggest(web, project.id).status_code == 200
+    sent = _lessons_sent(fake)
+    assert [lesson["id"] for lesson in sent] == [third, second]
+    assert first not in [lesson["id"] for lesson in sent]
+    assert sum(len(json.dumps(lesson)) for lesson in sent) <= risk_agent.MAX_LESSON_CHARS
+
+
 def test_a_suggested_risk_names_the_lesson_it_came_from(db, web, pm, project, fake, mode):
     mode("enforce")
     lesson_id = _closed_with_lesson(db, "Earlier", uses_ai=True)
