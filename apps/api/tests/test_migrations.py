@@ -32,7 +32,11 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
         risk_checks = {ck["name"] for ck in inspector.get_check_constraints("risks")}
         assert {"ck_risks_kind", "ck_risks_probability", "ck_risks_score"} <= risk_checks
         risk_fks = {fk["name"]: fk["referred_table"] for fk in inspector.get_foreign_keys("risks")}
-        assert risk_fks == {"fk_risks_project": "projects", "fk_risks_owner_user": "users"}
+        assert risk_fks == {
+            "fk_risks_project": "projects",
+            "fk_risks_owner_user": "users",
+            "fk_risks_source_lesson": "lessons",
+        }
         risk_indexes = {ix["name"] for ix in inspector.get_indexes("risks")}
         assert {"ix_risks_project_status", "ix_risks_band", "ix_risks_score"} <= risk_indexes
         risk_uniques = {
@@ -401,8 +405,39 @@ def test_migrations_upgrade_check_and_downgrade(tmp_path, monkeypatch):
             "ck_deliverable_acceptances_person",
             "ck_deliverable_acceptances_round",
         }
+        # 0032: the closure report (one per project), each benefit as measured at close (one per
+        # value case benefit), lessons, and the lesson a suggested risk came from.
+        assert {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("closure_reports")
+        } == {"uq_closure_reports_project": ["project_id"]}
+        assert {
+            fk["name"]: fk["referred_table"]
+            for fk in inspector.get_foreign_keys("closure_benefits")
+        } == {
+            "fk_closure_benefits_project": "projects",
+            "fk_closure_benefits_benefit": "value_case_benefits",
+            "fk_closure_benefits_measure_owner": "users",
+            "fk_closure_benefits_updated_by": "users",
+        }
+        assert {
+            uq["name"]: uq["column_names"]
+            for uq in inspector.get_unique_constraints("closure_benefits")
+        } == {"uq_closure_benefits_benefit": ["benefit_id"]}
+        assert {ck["name"] for ck in inspector.get_check_constraints("lessons")} == {
+            "ck_lessons_category",
+            "ck_lessons_source",
+            "ck_lessons_status",
+            "ck_lessons_takeaway",
+        }
         # Fails if the models and the migrations disagree.
         command.check(config)
+        command.downgrade(config, "0031")
+        inspector = inspect(create_engine(get_settings().database_url))
+        for table in ("closure_reports", "closure_benefits", "lessons"):
+            assert table not in inspector.get_table_names()
+        assert "source_lesson_id" not in {c["name"] for c in inspector.get_columns("risks")}
+        assert "deliverable_acceptances" in inspector.get_table_names()
         command.downgrade(config, "0030")
         inspector = inspect(create_engine(get_settings().database_url))
         assert "deliverable_acceptances" not in inspector.get_table_names()

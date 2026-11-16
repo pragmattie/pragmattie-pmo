@@ -5,6 +5,7 @@ from app.models.auth import RevokedToken, User
 from app.models.base import Base, Money, utcnow
 from app.models.baseline import ProjectBaseline
 from app.models.change import ChangeRequest
+from app.models.closure import ClosureBenefit, ClosureReport, Lesson
 from app.models.delivery import DeliverableAcceptance, ProjectSpend
 from app.models.gate import GateDecision
 from app.models.intake import (
@@ -27,9 +28,12 @@ __all__ = [
     "Base",
     "ChangeRequest",
     "Client",
+    "ClosureBenefit",
+    "ClosureReport",
     "DeliverableAcceptance",
     "GateDecision",
     "InboxItem",
+    "Lesson",
     "Money",
     "OrchestratorAction",
     "OrchestratorLease",
