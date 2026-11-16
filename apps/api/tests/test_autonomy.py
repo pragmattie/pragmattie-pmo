@@ -111,8 +111,9 @@ def test_only_the_simulated_client_has_an_answer():
 
 
 def test_the_proposed_file_is_todays_file_plus_client_acceptance():
-    """Item 7.6: the draft changes nothing in today's file; it adds the `client_acceptance` step
-    and the simulated client's `acceptance_answer`, drafted as `accepted`."""
+    """Items 7.6 and 7.7: the draft changes nothing in today's file; it adds the
+    `client_acceptance` step and the simulated client's `acceptance_answer`, drafted as
+    `accepted`, and the `draft_closure_report` step with the closure agent's switch."""
     proposed = Path(__file__).resolve().parents[3] / "ci/proposed/policies/autonomy.yaml"
     if not proposed.exists():
         pytest.skip("the proposed autonomy file has been applied")
@@ -126,9 +127,15 @@ def test_the_proposed_file_is_todays_file_plus_client_acceptance():
             "agent": "simulated_client",
             "who": "project_manager",
         },
+        "draft_closure_report": {
+            "mode": "agent",
+            "agent": "closure_agent",
+            "who": "project_manager",
+        },
     }
     agents = copy.deepcopy(today["agents"])
     agents["simulated_client"]["acceptance_answer"] = "accepted"
+    agents["closure_agent"] = {"enabled": True}
     assert draft["agents"] == agents
 
 
@@ -173,6 +180,18 @@ def test_the_live_file_without_client_acceptance_is_refused():
         pytest.skip("the proposed autonomy file has been applied")
     with pytest.raises(PolicyError, match="missing steps: client_acceptance"):
         load_autonomy(APPLIED)
+
+
+def test_only_the_closure_agent_drafts_the_closure_report():
+    """Item 7.7."""
+    loaded = load_autonomy(autonomy_dir())
+    assert loaded.steps["draft_closure_report"].agent == "closure_agent"
+    assert loaded.enabled["closure_agent"] is True
+
+    def other_agent(data):
+        data["steps"]["draft_closure_report"]["agent"] = "status_report_agent"
+
+    _refused(_with(other_agent), "status_report_agent can't do draft_closure_report")
 
 
 def test_floor_steps_are_fixed_in_code():

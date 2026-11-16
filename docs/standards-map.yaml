@@ -218,9 +218,9 @@ features:
     rules: [R1, R3, R5, R12]
     notes: Accepted only by a recorded answer, every round kept; the sponsor passes the gate to closure once its checks are met. Simulated answers say so; all audited.
   - id: P7-closure
-    title: Closure report, lessons and close-out gate
+    title: Closure report and lessons
     rules: [R1, R3, R4, R5, R12]
-    notes: Figures from records with sources; a person enters each benefit's value now and records lessons. The agent drafts text only; the sponsor closes the project at the gate; all audited.
+    notes: Figures from records with sources; a person enters each value now and records lessons; the agent drafts text only; the sponsor closes at the gate; all audited.
   # --- P8 Portfolio and oversight
   - id: P8-portfolio-dashboard
     title: Portfolio dashboard
