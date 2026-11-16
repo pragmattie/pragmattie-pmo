@@ -49,16 +49,18 @@ Seeding is deterministic and idempotent: each seeded client, project, request an
 `seed_key`, and running the seed again sets those rows back to the values below without adding
 duplicates. A seeded project or request gets its plan, proposal, gate decision, baseline, change
 request, value case and readiness check, and its delivery and closure history, when it is first
-made; one that already exists keeps what it has. Each seeded risk gets one audit row when it is created or set back, none when it is
-unchanged.
+made; one that already exists keeps what it has. Each seeded risk gets one audit row when it is
+created or set back, none when it is unchanged. Dates are fixed, except the project in delivery's
+history, which moves with today (above), so seeding twice on one day gives the same data.
 
 `--reset` restores exactly the state above. It first deletes the seeded projects and requests with
 everything hung on them, whoever added it (risks, plans, proposals, gate decisions, baselines,
 change requests, spend, acceptance rounds, status reports, closure reports, benefits and lessons,
 and a project made from a seeded request), then every orchestrator action and inbox item, then
 the seeded clients nothing else uses; rows on anything people made are never touched, except
-that a person's risk drawn from a seeded lesson loses that link, since the lesson is gone. The audit table stays append-only: nothing in it is deleted, and every run adds one row
-saying what it seeded and, on a reset, what it cleared. The demo users the data needs are made if
+that a person's risk drawn from a seeded lesson loses that link, since the lesson is gone. The
+audit table stays append-only: nothing in it is deleted, and every run adds one row saying what it
+seeded and, on a reset, what it cleared. The demo users the data needs are made if
 missing (with a random password nobody is shown) and set active with their roles; their
 passwords are left alone.
 
@@ -256,6 +258,8 @@ PROJECTS: tuple[dict[str, Any], ...] = (
         "sponsor_email": "odessa.brightwater@quillmere-freight.example",
         "pm": SECOND_PM,
         "status": "on_track",
+        # Made from its request once the request passed its approval gate.
+        "created_at": datetime(2026, 4, 23, 9, 0),
     },
     {
         # Closed, with a frozen closure report and lessons for the risk agent.
@@ -267,6 +271,7 @@ PROJECTS: tuple[dict[str, Any], ...] = (
         "sponsor_email": "perpetua.hollingmoor@larchwick-mutual.example",
         "pm": PM,
         "status": "complete",
+        "created_at": datetime(2025, 11, 20, 9, 0),
     },
 )
 
@@ -817,6 +822,7 @@ REQUESTS: tuple[dict[str, Any], ...] = (
         "known_risks": "Camera alerts may be wrong at night.",
         "requested_by": SECOND_PM,
         "status": "approved",
+        "created_at": datetime(2026, 4, 13, 9, 0),
         "at": datetime(2026, 4, 20, 10, 0),
         "value_case": {
             "cost_low": Decimal("45000.00"),
@@ -863,6 +869,7 @@ REQUESTS: tuple[dict[str, Any], ...] = (
         "known_risks": "Some old statements may be in formats the new archive can't read.",
         "requested_by": PM,
         "status": "approved",
+        "created_at": datetime(2025, 11, 10, 9, 0),
         "at": datetime(2025, 11, 17, 10, 0),
         "value_case": {
             "cost_low": Decimal("50000.00"),
@@ -1132,17 +1139,17 @@ def _clear_delivery(db: Session, ids: list[int]) -> None:
     if reports:
         db.execute(delete(StatusReportRead).where(StatusReportRead.report_id.in_(reports)))
         # A correction names the report it replaces; MySQL checks that link row by row.
-        db.execute(update(StatusReport).where(StatusReport.id.in_(reports)).values(replaces_id=None))
+        db.execute(
+            update(StatusReport).where(StatusReport.id.in_(reports)).values(replaces_id=None)
+        )
         db.execute(delete(StatusReport).where(StatusReport.id.in_(reports)))
-    # Spend and acceptance rounds are append-only, so the session refuses to delete them; they go
-    # here only because the project they belong to goes too.
+    # Spend and acceptance rounds are append-only, so the session refuses to change them; they
+    # go here, on the plain connection, only because the project they belong to goes too. A
+    # spend correction names the entry it corrects, so that link is cleared first (for MySQL).
     connection = db.connection()
-    for model in (ProjectSpend, DeliverableAcceptance):
-        table = model.__table__
-        if model is ProjectSpend:
-            connection.execute(
-                update(table).where(table.c.project_id.in_(ids)).values(supersedes_id=None)
-            )
+    spend, acceptances = ProjectSpend.__table__, DeliverableAcceptance.__table__
+    connection.execute(update(spend).where(spend.c.project_id.in_(ids)).values(supersedes_id=None))
+    for table in (spend, acceptances):
         connection.execute(delete(table).where(table.c.project_id.in_(ids)))
     lessons = _ids(db, select(Lesson.id).where(Lesson.project_id.in_(ids)))
     if lessons:
@@ -1243,7 +1250,8 @@ class SeedResult:
 def _upsert[T: (Client, Project, ProjectRequest)](
     db: Session, model: type[T], values: dict[str, Any]
 ) -> tuple[T, bool]:
-    """The seeded row, set to `values`, and whether it is new."""
+    """The seeded row, set to `values`, and whether it is new. It was made at `SEEDED_AT` unless
+    `values` give its `created_at`."""
     row = db.scalar(select(model).where(model.seed_key == values["seed_key"]))
     new = row is None
     if new:
@@ -1251,7 +1259,7 @@ def _upsert[T: (Client, Project, ProjectRequest)](
         db.add(row)
     for key, value in values.items():
         setattr(row, key, value)
-    row.created_at = SEEDED_AT
+    row.created_at = values.get("created_at", SEEDED_AT)
     return row, new
 
 
@@ -1575,7 +1583,13 @@ def _accepted(
     )
 
 
-def _mark_sections(report: StatusReport | ClosureReport, names, agent, pm: User, at: datetime):
+def _mark_sections(
+    report: StatusReport | ClosureReport,
+    names: tuple[str, ...],
+    agent: tuple[str, ...],
+    pm: User,
+    at: datetime,
+) -> None:
     """Label who wrote each section: the agent's drafts and the project manager's own text, all
     reviewed by the project manager."""
     for name in names:
