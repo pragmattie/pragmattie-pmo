@@ -244,6 +244,16 @@ def test_the_figures_match_the_baselines_for_a_project_with_two_approved_changes
             assert isinstance(source["id"], int) and source["table"] and source["field"]
 
 
+def test_the_spent_percentage_rounds_half_up(db, web, pm):
+    pid = closing_project(db, pm)
+    db.execute(update(ProjectSpend).where(ProjectSpend.project_id == pid).values(amount="1000.05"))
+    db.commit()
+    figures = _figures(create(web, pid).json())
+    assert figures["final_baseline_total"]["value"] == "1000.00"
+    # 100.005 exactly: half up gives 100.01, where rounding half to even would give 100.00.
+    assert figures["final_spent_pct"]["value"] == "100.01"
+
+
 def test_accepted_risks_still_standing_are_listed(db, web, pm):
     pid = closing_project(db, pm)
     risk = Risk(
