@@ -18,24 +18,8 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`policies/gates.yaml`** and **`policies/autonomy.yaml`** (item 7.6), to be applied together in
-  one pull request straight after the item merges, since the orchestrator and the Inbox need both.
-  - `gates.yaml` adds the acceptance gate: from `delivery` to `closure`, for projects, decided by
-    `sponsor`. Its code checks are `deliverables_accepted` (every deliverable in the latest
-    baseline is accepted), `milestones_reached`, `no_waiting_changes` (no change request submitted
-    and not yet decided, the same set the status report counts) and `escalations_settled`; its
-    person criteria are `scope_met` and `client_in_good_standing`. The approval and go-ahead gates
-    are unchanged. Until it is applied, `GET` and `POST /api/v1/projects/{id}/acceptance-gate`
-    answer 503.
-  - `autonomy.yaml` adds the step `client_acceptance` (`agent`, `simulated_client`, who
-    `project_manager`): the simulated client answers an offered deliverable for a simulated client
-    only; a real client's answer goes to the project manager, and with no client the sponsor
-    accepts. It also adds `agents.simulated_client.acceptance_answer: accepted` (`not_accepted`
-    for a demo; the loader refuses any other value). The loader refuses a file missing a step, so
-    until this is applied the orchestrator, the Inbox and the board answer 503, as in 7.5.
-
 - **`policies/gates.yaml`** and **`policies/autonomy.yaml`** (item 7.7), drafted on top of the
-  item 7.6 drafts above, so applying these applies both items; apply them together, straight
+  applied item 7.6 files (they differ only by item 7.7's additions); apply them together, straight
   after the item merges.
   - `gates.yaml` adds the close-out gate: from `closure` to `closed`, for projects, decided by
     `sponsor`. Its code checks are `closure_report_reviewed` (the closure report exists and no
@@ -53,6 +37,15 @@ Nothing in this folder runs automatically.
 
 ## Applied
 
+- **`policies/gates.yaml`** and **`policies/autonomy.yaml`** (item 7.6), applied together in one
+  pull request straight after the item merged, unchanged. `gates.yaml` adds the acceptance gate
+  (delivery to closure, for projects, decided by `sponsor`) with four code checks
+  (`deliverables_accepted`, `milestones_reached`, `no_waiting_changes`, `escalations_settled`)
+  and two person criteria (`scope_met`, `client_in_good_standing`); the approval and go-ahead
+  gates are unchanged. `autonomy.yaml` adds the step `client_acceptance` (`agent`,
+  `simulated_client`, who `project_manager`; a simulated client only) and
+  `agents.simulated_client.acceptance_answer: accepted`. The acceptance gate routes, the
+  orchestrator, the Inbox and the board answer again, and tests now read the applied files.
 - **`policies/reporting.yaml`** and **`policies/autonomy.yaml`** (item 7.5), applied together
   in one pull request, since the loader needs both. `reporting.yaml` gains a `flags` section, the
   limits in working days at which the orchestrator raises a status report in the Inbox: overdue to

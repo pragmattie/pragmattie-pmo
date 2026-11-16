@@ -22,6 +22,9 @@
 # - The report flags (report_overdue_pm, report_overdue_sponsor, report_unread) are always
 #   `person`, and their `who` is fixed in code: project_manager for report_overdue_pm, sponsor for
 #   the other two. A flag is cleared only by a person publishing or reading the report.
+# - client_acceptance (item 7.6) may be done only by the simulated_client, and only for a simulated
+#   client: a real client's answer is recorded by a person, and a project with no client has its
+#   deliverables accepted by the sponsor, whatever this file says.
 # - score_risk never applies to a risk marked needs_judgement: a person scores it, whatever the
 #   mode here says.
 # - `agents.<name>.enabled: false` switches an agent off; its steps then go to `who`.
@@ -112,6 +115,14 @@ steps:
   report_unread:
     mode: person
     who: sponsor
+  # Item 7.6: once the project manager offers a deliverable for acceptance, the simulated client
+  # answers it (for a simulated client only) after its delay, with `acceptance_answer` below. A
+  # real client's answer goes to the project manager to record; with no client, the sponsor
+  # accepts.
+  client_acceptance:
+    mode: agent
+    agent: simulated_client
+    who: project_manager
 agents:
   intake_agent:
     enabled: true
@@ -124,5 +135,8 @@ agents:
   simulated_client:
     enabled: true
     answer: accepted
+    # What the simulated client answers an offered deliverable: accepted, or not_accepted for a
+    # demo (it records a "what is missing" that says it is simulated).
+    acceptance_answer: accepted
   status_report_agent:
     enabled: true
