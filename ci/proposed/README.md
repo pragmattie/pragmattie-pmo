@@ -34,6 +34,23 @@ Nothing in this folder runs automatically.
     for a demo; the loader refuses any other value). The loader refuses a file missing a step, so
     until this is applied the orchestrator, the Inbox and the board answer 503, as in 7.5.
 
+- **`policies/gates.yaml`** and **`policies/autonomy.yaml`** (item 7.7), drafted on top of the
+  item 7.6 drafts above, so applying these applies both items; apply them together, straight
+  after the item merges.
+  - `gates.yaml` adds the close-out gate: from `closure` to `closed`, for projects, decided by
+    `sponsor`. Its code checks are `closure_report_reviewed` (the closure report exists and no
+    section is an unreviewed agent draft), `benefits_measured_or_owned` (every value case benefit
+    has a value now, or an owner and a date to measure it), `lesson_recorded` (at least one
+    lesson recorded by a person) and `no_open_risks` (no risk `proposed` or `open`; an accepted
+    risk doesn't block, and the closure report lists it). Its person criterion is
+    `record_complete` ("The record is complete and accurate"). Passing it sets the project to
+    `closed` and freezes its closure report. Until it is applied, `GET` and
+    `POST /api/v1/projects/{id}/close-out-gate` answer 503.
+  - `autonomy.yaml` adds the step `draft_closure_report` (`agent`, `closure_agent`, who
+    `project_manager`) and `agents.closure_agent.enabled: true`. The loader refuses a file
+    missing a step or an agent, so until this is applied the orchestrator, the Inbox and the
+    board answer 503, as for 7.6.
+
 ## Applied
 
 - **`policies/reporting.yaml`** and **`policies/autonomy.yaml`** (item 7.5), applied together

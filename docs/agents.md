@@ -10,13 +10,16 @@ Code: `apps/api/app/agents/risk_agent.py`. Run by `POST /api/v1/projects/{id}/ri
 
 **What it reads.** One project's name, stage, status and client (name and industry); the
 project's current risks (title, kind, category and status); the starter risk library; and the
-probability and impact scales from the risk policy. It never sees people's names or email
+probability and impact scales from the risk policy; and (item 7.7) lessons from closed projects
+that a person recorded and offered as a suggested risk, those from projects that use AI first
+when this one does, then newest first, at most 20. It never sees people's names or email
 addresses. Project text is passed to the model inside tagged data blocks that the prompt marks as
 data, not instructions, and `<`, `>` and `&` in it are escaped so it can't close a block.
 
 **What it may write.** Only in `AGENT_MODE=enforce`: new risks with status `proposed`,
 `source = agent`, no probability, impact, score or band, and a response plan that carries the
-agent's reason and suggested scores for the person who decides. Each saved risk gets an audit row
+agent's reason and suggested scores for the person who decides. A risk that came from a lesson
+names it (`source_lesson_id`); a lesson id the agent wasn't shown is dropped in code. Each saved risk gets an audit row
 (agent `risk_register`, action `create`, `by: risk_agent`). In `shadow` it saves no risk.
 
 **What it never does.** Open, reject, accept or close a risk; set a risk's real score; change an
@@ -360,6 +363,38 @@ draft, the figure keys it used, and which sections it replaced or kept. A failed
 invalid JSON, a stray number, an unknown key, a checker flag) is a 502 from the route, saves
 nothing and records the error. A refused run is recorded as a person's refused attempt (agent
 `status_report`).
+
+## Closure agent
+
+Code: `apps/api/app/agents/closure_agent.py` (item 7.7). Run by
+`POST /api/v1/projects/{id}/closure-report/draft` (`project:write`), from **Draft with the agent**
+on the closure report page, and once per project by the orchestrator's `draft_closure_report`
+step after the project enters closure (filling only empty sections).
+
+**What it reads.** One closure report's figures (key, label, kind, value and what each counts);
+each value case benefit (measure, value before, target and date, and the value now or the date to
+measure it, as a person entered them); the project's name and brief; its published status reports
+(newest six), decided change requests, risks and gate decisions; the lessons already on the
+project; and any section a person wrote. No people's names or emails.
+
+**What it may write.** Only in `AGENT_MODE=enforce`, and only for a project in closure: the three
+text sections (what was delivered, how it compares with the value case, what remains), each an
+unreviewed agent draft, replacing only an empty section or its own unreviewed draft; and at most
+five lessons with status `suggested`. One audit row per run (agent `closure_agent`).
+
+**What it never does.** Enter a benefit's value now or its date (the schema has no such field, and
+anything outside the schema is dropped), change a figure, record, discard or offer a lesson as a
+suggested risk, decide the close-out gate, or send anything. A person reviews each section and
+records or discards each lesson; the sponsor closes the project.
+
+**Numbers.** Only as figure keys (`{{final_spend}}`), filled in by code. A section with an unknown
+key or any other digit refuses the run, and nothing is saved; the checker then runs on the
+filled-in text. A lesson that breaks the same rule is dropped.
+
+**Model and caps.** `CLOSURE_AGENT_MODEL`, default `claude-sonnet-5-5`, one call per run with a
+strict JSON schema and no sampling parameters; `CLOSURE_AGENT_MAX_TOKENS` output tokens (default
+4096); a section at most 4000 characters; costs from `CLOSURE_AGENT_INPUT_USD_PER_MTOK` and
+`CLOSURE_AGENT_OUTPUT_USD_PER_MTOK`. A failed run is recorded and changes nothing.
 
 ## Orchestrator
 
