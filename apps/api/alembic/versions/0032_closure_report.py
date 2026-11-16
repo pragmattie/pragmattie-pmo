@@ -152,7 +152,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Drop the foreign key, then its column (which takes the column's index with it on MySQL).
+    # Drop the foreign key first (MySQL won't drop an index a foreign key still uses), then the
+    # index, then the column.
     with op.batch_alter_table(RISKS, table_kwargs=KEEP_IDS) as batch:
         batch.drop_constraint("fk_risks_source_lesson", type_="foreignkey")
         batch.drop_index(f"ix_{RISKS}_source_lesson_id")
