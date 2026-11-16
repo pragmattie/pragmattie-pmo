@@ -802,3 +802,125 @@ def test_risk_text_is_data_and_a_planted_instruction_changes_nothing(
     risk = db.get(Risk, proposed.id)
     assert (risk.status, risk.probability, risk.score) == ("proposed", None, None)
     assert (risk.suggested_probability, risk.suggested_impact) == (5, 5)
+
+
+# --- Lessons from closed projects (item 7.7)
+
+
+def _closed_with_lesson(
+    db: Session, name: str, *, uses_ai: bool, offered: bool = True, status: str = "recorded"
+) -> int:
+    """A closed project (from a request that uses AI or not) with one lesson."""
+    from app.models import Lesson, ProjectRequest, User
+
+    owner = db.scalar(select(User).limit(1))
+    if owner is None:
+        owner = User(
+            email="lessons@pmo.example", display_name="L", password_hash="x", role="sponsor"
+        )
+        db.add(owner)
+        db.flush()
+    closed = Project(name=name, stage="closed", sponsor="S", pm="P", status="on_track")
+    db.add(closed)
+    db.flush()
+    db.add(
+        ProjectRequest(
+            title=name,
+            asked_for="A",
+            problem="B",
+            outcome="C",
+            requested_by=owner.id,
+            status="approved",
+            uses_ai=uses_ai,
+            project_id=closed.id,
+        )
+    )
+    lesson = Lesson(
+        project_id=closed.id,
+        category="ai" if uses_ai else "schedule",
+        what_happened=f"{name}: the data arrived late.",
+        do_differently="Ask for data before the go-ahead.",
+        suggest_as_risk=offered,
+        source="person",
+        status=status,
+    )
+    db.add(lesson)
+    db.commit()
+    return lesson.id
+
+
+def _lessons_sent(fake: FakeClaude) -> list[dict]:
+    content = fake.requests[0]["messages"][0]["content"]
+    block = re.search(r"<lessons>\n(.*)\n</lessons>", content, re.S).group(1)
+    return json.loads(block)
+
+
+def test_the_request_holds_lessons_from_closed_projects_ai_first_then_newest(
+    db, web, pm, project, fake, mode
+):
+    from app.models import ProjectRequest
+
+    mode("shadow")
+    old_ai = _closed_with_lesson(db, "Old AI", uses_ai=True)
+    plain = _closed_with_lesson(db, "Plain", uses_ai=False)
+    new_ai = _closed_with_lesson(db, "New AI", uses_ai=True)
+    _closed_with_lesson(db, "Not offered", uses_ai=True, offered=False)
+    _closed_with_lesson(db, "Only suggested", uses_ai=True, status="suggested")
+    db.add(
+        ProjectRequest(
+            title="This one",
+            asked_for="A",
+            problem="B",
+            outcome="C",
+            requested_by=pm.id,
+            status="approved",
+            uses_ai=True,
+            project_id=project.id,
+        )
+    )
+    db.commit()
+    assert _suggest(web, project.id).status_code == 200
+    sent = _lessons_sent(fake)
+    assert [lesson["id"] for lesson in sent] == [new_ai, old_ai, plain]
+    assert sent[0]["from_ai_project"] is True and sent[2]["from_ai_project"] is False
+    assert "lessons" in fake.requests[0]["system"]
+
+
+def test_without_ai_the_lessons_are_newest_first_and_capped(
+    db, web, pm, project, fake, mode, monkeypatch
+):
+    mode("shadow")
+    monkeypatch.setattr(risk_agent, "MAX_LESSONS", 2)
+    first = _closed_with_lesson(db, "First", uses_ai=True)
+    second = _closed_with_lesson(db, "Second", uses_ai=False)
+    third = _closed_with_lesson(db, "Third", uses_ai=True)
+    assert _suggest(web, project.id).status_code == 200
+    assert [lesson["id"] for lesson in _lessons_sent(fake)] == [third, second]
+    assert first not in [lesson["id"] for lesson in _lessons_sent(fake)]
+
+
+def test_a_suggested_risk_names_the_lesson_it_came_from(db, web, pm, project, fake, mode):
+    mode("enforce")
+    lesson_id = _closed_with_lesson(db, "Earlier", uses_ai=True)
+    fake.reply = _reply(
+        _item(lesson_id=lesson_id),
+        _item(title="Invented lesson", lesson_id=lesson_id + 99),
+        _item(title="No lesson"),
+    )
+    assert _suggest(web, project.id).status_code == 200
+    saved = {r.title: r for r in _risks(db)}
+    assert saved["Model answers drift after launch"].source_lesson_id == lesson_id
+    assert f"From lesson {lesson_id}" in saved["Model answers drift after launch"].response_plan
+    # An id the agent wasn't shown is dropped; the risk is kept without it.
+    assert saved["Invented lesson"].source_lesson_id is None
+    assert saved["No lesson"].source_lesson_id is None
+    [run] = _runs(db)
+    assert any("was not shown" in a["change"] for a in run.output["adjusted"])
+    shown = web.get(f"/api/v1/projects/{project.id}/risks").json()
+    assert lesson_id in [r["source_lesson_id"] for r in shown["items"]]
+
+
+def test_the_lesson_id_is_in_the_strict_schema():
+    assert "lesson_id" in risk_agent.PROPOSAL_SCHEMA["required"]
+    assert validate({"risks": [_item(lesson_id=7)]}, [], [7]).proposals[0].lesson_id == 7
+    assert validate({"risks": [_item(lesson_id=7)]}, [], []).proposals[0].lesson_id is None
