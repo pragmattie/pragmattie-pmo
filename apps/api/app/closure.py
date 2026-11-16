@@ -25,7 +25,7 @@
 """
 
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -288,7 +288,7 @@ def build_figures(db: Session, project: Project, read_on: date) -> list[dict[str
         )
     )
     spent_pct = (
-        (Decimal(spend.amount) * 100 / final.total).quantize(CENT)
+        (Decimal(spend.amount) * 100 / final.total).quantize(CENT, rounding=ROUND_HALF_UP)
         if spend and final.total
         else None
     )
