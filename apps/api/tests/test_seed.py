@@ -197,6 +197,10 @@ def test_seeding_risks_is_idempotent_and_audited(db):
     assert rows[-1].signals["band"] == "Low" and rows[-1].output["band"] == "High"
 
 
+# What a reset of the whole seed clears: every seeded client, project and request.
+ALL_CLEARED = (len(CLIENTS), len(PROJECTS), len(REQUESTS))
+
+
 def test_seeding_leaves_a_persons_risk_alone(db):
     seed(db)
     project = db.scalar(select(Project).where(Project.seed_key == "project-pragmattie-sync"))
@@ -223,7 +227,7 @@ def test_seeding_leaves_a_persons_risk_alone(db):
     # --reset clears everything on a seeded project, whoever added it, so it restores exactly
     # the seeded state.
     cleared = clear_seeded(db)
-    assert (cleared.clients, cleared.projects, cleared.requests) == (3, len(PROJECTS), 2)
+    assert (cleared.clients, cleared.projects, cleared.requests) == ALL_CLEARED
     db.commit()
     assert _count(db, Risk) == 0
     seed(db)
@@ -240,7 +244,7 @@ def test_reset_clears_only_seeded_rows(db):
     db.commit()
 
     cleared = clear_seeded(db)
-    assert (cleared.clients, cleared.projects, cleared.requests) == (3, len(PROJECTS), 2)
+    assert (cleared.clients, cleared.projects, cleared.requests) == ALL_CLEARED
     db.commit()
     assert db.scalars(select(Client.name)).all() == ["A Person's Client Ltd"]
     assert db.scalars(select(Project.name)).all() == ["Own"]
@@ -293,9 +297,10 @@ def test_a_seeded_projects_plan_is_prefilled_from_its_brief(db):
 
     seed(db)
     db.flush()
-    # A project in closure: the seed gives it no brief.
-    project = db.scalar(select(Project).where(Project.seed_key == "project-quillmere-yard"))
+    # A seeded project with an empty plan loses its plan, and a person rewrites its brief.
+    project = db.scalar(select(Project).where(Project.seed_key == "project-pragmattie-sync"))
     db.execute(delete(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    db.execute(delete(ProjectBrief).where(ProjectBrief.project_id == project.id))
     db.add(
         ProjectBrief(
             project_id=project.id,
@@ -473,15 +478,29 @@ def test_api_lists_are_read_only_and_validate_paging(db, client, sign_in, path):
 
 
 def _seed_key_of(db: Session, subject_type: str, subject_id: int) -> str | None:
-    """The seed_key of a next step's request or project; a proposal or change request gives its
-    project's."""
-    from app.models import ChangeRequest, ProjectProposal, ProjectRequest
+    """The seed_key of a next step's request or project; a proposal, change request, status
+    report or deliverable gives its project's."""
+    from app.models import (
+        ChangeRequest,
+        PlanDeliverable,
+        ProjectPlan,
+        ProjectProposal,
+        ProjectRequest,
+        StatusReport,
+    )
 
     if subject_type == "request":
         return db.get(ProjectRequest, subject_id).seed_key
-    if subject_type in ("proposal", "change_request"):
-        model = ProjectProposal if subject_type == "proposal" else ChangeRequest
-        subject_id = db.get(model, subject_id).project_id
+    owners = {
+        "proposal": ProjectProposal,
+        "change_request": ChangeRequest,
+        "status_report": StatusReport,
+    }
+    if subject_type in owners:
+        subject_id = db.get(owners[subject_type], subject_id).project_id
+    elif subject_type == "deliverable":
+        plan_id = db.get(PlanDeliverable, subject_id).plan_id
+        subject_id = db.get(ProjectPlan, plan_id).project_id
     elif subject_type != "project":
         return None
     return db.get(Project, subject_id).seed_key
@@ -579,8 +598,16 @@ EXPECTED_STEPS = {
     "project-brackenfold-rota": {("proposal", "client_answer")},
     # Ready for its go-ahead gate.
     "project-larchwick-onboarding": {("project", "pass_gate")},
-    # In delivery with a pending change request, decided by a project manager.
-    "project-quillmere-routing": {("change_request", "decide_change_pm")},
+    # In delivery (item 7.8): a pending change request, decided by a project manager; the
+    # current period's report, due now, for the status report agent; and a deliverable offered
+    # to the simulated client, which answers it.
+    "project-quillmere-routing": {
+        ("change_request", "decide_change_pm"),
+        ("project", "draft_status_report"),
+        ("deliverable", "client_acceptance"),
+    },
+    # In closure with every close-out check met: the sponsor's tick at the close-out gate.
+    "project-quillmere-yard": {("project", "pass_gate")},
 }
 
 
@@ -606,9 +633,16 @@ def test_after_a_reset_the_orchestrators_next_steps_match_the_seeded_states(db):
     found = _steps_by_seed_key(db)
     for seed_key, expected in EXPECTED_STEPS.items():
         assert expected <= found.get(seed_key, set()), (seed_key, found.get(seed_key))
-    # The projects in closure and closed wait on nobody.
-    assert "project-quillmere-yard" not in found
+    # The project in closure waits only on the close-out gate, and the closed one on nobody.
+    assert found["project-quillmere-yard"] == EXPECTED_STEPS["project-quillmere-yard"]
     assert "project-larchwick-statements" not in found
+    # No seeded status report waits to be published or read.
+    assert not {step for steps in found.values() for _, step in steps} & {
+        "publish_status_report",
+        "report_unread",
+        "report_overdue_pm",
+        "report_overdue_sponsor",
+    }
     # Nothing waits on anything but the seeded items.
     assert set(found) <= set(EXPECTED_STEPS)
 
