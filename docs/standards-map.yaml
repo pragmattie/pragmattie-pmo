@@ -224,7 +224,7 @@ features:
   - id: P7-demo-data
     title: Demo data for delivery and closure
     rules: [R5, R12]
-    notes: Seeded reports and closures read figures from seeded records and pass the checker; agent text is labelled and reviewed; the seed audit row counts it; reset is repeatable.
+    notes: Seeded reports and closures use figures from records and pass the checker; agent text is labelled and reviewed; the seed audit row counts it; reset is repeatable.
   # --- P8 Portfolio and oversight
   - id: P8-portfolio-dashboard
     title: Portfolio dashboard
