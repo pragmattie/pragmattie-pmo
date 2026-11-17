@@ -1,4 +1,4 @@
-# Stage gates (items 4.4, 5.4 and 7.6). Each gate sits between two stages and lists what must be true
+# Stage gates (items 4.4, 5.4, 7.6 and 7.7). Each gate sits between two stages and lists what must be true
 # before it is passed, and which roles may decide it. Drafted by an agent; a person applies it over
 # policies/gates.yaml.
 #
@@ -96,4 +96,31 @@ gates:
         person: true
       - id: client_in_good_standing
         text: The client relationship is in good standing
+        person: true
+
+  # The close-out gate (item 7.7): a project in closure is closed once its record is complete.
+  # Passing it sets the project to closed and freezes its closure report as it is then. An
+  # accepted risk is a decision already taken, so it doesn't block close-out; the closure report
+  # lists each one for the sponsor.
+  - id: close_out
+    name: Close-out gate
+    from_stage: closure
+    to_stage: closed
+    applies_to: project
+    deciders: [sponsor]
+    criteria:
+      - id: closure_report_reviewed
+        text: The closure report exists and no section is an agent draft a person hasn't reviewed
+        check: closure_report_reviewed
+      - id: benefits_measured_or_owned
+        text: Every benefit has a value now, or an owner and a date to measure it
+        check: benefits_measured_or_owned
+      - id: lesson_recorded
+        text: At least one lesson is recorded
+        check: lesson_recorded
+      - id: no_open_risks
+        text: No risk is still proposed or open
+        check: no_open_risks
+      - id: record_complete
+        text: The record is complete and accurate
         person: true
