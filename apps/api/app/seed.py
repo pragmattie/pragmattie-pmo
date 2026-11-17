@@ -586,7 +586,8 @@ ROUTING: dict[str, Any] = {
         (0, 8, "Reached late: the carrier's data feed came after the agreed day."),
         (1, 10, None),
     ),
-    # Each deliverable's status, by position.
+    # Each deliverable's status now, by position. Each report below has the statuses that were
+    # true at its period's end, set in step with the periods as milestones and spend are.
     "statuses": (READY, READY, "in_progress", "not_started"),
     # (day, spend to date, note); the newest entry is the project's figure.
     "spend": (
@@ -600,6 +601,7 @@ ROUTING: dict[str, Any] = {
     # drafted the sections in `agent`, and the project manager reviewed them.
     "reports": (
         {
+            "statuses": ("in_progress", "in_progress", "not_started", "not_started"),
             "agent": ("summary",),
             "sections": {
                 "summary": "Delivery started on the agreed baseline. Depot and order data are "
@@ -613,15 +615,16 @@ ROUTING: dict[str, Any] = {
             },
         },
         {
+            "statuses": (READY, "in_progress", "not_started", "not_started"),
             "agent": ("summary", "next"),
             "sections": {
                 "summary": "Route data ready was reached a few working days after its target "
                 "because the carrier's feed came late, so schedule is amber. The route planner "
                 "passed its tests on time.",
-                "done": "Checked and loaded the depot data feed, and tested the route planner on "
-                "the pilot depot's orders.",
-                "next": "Offer the depot data feed for acceptance and prepare the pilot depot's "
-                "training.",
+                "done": "Checked and loaded the depot data feed, now ready for acceptance, and "
+                "tested the route planner on the pilot depot's orders.",
+                "next": "Offer the depot data feed for acceptance, finish the route planner's last "
+                "fixes and prepare the pilot depot's training.",
                 "issues": "The pilot week clashes with the depot's stock count, so a change "
                 "request to move the pilot is waiting.",
                 "decisions": "None: the change is small enough for the project manager to decide.",
@@ -1602,15 +1605,19 @@ def _mark_sections(
         )
 
 
-def _seed_status_reports(db: Session, project: Project, plan: ProjectPlan, pm: User) -> None:
-    """The past periods' reports, published on their due days, and an empty draft for the
-    latest period that is due. Figures and ratings come from the records, as for any report."""
+def _seed_status_reports(
+    db: Session, project: Project, plan: ProjectPlan, pm: User
+) -> report_rules.Period:
+    """The past periods' reports, published on their due days; returns the latest period that
+    is due. Figures and ratings come from the records, as for any report: each deliverable's
+    status is set to what it was at the period's end before that report's figures are read."""
     policy = policies.get_reporting()
     start = report_rules.first_baseline(db, project.id).created_at.date()
     today = delivery.today()
     found = report_rules.periods(plan.report_period, plan.report_due_day, start, today)
     due = [period for period in found if period.due_on <= today]
     for period, values in zip(due[:-1], ROUTING["reports"], strict=True):
+        _set_statuses(db, plan, list(values["statuses"]))
         published = _at(period.due_on, 16)
         report = StatusReport(
             project_id=project.id,
@@ -1636,7 +1643,7 @@ def _seed_status_reports(db: Session, project: Project, plan: ProjectPlan, pm: U
         report_rules.run_check(report)
         db.add(report)
     db.flush()
-    report_rules.new_draft(db, project.id, plan, due[-1], policy, created_by=pm.id)
+    return due[-1]
 
 
 def _seed_delivery(db: Session, project: Project, plan: ProjectPlan, start: date) -> None:
@@ -1647,12 +1654,14 @@ def _seed_delivery(db: Session, project: Project, plan: ProjectPlan, start: date
         return start + timedelta(days=offset)
 
     _reach(db, plan, [(p, day(d), note) for p, d, note in ROUTING["reached"]])
-    _set_statuses(db, plan, list(ROUTING["statuses"]))
     _add_spend(db, project, [(day(d), amount, note) for d, amount, note in ROUTING["spend"]], pm)
+    current = _seed_status_reports(db, project, plan, pm)
+    _set_statuses(db, plan, list(ROUTING["statuses"]))
     position, offered = ROUTING["offer"]
     db.add(_offer(project, _deliverables_of(db, plan)[position], day(offered), pm, client))
     db.flush()
-    _seed_status_reports(db, project, plan, pm)
+    policy = policies.get_reporting()
+    report_rules.new_draft(db, project.id, plan, current, policy, created_by=pm.id)
 
 
 def _seed_finished(

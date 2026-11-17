@@ -1015,6 +1015,43 @@ def test_the_closed_project_has_a_frozen_closure_report_and_lessons_for_the_risk
     assert any(suggest for *_, suggest in lessons)
 
 
+def test_each_published_reports_deliverable_figures_are_as_at_its_period_end(db):
+    from app.models import StatusReport
+    from app.models.plan import DELIVERABLE_STATUSES
+    from app.reports import figure_value
+    from app.seed import ROUTING
+
+    seed(db, reset=True)
+    db.commit()
+    project = _project(db, "project-quillmere-routing")
+    ids = [d.id for d in _deliverables(db, project)]
+    published = db.scalars(
+        select(StatusReport)
+        .where(StatusReport.project_id == project.id, StatusReport.status == "published")
+        .order_by(StatusReport.period_start)
+    ).all()
+    assert len(published) == len(ROUTING["reports"]) == 2
+    then = [values["statuses"] for values in ROUTING["reports"]]
+    for report, statuses in zip(published, then, strict=True):
+        for status in DELIVERABLE_STATUSES:
+            key = f"deliverables_{status}"
+            figure = next(f for f in report.figures if f["key"] == key)
+            expected = [ids[i] for i, s in enumerate(statuses) if s == status]
+            assert figure_value(report.figures, key) == len(expected), (report.period_end, key)
+            assert [s["id"] for s in figure["sources"]] == expected, (report.period_end, key)
+    # The history only moves forward: no deliverable is further on in a report than it is in a
+    # later report or now.
+    order = {status: i for i, status in enumerate(DELIVERABLE_STATUSES)}
+    for earlier, later in zip(then, [*then[1:], ROUTING["statuses"]], strict=True):
+        assert all(order[a] <= order[b] for a, b in zip(earlier, later, strict=True))
+    # The first report says data is still loading, so nothing was ready for acceptance; the
+    # depot data feed was ready by the second, before it was offered.
+    first = published[0]
+    assert figure_value(first.figures, "deliverables_ready_for_acceptance") == 0
+    assert "loading" in first.sections["summary"]
+    assert then[1][ROUTING["offer"][0]] == "ready_for_acceptance"
+
+
 def test_the_checker_finds_nothing_in_any_seeded_report(db):
     from app import reports as report_rules
     from app.models import ClosureReport, StatusReport
