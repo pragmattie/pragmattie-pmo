@@ -123,6 +123,14 @@ steps:
     mode: agent
     agent: simulated_client
     who: project_manager
+  # Item 7.7: once a project enters closure, the orchestrator makes its closure report and the
+  # closure agent drafts its text and suggests lessons, once per project, filling only empty
+  # sections. A person reviews every section, records or discards every lesson and enters every
+  # benefit's value now; the sponsor decides the close-out gate.
+  draft_closure_report:
+    mode: agent
+    agent: closure_agent
+    who: project_manager
 agents:
   intake_agent:
     enabled: true
@@ -139,4 +147,6 @@ agents:
     # demo (it records a "what is missing" that says it is simulated).
     acceptance_answer: accepted
   status_report_agent:
+    enabled: true
+  closure_agent:
     enabled: true

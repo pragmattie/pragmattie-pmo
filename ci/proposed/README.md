@@ -18,25 +18,19 @@ Nothing in this folder runs automatically.
 
 ## Pending
 
-- **`policies/gates.yaml`** and **`policies/autonomy.yaml`** (item 7.7), drafted on top of the
-  applied item 7.6 files (they differ only by item 7.7's additions); apply them together, straight
-  after the item merges.
-  - `gates.yaml` adds the close-out gate: from `closure` to `closed`, for projects, decided by
-    `sponsor`. Its code checks are `closure_report_reviewed` (the closure report exists and no
-    section is an unreviewed agent draft), `benefits_measured_or_owned` (every value case benefit
-    has a value now, or an owner and a date to measure it), `lesson_recorded` (at least one
-    lesson recorded by a person) and `no_open_risks` (no risk `proposed` or `open`; an accepted
-    risk doesn't block, and the closure report lists it). Its person criterion is
-    `record_complete` ("The record is complete and accurate"). Passing it sets the project to
-    `closed` and freezes its closure report. Until it is applied, `GET` and
-    `POST /api/v1/projects/{id}/close-out-gate` answer 503.
-  - `autonomy.yaml` adds the step `draft_closure_report` (`agent`, `closure_agent`, who
-    `project_manager`) and `agents.closure_agent.enabled: true`. The loader refuses a file
-    missing a step or an agent, so until this is applied the orchestrator, the Inbox and the
-    board answer 503, as for 7.6.
+Nothing yet.
 
 ## Applied
 
+- **`policies/gates.yaml`** and **`policies/autonomy.yaml`** (item 7.7), applied together in one
+  pull request straight after the item merged, unchanged. `gates.yaml` adds the close-out gate
+  (closure to closed, for projects, decided by `sponsor`) with four code checks
+  (`closure_report_reviewed`, `benefits_measured_or_owned`, `lesson_recorded`, `no_open_risks`)
+  and one person criterion (`record_complete`); passing it sets the project to `closed` and
+  freezes its closure report. The other gates are unchanged. `autonomy.yaml` adds the step
+  `draft_closure_report` (`agent`, `closure_agent`, who `project_manager`) and
+  `agents.closure_agent.enabled: true`. The close-out gate routes, the orchestrator, the Inbox and
+  the board answer again.
 - **`policies/gates.yaml`** and **`policies/autonomy.yaml`** (item 7.6), applied together in one
   pull request straight after the item merged, unchanged. `gates.yaml` adds the acceptance gate
   (delivery to closure, for projects, decided by `sponsor`) with four code checks
