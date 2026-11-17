@@ -197,6 +197,10 @@ def test_seeding_risks_is_idempotent_and_audited(db):
     assert rows[-1].signals["band"] == "Low" and rows[-1].output["band"] == "High"
 
 
+# What a reset of the whole seed clears: every seeded client, project and request.
+ALL_CLEARED = (len(CLIENTS), len(PROJECTS), len(REQUESTS))
+
+
 def test_seeding_leaves_a_persons_risk_alone(db):
     seed(db)
     project = db.scalar(select(Project).where(Project.seed_key == "project-pragmattie-sync"))
@@ -223,7 +227,7 @@ def test_seeding_leaves_a_persons_risk_alone(db):
     # --reset clears everything on a seeded project, whoever added it, so it restores exactly
     # the seeded state.
     cleared = clear_seeded(db)
-    assert (cleared.clients, cleared.projects, cleared.requests) == (3, len(PROJECTS), 2)
+    assert (cleared.clients, cleared.projects, cleared.requests) == ALL_CLEARED
     db.commit()
     assert _count(db, Risk) == 0
     seed(db)
@@ -240,7 +244,7 @@ def test_reset_clears_only_seeded_rows(db):
     db.commit()
 
     cleared = clear_seeded(db)
-    assert (cleared.clients, cleared.projects, cleared.requests) == (3, len(PROJECTS), 2)
+    assert (cleared.clients, cleared.projects, cleared.requests) == ALL_CLEARED
     db.commit()
     assert db.scalars(select(Client.name)).all() == ["A Person's Client Ltd"]
     assert db.scalars(select(Project.name)).all() == ["Own"]
@@ -293,9 +297,10 @@ def test_a_seeded_projects_plan_is_prefilled_from_its_brief(db):
 
     seed(db)
     db.flush()
-    # A project in closure: the seed gives it no brief.
-    project = db.scalar(select(Project).where(Project.seed_key == "project-quillmere-yard"))
+    # A seeded project with an empty plan loses its plan, and a person rewrites its brief.
+    project = db.scalar(select(Project).where(Project.seed_key == "project-pragmattie-sync"))
     db.execute(delete(ProjectPlan).where(ProjectPlan.project_id == project.id))
+    db.execute(delete(ProjectBrief).where(ProjectBrief.project_id == project.id))
     db.add(
         ProjectBrief(
             project_id=project.id,
@@ -473,15 +478,29 @@ def test_api_lists_are_read_only_and_validate_paging(db, client, sign_in, path):
 
 
 def _seed_key_of(db: Session, subject_type: str, subject_id: int) -> str | None:
-    """The seed_key of a next step's request or project; a proposal or change request gives its
-    project's."""
-    from app.models import ChangeRequest, ProjectProposal, ProjectRequest
+    """The seed_key of a next step's request or project; a proposal, change request, status
+    report or deliverable gives its project's."""
+    from app.models import (
+        ChangeRequest,
+        PlanDeliverable,
+        ProjectPlan,
+        ProjectProposal,
+        ProjectRequest,
+        StatusReport,
+    )
 
     if subject_type == "request":
         return db.get(ProjectRequest, subject_id).seed_key
-    if subject_type in ("proposal", "change_request"):
-        model = ProjectProposal if subject_type == "proposal" else ChangeRequest
-        subject_id = db.get(model, subject_id).project_id
+    owners = {
+        "proposal": ProjectProposal,
+        "change_request": ChangeRequest,
+        "status_report": StatusReport,
+    }
+    if subject_type in owners:
+        subject_id = db.get(owners[subject_type], subject_id).project_id
+    elif subject_type == "deliverable":
+        plan_id = db.get(PlanDeliverable, subject_id).plan_id
+        subject_id = db.get(ProjectPlan, plan_id).project_id
     elif subject_type != "project":
         return None
     return db.get(Project, subject_id).seed_key
@@ -579,9 +598,26 @@ EXPECTED_STEPS = {
     "project-brackenfold-rota": {("proposal", "client_answer")},
     # Ready for its go-ahead gate.
     "project-larchwick-onboarding": {("project", "pass_gate")},
-    # In delivery with a pending change request, decided by a project manager.
-    "project-quillmere-routing": {("change_request", "decide_change_pm")},
+    # In delivery (item 7.8): a pending change request, decided by a project manager; the
+    # current period's report, due now, for the status report agent; and a deliverable offered
+    # to the simulated client, which answers it.
+    "project-quillmere-routing": {
+        ("change_request", "decide_change_pm"),
+        ("project", "draft_status_report"),
+        ("deliverable", "client_acceptance"),
+    },
+    # In closure with every close-out check met: the sponsor's tick at the close-out gate.
+    "project-quillmere-yard": {("project", "pass_gate")},
 }
+
+
+# The steps a status report waits on a person for; none applies to the seeded reports.
+REPORT_FLAG_STEPS = (
+    "publish_status_report",
+    "report_unread",
+    "report_overdue_pm",
+    "report_overdue_sponsor",
+)
 
 
 def test_after_a_reset_every_board_column_has_a_card(db):
@@ -606,9 +642,12 @@ def test_after_a_reset_the_orchestrators_next_steps_match_the_seeded_states(db):
     found = _steps_by_seed_key(db)
     for seed_key, expected in EXPECTED_STEPS.items():
         assert expected <= found.get(seed_key, set()), (seed_key, found.get(seed_key))
-    # The projects in closure and closed wait on nobody.
-    assert "project-quillmere-yard" not in found
+    # The project in closure waits only on the close-out gate, and the closed one on nobody.
+    assert found["project-quillmere-yard"] == EXPECTED_STEPS["project-quillmere-yard"]
     assert "project-larchwick-statements" not in found
+    # No seeded status report waits to be published or read.
+    names = {step for steps in found.values() for _, step in steps}
+    assert not names & set(REPORT_FLAG_STEPS), names
     # Nothing waits on anything but the seeded items.
     assert set(found) <= set(EXPECTED_STEPS)
 
@@ -789,3 +828,325 @@ def test_after_a_reset_the_demo_sponsor_decides_the_proposal_waiting_for_approva
     assert response.status_code == 200, response.text
     db.expire_all()
     assert db.get(ProjectProposal, proposal.id).status == "approved"
+
+
+# --- Delivery and closure history (item 7.8)
+
+
+def _project(db: Session, seed_key: str) -> Project:
+    return db.scalar(select(Project).where(Project.seed_key == seed_key))
+
+
+def _history(db: Session) -> dict[str, dict]:
+    """Each seeded project's delivery and closure records, without ids or read-now times, so two
+    seeds can be compared."""
+    from app.models import (
+        ClosureBenefit,
+        ClosureReport,
+        DeliverableAcceptance,
+        Lesson,
+        ProjectSpend,
+        StatusReport,
+    )
+    from app.plans import milestones_of
+
+    db.expire_all()
+    found = {}
+    for project in db.scalars(select(Project).order_by(Project.seed_key)):
+        plan = _plan_of(db, project)
+        reports = db.scalars(
+            select(StatusReport)
+            .where(StatusReport.project_id == project.id)
+            .order_by(StatusReport.period_start)
+        )
+        closure = db.scalar(select(ClosureReport).where(ClosureReport.project_id == project.id))
+        found[project.seed_key] = {
+            "stage": project.stage,
+            "milestones": [
+                (m.name, m.target_date, m.reached_on, m.reached_note)
+                for m in milestones_of(db, plan.id)
+            ],
+            "deliverables": [(d.name, d.status) for d in _deliverables(db, project)],
+            "spend": [
+                (s.as_of, s.amount)
+                for s in db.scalars(
+                    select(ProjectSpend)
+                    .where(ProjectSpend.project_id == project.id)
+                    .order_by(ProjectSpend.as_of)
+                )
+            ],
+            "acceptance": [
+                (a.deliverable_name, a.kind, a.offered_on, a.answered_on)
+                for a in db.scalars(
+                    select(DeliverableAcceptance)
+                    .where(DeliverableAcceptance.project_id == project.id)
+                    .order_by(DeliverableAcceptance.id)
+                )
+            ],
+            "reports": [
+                (r.period_start, r.status, r.sections, r.ratings, r.flags) for r in reports
+            ],
+            "closure": closure and (closure.sections, closure.flags, closure.frozen_at),
+            "benefits": [
+                (b.value_now, b.value_now_on, b.measure_by)
+                for b in db.scalars(
+                    select(ClosureBenefit)
+                    .where(ClosureBenefit.project_id == project.id)
+                    .order_by(ClosureBenefit.id)
+                )
+            ],
+            "lessons": [
+                (x.source, x.what_happened, x.status, x.suggest_as_risk)
+                for x in db.scalars(
+                    select(Lesson).where(Lesson.project_id == project.id).order_by(Lesson.id)
+                )
+            ],
+        }
+    return found
+
+
+def _plan_of(db: Session, project: Project):
+    from app.models import ProjectPlan
+
+    return db.scalar(select(ProjectPlan).where(ProjectPlan.project_id == project.id))
+
+
+def _deliverables(db: Session, project: Project) -> list:
+    from app.models import PlanDeliverable
+
+    plan = _plan_of(db, project)
+    stmt = select(PlanDeliverable).where(PlanDeliverable.plan_id == plan.id)
+    return list(db.scalars(stmt.order_by(PlanDeliverable.id)))
+
+
+def test_seed_reset_twice_gives_the_same_delivery_and_closure_history(db):
+    seed(db, reset=True)
+    db.commit()
+    first = _history(db)
+    _drift(db)
+    seed(db, reset=True)
+    db.commit()
+    assert _history(db) == first
+    seed(db, reset=True)
+    db.commit()
+    assert _history(db) == first
+
+
+def test_the_project_in_delivery_has_its_history_and_a_draft_due_now(db):
+    from app import delivery
+    from app.models import DeliverableAcceptance, StatusReport
+    from app.models.delivery import OFFER
+
+    seed(db, reset=True)
+    db.commit()
+    project = _project(db, "project-quillmere-routing")
+    history = _history(db)["project-quillmere-routing"]
+    assert project.stage == "delivery"
+    # Two milestones reached, the first a few days after its target.
+    reached = [m for m in history["milestones"] if m[2] is not None]
+    assert len(reached) == 2
+    (_, late_target, late_on, note), (_, target, on, _) = reached
+    assert late_on > late_target and note and on <= target
+    # A deliverable in each status up to ready for acceptance.
+    statuses = {status for _, status in history["deliverables"]}
+    assert statuses == {"not_started", "in_progress", "ready_for_acceptance"}
+    assert len(history["spend"]) == 3
+    # One deliverable offered and not yet answered.
+    rows = db.scalars(
+        select(DeliverableAcceptance).where(DeliverableAcceptance.project_id == project.id)
+    ).all()
+    assert [row.kind for row in rows] == [OFFER]
+    offered = next(d for d in _deliverables(db, project) if d.id == rows[0].deliverable_id)
+    assert offered.status == "ready_for_acceptance"
+    # Two published reports for past periods (the second amber on schedule) and a draft for the
+    # current one, due now and empty, so the agent drafts it.
+    reports = db.scalars(
+        select(StatusReport)
+        .where(StatusReport.project_id == project.id)
+        .order_by(StatusReport.period_start)
+    ).all()
+    assert [r.status for r in reports] == ["published", "published", "draft"]
+    assert [r.ratings["schedule"]["rating"] for r in reports[:2]] == ["green", "amber"]
+    draft = reports[-1]
+    assert draft.due_on <= delivery.today() and not any((draft.sections or {}).values())
+    assert all(r.published_at.date() == r.due_on for r in reports[:2])
+
+
+def test_the_project_in_closure_waits_only_on_the_sponsors_tick(db):
+    from app.models import ClosureReport, GateDecision
+    from app.orchestrator import close_out_checks_met
+
+    seed(db, reset=True)
+    db.commit()
+    project = _project(db, "project-quillmere-yard")
+    history = _history(db)["project-quillmere-yard"]
+    assert (project.stage, project.status) == ("closure", "on_track")
+    assert {status for _, status in history["deliverables"]} == {"accepted"}
+    assert all(m[2] is not None for m in history["milestones"])
+    # One benefit measured, one with an owner and a date to measure it.
+    (value_now, measured_on, _), (later, _, measure_by) = history["benefits"]
+    assert value_now and measured_on and later is None and measure_by
+    assert len(history["lessons"]) == 2
+    report = db.scalar(select(ClosureReport).where(ClosureReport.project_id == project.id))
+    assert report.frozen_at is None and all(report.sections.values())
+    assert close_out_checks_met(db, project)
+    gates = db.scalars(
+        select(GateDecision.gate_id).where(
+            GateDecision.subject_type == "project", GateDecision.subject_id == project.id
+        )
+    ).all()
+    assert "close_out" not in gates and {"go_ahead", "acceptance"} <= set(gates)
+
+
+def test_the_closed_project_has_a_frozen_closure_report_and_lessons_for_the_risk_agent(db):
+    from app.models import ClosureReport
+
+    seed(db, reset=True)
+    db.commit()
+    project = _project(db, "project-larchwick-statements")
+    history = _history(db)["project-larchwick-statements"]
+    assert (project.stage, project.status) == ("closed", "complete")
+    report = db.scalar(select(ClosureReport).where(ClosureReport.project_id == project.id))
+    assert report.frozen_at is not None and all(report.sections.values()) and report.figures
+    assert all(value_now for value_now, _, _ in history["benefits"])
+    lessons = history["lessons"]
+    assert len(lessons) == 3
+    assert {status for _, _, status, _ in lessons} == {"recorded"}
+    assert any(suggest for *_, suggest in lessons)
+
+
+def test_each_published_reports_deliverable_figures_are_as_at_its_period_end(db):
+    from app.models import StatusReport
+    from app.models.plan import DELIVERABLE_STATUSES
+    from app.reports import figure_value
+    from app.seed import ROUTING
+
+    seed(db, reset=True)
+    db.commit()
+    project = _project(db, "project-quillmere-routing")
+    ids = [d.id for d in _deliverables(db, project)]
+    published = db.scalars(
+        select(StatusReport)
+        .where(StatusReport.project_id == project.id, StatusReport.status == "published")
+        .order_by(StatusReport.period_start)
+    ).all()
+    assert len(published) == len(ROUTING["reports"]) == 2
+    then = [values["statuses"] for values in ROUTING["reports"]]
+    for report, statuses in zip(published, then, strict=True):
+        for status in DELIVERABLE_STATUSES:
+            key = f"deliverables_{status}"
+            figure = next(f for f in report.figures if f["key"] == key)
+            expected = [ids[i] for i, s in enumerate(statuses) if s == status]
+            assert figure_value(report.figures, key) == len(expected), (report.period_end, key)
+            assert [s["id"] for s in figure["sources"]] == expected, (report.period_end, key)
+    # The history only moves forward: no deliverable is further on in a report than it is in a
+    # later report or now.
+    order = {status: i for i, status in enumerate(DELIVERABLE_STATUSES)}
+    for earlier, later in zip(then, [*then[1:], ROUTING["statuses"]], strict=True):
+        assert all(order[a] <= order[b] for a, b in zip(earlier, later, strict=True))
+    # The first report says data is still loading, so nothing was ready for acceptance; the
+    # depot data feed was ready by the second, before it was offered.
+    first = published[0]
+    assert figure_value(first.figures, "deliverables_ready_for_acceptance") == 0
+    assert "loading" in first.sections["summary"]
+    assert then[1][ROUTING["offer"][0]] == "ready_for_acceptance"
+
+
+def test_the_checker_finds_nothing_in_any_seeded_report(db):
+    from app import reports as report_rules
+    from app.models import ClosureReport, StatusReport
+    from app.models.closure import CLOSURE_SECTIONS
+
+    seed(db, reset=True)
+    db.commit()
+    status_reports = db.scalars(select(StatusReport)).all()
+    closure_reports = db.scalars(select(ClosureReport)).all()
+    assert len(status_reports) == 3 and len(closure_reports) == 2
+    for report in status_reports:
+        found = report_rules.check(report.sections, report.figures, report_rules.period_of(report))
+        assert found == [] and report.flags == [], (report.period_start, found)
+    for report in closure_reports:
+        found = report_rules.check(report.sections, report.figures, None, CLOSURE_SECTIONS)
+        assert found == [] and report.flags == [], (report.project_id, found)
+        assert report.figures
+
+
+def test_seeded_agent_text_is_labelled_and_reviewed(db):
+    from app.models import AuditDecision, ClosureReport, Lesson, StatusReport
+    from app.seed import FINISHED, ROUTING
+
+    seed(db, reset=True)
+    db.commit()
+    agent_sections = 0
+    reports = [*db.scalars(select(StatusReport)), *db.scalars(select(ClosureReport))]
+    for report in reports:
+        for name, text in (report.sections or {}).items():
+            if not text:
+                continue
+            source = report.section_sources[name]
+            assert source["source"] in ("agent", "person") and source["reviewed_by"], name
+            agent_sections += source["source"] == "agent"
+    lessons = db.scalars(select(Lesson)).all()
+    agent_lessons = [lesson for lesson in lessons if lesson.source == "agent"]
+    assert agent_lessons and all(lesson.reviewed_by for lesson in agent_lessons)
+    assert all(lesson.created_by is None for lesson in agent_lessons)
+    in_reports = sum(len(r["agent"]) for r in ROUTING["reports"])
+    in_closures = sum(len(f["agent"]) for f in FINISHED.values())
+    expected = in_reports + in_closures
+    assert agent_sections == expected
+    row = db.scalar(
+        select(AuditDecision)
+        .where(AuditDecision.agent == "seed", AuditDecision.subject_type == "demo_portfolio")
+        .order_by(AuditDecision.id.desc())
+    )
+    labelled = row.action_taken["agent_labelled"]
+    assert labelled["lessons"] == len(agent_lessons)
+    assert labelled["status_report_sections"] + labelled["closure_report_sections"] == expected
+
+
+def test_one_shadow_pass_over_the_seed_drafts_one_report_and_one_acceptance(db, monkeypatch):
+    from collections import Counter
+
+    from app.config import get_settings
+    from app.models import (
+        AuditDecision,
+        DeliverableAcceptance,
+        InboxItem,
+        OrchestratorAction,
+        StatusReport,
+    )
+    from app.orchestrator import run_pass
+
+    seed(db, reset=True)
+    db.commit()
+    settings = get_settings()
+    monkeypatch.setattr(settings, "orchestrator_mode", "shadow")
+    monkeypatch.setattr(settings, "agent_mode", "enforce")
+    before = (
+        _count(db, StatusReport),
+        db.scalar(select(func.count()).where(StatusReport.status == "published")),
+        _count(db, DeliverableAcceptance),
+    )
+    # A shadow pass calls no agent, so it needs no Claude client.
+    report = run_pass(db, settings, None)
+    assert report.ran and report.agent_calls == 0
+    steps = Counter(outcome.step for outcome in report.outcomes)
+    assert steps["draft_status_report"] == 1
+    assert steps["client_acceptance"] == 1
+    assert steps["publish_status_report"] == 0
+    routing = _project(db, "project-quillmere-routing")
+    acceptance = next(o for o in report.outcomes if o.step == "client_acceptance")
+    assert acceptance.subject_id in {d.id for d in _deliverables(db, routing)}
+    drafted = next(o for o in report.outcomes if o.step == "draft_status_report")
+    assert drafted.subject_id == routing.id
+    # Shadow changes nothing: no report, answer, inbox item or action, only audit rows.
+    db.expire_all()
+    after = (
+        _count(db, StatusReport),
+        db.scalar(select(func.count()).where(StatusReport.status == "published")),
+        _count(db, DeliverableAcceptance),
+    )
+    assert after == before
+    assert _count(db, InboxItem) == 0 and _count(db, OrchestratorAction) == 0
+    rows = db.scalars(select(AuditDecision).where(AuditDecision.agent == "orchestrator")).all()
+    assert rows and {row.status for row in rows} == {"skipped"}
