@@ -64,10 +64,15 @@ waiting on. 6.5 the planner agent. 6.6 editing the plan in the web. 6.7 risk sco
 6.8 proposal automation and a simulated client, always labelled simulated; a person still approves
 and sends. 6.9 demo data for the agentic flow.
 
-**P7 Delivery and closure.** 7.1 status reports: the agent drafts with a source for every number,
-the project manager publishes, sponsors see only published ones. 7.2 executive and detailed views.
-7.3 overdue and unread flags. 7.4 the acceptance and close-out gates, the closure report and lessons,
-which feed the next intake's risk suggestions.
+**P7 Delivery and closure.** Specs approved by Geoff on 2026-11-11; eight items.
+7.1 audit filters, labelled scales and small fixes. 7.2 delivery progress: milestones, deliverables
+and spend against the baseline. 7.3 status reports: figures with a source for every number, rated
+from the reporting policy; the project manager publishes and sponsors see only published ones.
+7.4 the status report agent drafts each period's text and never publishes. 7.5 the executive view
+and the overdue and unread report flags. 7.6 deliverable acceptance and the acceptance gate, with a
+simulated client always labelled simulated. 7.7 the closure report, benefits measured by a person,
+lessons that feed the risk agent's suggestions, and the close-out gate. 7.8 demo data for delivery
+and closure.
 
 **P8 Portfolio and oversight.** 8.1 the portfolio dashboard: health, budget, risk and gate status
 across projects. 8.2 PragMattie Sync as the live project, imported from its exported record. 8.3 the
